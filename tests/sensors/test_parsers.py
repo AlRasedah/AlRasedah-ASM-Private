@@ -1,0 +1,194 @@
+﻿"""Scanner output parser/normalizer tests using recorded tool output (no network)."""
+
+from __future__ import annotations
+
+from asm_sensors.adapters.amass import AmassAdapter, AmassConfig, parse_amass_output
+from asm_sensors.adapters.dnsx import DnsxAdapter, DnsxConfig
+from asm_sensors.adapters.httpx import HttpxAdapter, HttpxConfig, endpoint_base, split_product
+from asm_sensors.adapters.naabu import NaabuAdapter, NaabuConfig
+from asm_sensors.adapters.nuclei import NucleiAdapter, NucleiConfig
+from asm_sensors.adapters.subfinder import SubfinderAdapter, SubfinderConfig
+from asm_sensors.observations import (
+    FindingCoverage,
+    LivenessCoverage,
+    RelationCoverage,
+    Severity,
+)
+
+from .helpers import Obs, fixture_bytes, raw, t
+
+
+async def normalize(adapter, fixture, targets, config):
+    parsed = await adapter.parse_results(raw(fixture))
+    return parsed, Obs(await adapter.normalize(parsed, targets, config))
+
+
+class TestAmass:
+    async def test_graph_output(self):
+        parsed, o = await normalize(AmassAdapter(), "amass_v4.txt", [t("domain", "example.com")], AmassConfig())
+        assert {"example.com", "www.example.com", "api.example.com", "vpn.example.com", "dev-api.example.com",
+                "cdn.example.com", "d111111abcdef8.cloudfront.net", "ns1.dnsprovider.net",
+                "mx.mailhost.net"} <= o.values("hostname")
+        # reverse-DNS pseudo names are never reported as hostnames
+        assert not any(v.endswith("in-addr.arpa") for v in o.values("hostname"))
+        assert {"192.0.2.10", "192.0.2.20", "198.51.100.7", "2001:db8::7"} <= o.values("ip_address")
+        assert ("vpn.example.com", "2001:db8::7") in o.rels("resolves_to")
+        assert ("cdn.example.com", "d111111abcdef8.cloudfront.net") in o.rels("cname")
+        assert ("example.com", "mx.mailhost.net") in o.rels("mx_record")
+        assert o.values("cidr") == {"192.0.2.0/24"}
+        assert o.asset("asn", "AS64500").attributes["organization"].startswith("EXAMPLE-NET")
+        assert ("AS64500", "192.0.2.0/24") in o.rels("announces")
+        # ip -> asn is derived from netblock containment + announcement
+        assert ("192.0.2.20", "AS64500") in o.rels("belongs_to_asn")
+        assert o.n.coverage == []  # passive discovery never vouches for absence
+
+    async def test_legacy_json_output(self):
+        _, o = await normalize(AmassAdapter(), "amass_v3.jsonl", [t("domain", "example.com")], AmassConfig())
+        assert {"shop.example.com", "old.example.com"} <= o.values("hostname")
+        assert o.asset("hostname", "shop.example.com").attributes["discovery_sources"] == ["CertSpotter", "Crtsh"]
+        assert ("shop.example.com", "192.0.2.30") in o.rels("resolves_to")
+        assert ("192.0.2.30", "AS64500") in o.rels("belongs_to_asn")
+
+    def test_ansi_codes_are_stripped(self):
+        line = b"\x1b[32mmail.example.com (FQDN) --> a_record --> 192.0.2.25 (IPAddress)\x1b[0m\n"
+        recs = parse_amass_output(line)
+        assert recs[0]["src"] == "mail.example.com"
+
+    def test_argv_is_a_list_without_shell(self):
+        cfg = AmassConfig(mode="active", brute_force=True, timeout_minutes=5)
+        argv = AmassAdapter().build_argv("/bin/amass", "/w/t.txt", "/w/o.txt", "/w/db", cfg)
+        assert argv[:4] == ["/bin/amass", "enum", "-df", "/w/t.txt"]
+        assert "-active" in argv and "-brute" in argv
+        assert AmassAdapter().is_active(cfg) and not AmassAdapter().is_active(AmassConfig())
+
+    def test_brute_requires_active(self):
+        import pytest
+        with pytest.raises(ValueError):
+            AmassConfig(brute_force=True)
+
+
+class TestSubfinder:
+    async def test_normalizes_and_drops_invalid(self):
+        _, o = await normalize(SubfinderAdapter(), "subfinder.jsonl", [t("domain", "example.com")], SubfinderConfig())
+        hosts = o.values("hostname")
+        assert hosts == {"api.example.com", "dev-api.example.com", "staging.example.com", "vpn.example.com"}
+        assert o.asset("hostname", "api.example.com").attributes["discovery_sources"] == ["alienvault", "crtsh"]
+
+
+class TestDnsx:
+    async def test_records_and_coverage(self):
+        targets = [t("hostname", h) for h in
+                   ("api.example.com", "vpn.example.com", "cdn.example.com", "example.com", "gone.example.com")]
+        _, o = await normalize(DnsxAdapter(), "dnsx.jsonl", targets, DnsxConfig())
+        assert "gone.example.com" not in o.values("hostname")  # NXDOMAIN -> not observed
+        dns = o.asset("hostname", "vpn.example.com").attributes["dns"]
+        assert dns["a"] == ["198.51.100.7"] and dns["aaaa"] == ["2001:db8::7"]
+        assert o.asset("hostname", "example.com").attributes["dns"]["mx"] == ["mx.mailhost.net"]
+        assert ("cdn.example.com", "d111111abcdef8.cloudfront.net") in o.rels("cname")
+        assert {("cdn.example.com", "203.0.113.80"), ("cdn.example.com", "203.0.113.81")} <= o.rels("resolves_to")
+        live = [c for c in o.n.coverage if isinstance(c, LivenessCoverage)]
+        assert live and "gone.example.com" in live[0].values
+        rel = [c for c in o.n.coverage if isinstance(c, RelationCoverage) and c.relation.value == "resolves_to"]
+        assert rel and len(rel[0].parents) == 5
+
+    def test_resolvers_must_be_ips(self):
+        import pytest
+        with pytest.raises(ValueError):
+            DnsxConfig(resolvers=["1.1.1.1; rm -rf /"])
+
+
+class TestNaabu:
+    async def test_both_json_shapes(self):
+        targets = [t("ip", "198.51.100.7"), t("ip", "192.0.2.20")]
+        _, o = await normalize(NaabuAdapter(), "naabu.jsonl", targets, NaabuConfig(port_set="custom",
+                                                                                     custom_ports="1-65535"))
+        assert o.values("port") == {"198.51.100.7:443/tcp", "198.51.100.7:10443/tcp",
+                                    "192.0.2.20:3389/tcp", "192.0.2.20:443/tcp"}
+        assert ("192.0.2.20", "192.0.2.20:3389/tcp") in o.rels("has_port")
+        cov = o.n.coverage[0]
+        assert isinstance(cov, RelationCoverage)
+        assert cov.constraints["port_spec"] == "1-65535"
+        assert sorted(cov.parents) == ["192.0.2.20", "198.51.100.7"]
+
+    def test_port_validation(self):
+        import pytest
+        with pytest.raises(ValueError):
+            NaabuConfig(port_set="custom", custom_ports="80;id")
+        with pytest.raises(ValueError):
+            NaabuConfig(port_set="custom")
+        argv = NaabuAdapter().build_argv("/bin/naabu", "t", "o", NaabuConfig(port_set="web"))
+        assert argv[argv.index("-p") + 1].startswith("80,443")
+        assert argv[argv.index("-s") + 1] == "c"
+
+
+class TestHttpx:
+    async def test_endpoints_services_tech_certs(self):
+        targets = [t("host_port", "api.example.com:443"), t("host_port", "vpn.example.com:10443"),
+                   t("ip", "192.0.2.10"), t("hostname", "cdn.example.com")]
+        _, o = await normalize(HttpxAdapter(), "httpx.jsonl", targets, HttpxConfig())
+        assert o.values("http_endpoint") == {"https://api.example.com", "https://vpn.example.com:10443",
+                                             "http://192.0.2.10", "https://cdn.example.com"}
+        api = o.asset("http_endpoint", "https://api.example.com")
+        assert api.attributes["status_code"] == 200 and api.attributes["tls_version"] == "tls12"
+        svc = o.asset("service", "192.0.2.20:443/tcp")
+        assert svc.attributes["product"] == "nginx" and svc.attributes["version"] == "1.24.0"
+        assert ("https://api.example.com", "nginx") in o.rels("uses_technology")
+        nginx_rel = next(r for r in o.relations if r.relation.value == "uses_technology" and r.target.value == "nginx")
+        assert nginx_rel.attributes["version"] == "1.24.0"
+        cert = o.asset("certificate", "abcdef0123")
+        assert cert.attributes["sans"] == ["api.example.com", "www.example.com"]
+        assert ("https://vpn.example.com:10443", "99887766") in o.rels("presents_certificate")
+        assert ("api.example.com", "https://api.example.com") in o.rels("serves")
+        assert ("192.0.2.10", "http://192.0.2.10") in o.rels("serves")
+        assert o.asset("ip_address", "203.0.113.80").attributes["cdn"] is True
+        assert "https://down.example.com" not in o.values("http_endpoint")
+        serves = [c for c in o.n.coverage if isinstance(c, RelationCoverage) and c.relation.value == "serves"]
+        specs = {c.constraints["port_spec"] for c in serves}
+        assert "443" in specs and "10443" in specs
+
+    def test_helpers(self):
+        assert split_product("nginx/1.25.3 (Ubuntu)") == ("nginx", "1.25.3")
+        assert split_product("Apache") == ("apache", None)
+        assert endpoint_base("https://Example.com:443/x?y=1")[0] == "https://example.com"
+        assert endpoint_base("http://example.com:8080/")[0] == "http://example.com:8080"
+        assert endpoint_base("ftp://example.com") is None
+
+
+class TestNuclei:
+    async def test_findings_and_tech(self):
+        targets = [t("url", "https://api.example.com"), t("url", "https://vpn.example.com:10443")]
+        cfg = NucleiConfig(severities=[Severity.INFO, Severity.LOW, Severity.MEDIUM, Severity.HIGH, Severity.CRITICAL])
+        _, o = await normalize(NucleiAdapter(), "nuclei.jsonl", targets, cfg)
+        by_rule = {f.rule_id: f for f in o.findings}
+        cve = by_rule["CVE-2018-13379"]
+        assert cve.severity == Severity.CRITICAL and cve.cve == ["CVE-2018-13379"]
+        assert cve.cvss_score == 9.8 and cve.epss_score == 0.97
+        assert cve.asset.value == "https://vpn.example.com:10443"
+        assert cve.category.value == "vulnerability"
+        assert by_rule["swagger-api"].category.value == "exposure"
+        # network/ssl results resolve to the concrete ip:port when the IP is known
+        assert by_rule["weak-cipher-suites:tls-1.0"].asset.value == "198.51.100.7:10443/tcp"
+        assert by_rule["openssh-detect"].asset.value == "198.51.100.7:22/tcp"
+        # tech-tagged info results become technology observations, not findings
+        assert "tech-detect:swagger-ui" not in by_rule
+        assert ("https://api.example.com", "swagger-ui") in o.rels("uses_technology")
+        cov = [c for c in o.n.coverage if isinstance(c, FindingCoverage)][0]
+        assert {a.value for a in cov.assets} == {"https://api.example.com", "https://vpn.example.com:10443"}
+
+    def test_safe_defaults(self):
+        cfg = NucleiConfig(exclude_tags=[])
+        assert "dos" in cfg.exclude_tags  # can never be removed
+        argv = NucleiAdapter().build_argv("/bin/nuclei", "t", "o", NucleiConfig(), None)
+        assert "-ni" in argv and "-omit-raw" in argv
+        assert "intrusive" in argv[argv.index("-etags") + 1]
+
+    def test_rejects_injection_in_tags(self):
+        import pytest
+        with pytest.raises(ValueError):
+            NucleiConfig(tags=["cve,-code"])
+        with pytest.raises(ValueError):
+            NucleiConfig(extra_args="-code")  # type: ignore[call-arg]
+
+
+def test_fixture_loader():
+    assert fixture_bytes("dnsx.jsonl").startswith(b"{")

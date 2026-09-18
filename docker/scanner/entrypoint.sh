@@ -1,0 +1,36 @@
+#!/bin/sh
+# Exteriq ASM sensor worker entrypoint.
+set -eu
+
+role="${1:-worker}"
+shift || true
+
+update_templates() {
+  # Detection templates live on a volume so they can be updated without rebuilding.
+  if [ "${ASM_NUCLEI_AUTO_UPDATE:-true}" = "true" ] || [ -z "$(ls -A "$ASM_NUCLEI_TEMPLATES_DIR" 2>/dev/null)" ]; then
+    # Same HOME as the adapter uses at scan time, so nuclei sees templates as installed.
+    HOME="$ASM_NUCLEI_HOME" nuclei -update-templates -ud "$ASM_NUCLEI_TEMPLATES_DIR" -duc -silent || \
+      echo "warning: could not update detection templates (offline?); using the existing set" >&2
+  fi
+}
+
+case "$role" in
+  worker)
+    update_templates
+    exec celery -A asm_sensors.worker worker \
+      -Q "${ASM_SENSOR_QUEUES:-scanners.default}" \
+      --concurrency "${ASM_SENSOR_CONCURRENCY:-2}" \
+      --loglevel "${ASM_LOG_LEVEL:-INFO}" \
+      --hostname "sensor@%h" "$@"
+    ;;
+  update-templates)
+    update_templates
+    ;;
+  versions)
+    for b in subfinder dnsx httpx naabu nuclei; do printf '%s: ' "$b"; "$b" -version 2>&1 | tail -n 1; done
+    printf 'amass: '; amass -version 2>&1 | tail -n 1
+    ;;
+  *)
+    exec "$role" "$@"
+    ;;
+esac

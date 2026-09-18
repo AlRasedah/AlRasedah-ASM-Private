@@ -1,0 +1,5 @@
+{"host":"api.example.com","resolver":["1.1.1.1:53"],"a":["192.0.2.20"],"status_code":"NOERROR","timestamp":"2026-09-18T09:40:00Z"}
+{"host":"vpn.example.com","resolver":["1.1.1.1:53"],"a":["198.51.100.7"],"aaaa":["2001:db8::7"],"status_code":"NOERROR","timestamp":"2026-09-18T09:40:00Z"}
+{"host":"cdn.example.com","resolver":["1.1.1.1:53"],"cname":["d111111abcdef8.cloudfront.net"],"a":["203.0.113.80","203.0.113.81"],"status_code":"NOERROR","timestamp":"2026-09-18T09:40:00Z"}
+{"host":"example.com","resolver":["1.1.1.1:53"],"a":["192.0.2.10"],"mx":["mx.mailhost.net."],"ns":["ns1.dnsprovider.net"],"status_code":"NOERROR","timestamp":"2026-09-18T09:40:00Z"}
+{"host":"gone.example.com","resolver":["1.1.1.1:53"],"status_code":"NXDOMAIN","timestamp":"2026-09-18T09:40:00Z"}

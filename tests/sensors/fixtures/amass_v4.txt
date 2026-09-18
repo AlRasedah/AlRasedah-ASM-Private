@@ -1,0 +1,16 @@
+example.com (FQDN) --> ns_record --> ns1.dnsprovider.net (FQDN)
+example.com (FQDN) --> mx_record --> mx.mailhost.net (FQDN)
+example.com (FQDN) --> a_record --> 192.0.2.10 (IPAddress)
+www.example.com (FQDN) --> cname_record --> example.com (FQDN)
+api.example.com (FQDN) --> a_record --> 192.0.2.20 (IPAddress)
+vpn.example.com (FQDN) --> a_record --> 198.51.100.7 (IPAddress)
+vpn.example.com (FQDN) --> aaaa_record --> 2001:db8::7 (IPAddress)
+cdn.example.com (FQDN) --> cname_record --> d111111abcdef8.cloudfront.net (FQDN)
+dev-api.example.com (FQDN) --> a_record --> 203.0.113.5 (IPAddress)
+10.2.0.192.in-addr.arpa (FQDN) --> ptr_record --> example.com (FQDN)
+192.0.2.0/24 (Netblock) --> contains --> 192.0.2.10 (IPAddress)
+192.0.2.0/24 (Netblock) --> contains --> 192.0.2.20 (IPAddress)
+64500 (ASN) --> managed_by --> EXAMPLE-NET - Example Hosting Ltd (RIROrganization)
+64500 (ASN) --> announces --> 192.0.2.0/24 (Netblock)
+[32mmail.example.com (FQDN) --> a_record --> 192.0.2.25 (IPAddress)[0m
+this is not a graph line

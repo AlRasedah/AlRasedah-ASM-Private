@@ -1,0 +1,14 @@
+Exteriq ASM
+Copyright (c) 2026 AlRasedah. All rights reserved.
+
+This software and its source code are the proprietary property of AlRasedah.
+No license, express or implied, is granted to use, copy, modify, merge,
+publish, distribute, sublicense or sell copies of this software except under
+a separate written agreement with AlRasedah.
+
+NOTE FOR MAINTAINERS: this is a placeholder. The distribution model for the
+platform (proprietary, open-core, or an OSI-approved license) is a business
+decision for AlRasedah and has not been made. Replace this file accordingly.
+
+Third-party components are licensed under their own terms; see
+THIRD_PARTY_LICENSES.md. Those terms are not modified by this notice.

@@ -1,0 +1,5 @@
+{"host":"api.example.com","input":"example.com","sources":["crtsh","alienvault"]}
+{"host":"dev-api.example.com","input":"example.com","source":"virustotal"}
+{"host":"*.staging.example.com","input":"example.com","source":"crtsh"}
+{"host":"-evil.example.com","input":"example.com","source":"crtsh"}
+{"host":"VPN.Example.com.","input":"example.com","sources":["crtsh"]}
