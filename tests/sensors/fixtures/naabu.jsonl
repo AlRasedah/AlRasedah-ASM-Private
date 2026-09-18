@@ -1,0 +1,6 @@
+{"host":"198.51.100.7","ip":"198.51.100.7","port":443,"protocol":"tcp","tls":false,"timestamp":"2026-09-18T09:42:00Z"}
+{"host":"198.51.100.7","ip":"198.51.100.7","port":10443,"protocol":"tcp","tls":false,"timestamp":"2026-09-18T09:42:00Z"}
+{"ip":"192.0.2.20","port":{"Port":3389,"Protocol":0,"TLS":false},"timestamp":"2026-09-18T09:42:01Z"}
+{"ip":"192.0.2.20","port":443,"timestamp":"2026-09-18T09:42:01Z"}
+{"ip":"not-an-ip","port":22}
+{"ip":"192.0.2.20","port":70000}

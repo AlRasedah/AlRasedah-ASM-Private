@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{ title }}</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm 20mm 16mm;
+          @bottom-right { content: "Page " counter(page) " of " counter(pages); font-size: 9px; color: #667085; }
+          @bottom-left { content: "{{ brand }} — {{ classification }}"; font-size: 9px; color: #667085; } }
+  * { box-sizing: border-box; }
+  body { font-family: "Inter", "Segoe UI", "Noto Sans Arabic", Arial, sans-serif; color: #101828; font-size: 12px;
+         line-height: 1.45; margin: 0; background: #fff; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 24px; }
+  header.cover { border-bottom: 3px solid {{ accent }}; padding-bottom: 14px; margin-bottom: 20px; }
+  .brand { font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: {{ accent }}; font-weight: 700; }
+  h1 { font-size: 26px; margin: 6px 0 4px; }
+  h2 { font-size: 17px; margin: 26px 0 10px; padding-bottom: 4px; border-bottom: 1px solid #eaecf0; }
+  h3 { font-size: 14px; margin: 16px 0 6px; }
+  .meta { color: #475467; font-size: 12px; }
+  .muted { color: #667085; }
+  .kpis { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0; }
+  .kpi { flex: 1 1 140px; border: 1px solid #eaecf0; border-radius: 8px; padding: 10px 12px; }
+  .kpi .v { font-size: 22px; font-weight: 700; }
+  .kpi .l { color: #475467; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+  table { width: 100%; border-collapse: collapse; margin: 8px 0 14px; font-size: 11px; }
+  th { text-align: left; background: #f9fafb; color: #344054; font-weight: 600; border-bottom: 1px solid #eaecf0; padding: 6px 8px; }
+  td { border-bottom: 1px solid #f2f4f7; padding: 6px 8px; vertical-align: top; word-break: break-word; }
+  tr { page-break-inside: avoid; }
+  .sev { display: inline-block; padding: 1px 7px; border-radius: 10px; color: #fff; font-size: 10px; font-weight: 600;
+         text-transform: uppercase; }
+  .sev.critical { background: #b42318; } .sev.high { background: #dc6803; } .sev.medium { background: #ca8504; }
+  .sev.low { background: #1570ef; } .sev.info { background: #667085; }
+  .score { font-weight: 700; }
+  .callout { background: #f5fbfb; border-left: 4px solid {{ accent }}; padding: 10px 14px; margin: 10px 0; }
+  .finding { border: 1px solid #eaecf0; border-radius: 8px; padding: 10px 12px; margin: 10px 0; page-break-inside: avoid; }
+  .finding .t { font-weight: 600; font-size: 13px; }
+  .grid2 { display: flex; gap: 20px; flex-wrap: wrap; } .grid2 > div { flex: 1 1 420px; }
+  code { font-family: ui-monospace, Consolas, monospace; font-size: 10.5px; background: #f2f4f7; padding: 1px 4px; border-radius: 4px; }
+  footer { margin-top: 30px; color: #667085; font-size: 10px; border-top: 1px solid #eaecf0; padding-top: 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<header class="cover">
+  <div class="brand">{{ brand }}</div>
+  <h1>{{ title }}</h1>
+  <div class="meta">{{ tenant }}{% if organization %} · {{ organization }}{% endif %} · Generated {{ generated_at }}
+    · Period: last {{ days }} days</div>
+</header>
+
+{% if sections.summary %}
+<h2>Attack surface at a glance</h2>
+<div class="kpis">
+  <div class="kpi"><div class="v">{{ s.totals.risk_score }}</div><div class="l">Risk score (0–100)</div></div>
+  <div class="kpi"><div class="v">{{ s.totals.active_assets }}</div><div class="l">Active assets</div></div>
+  <div class="kpi"><div class="v">{{ s.totals.new_assets_7d }}</div><div class="l">New assets (7 days)</div></div>
+  <div class="kpi"><div class="v">{{ s.totals.unknown_assets }}</div><div class="l">Unverified / shadow IT</div></div>
+  <div class="kpi"><div class="v">{{ s.totals.critical_findings }}</div><div class="l">Critical findings</div></div>
+  <div class="kpi"><div class="v">{{ s.totals.high_findings }}</div><div class="l">High findings</div></div>
+  <div class="kpi"><div class="v">{{ s.totals.kev_findings }}</div><div class="l">Known-exploited (KEV)</div></div>
+</div>
+{% for msg in key_messages %}<div class="callout">{{ msg }}</div>{% endfor %}
+<div class="grid2">
+  <div><h3>Open findings by severity</h3>{{ charts.severity | safe }}</div>
+  <div><h3>Risk trend</h3>{{ charts.risk_trend | safe }}</div>
+</div>
+{% endif %}
+
+{% if sections.top_risks %}
+<h2>Highest-risk issues</h2>
+<table><tr><th>Risk</th><th>Severity</th><th>Issue</th><th>Asset</th><th>Why it matters</th></tr>
+{% for f in top_findings %}
+<tr><td class="score">{{ f.risk_score }}</td><td><span class="sev {{ f.severity }}">{{ f.severity }}</span></td>
+<td>{{ f.title }}{% if f.cve %}<br><span class="muted">{{ f.cve|join(", ") }}</span>{% endif %}</td><td>{{ f.asset }}</td>
+<td>{{ f.factors }}</td></tr>
+{% else %}<tr><td colspan="5" class="muted">No open findings.</td></tr>{% endfor %}
+</table>
+{% if recommendations %}<h3>Recommended actions</h3><ol>{% for r in recommendations %}<li>{{ r }}</li>{% endfor %}</ol>{% endif %}
+{% endif %}
+
+{% if sections.growth %}
+<h2>Attack surface growth</h2>
+{{ charts.growth | safe }}
+<div class="grid2">
+  <div><h3>Assets by type</h3>{{ charts.types | safe }}</div>
+  <div><h3>Hosting distribution</h3>{{ charts.hosting | safe }}</div>
+</div>
+{% endif %}
+
+{% if sections.exposure %}
+<h2>Exposed services</h2>
+<table><tr><th>Service</th><th>Detail</th><th>Risk</th><th>First seen</th></tr>
+{% for p in services %}<tr><td>{{ p.value }}</td><td>{{ p.detail }}</td><td>{{ p.risk_score }}</td><td>{{ p.first_seen }}</td></tr>
+{% else %}<tr><td colspan="4" class="muted">No exposed services recorded.</td></tr>{% endfor %}</table>
+<h2>Web applications</h2>
+<table><tr><th>Endpoint</th><th>Status</th><th>Title</th><th>Technologies</th><th>Risk</th></tr>
+{% for e in endpoints %}<tr><td>{{ e.value }}</td><td>{{ e.status_code }}</td><td>{{ e.title }}</td><td>{{ e.tech }}</td><td>{{ e.risk_score }}</td></tr>
+{% else %}<tr><td colspan="5" class="muted">No web applications recorded.</td></tr>{% endfor %}</table>
+<h2>TLS certificates</h2>
+<table><tr><th>Subject</th><th>Issuer</th><th>Expires</th><th>Days left</th></tr>
+{% for c in certificates %}<tr><td>{{ c.subject }}</td><td>{{ c.issuer }}</td><td>{{ c.not_after }}</td><td>{{ c.days_left }}</td></tr>
+{% else %}<tr><td colspan="4" class="muted">No certificates recorded.</td></tr>{% endfor %}</table>
+{% endif %}
+
+{% if sections.findings %}
+<h2>Findings ({{ findings|length }})</h2>
+{% for f in findings %}
+<div class="finding">
+  <div class="t"><span class="sev {{ f.severity }}">{{ f.severity }}</span> {{ f.title }} <span class="muted">· risk {{ f.risk_score }}</span></div>
+  <div class="muted">{{ f.asset }}{% if f.location %} · <code>{{ f.location }}</code>{% endif %} · {{ f.status }} · first seen {{ f.first_seen }}</div>
+  {% if f.cve %}<div>CVE: {{ f.cve|join(", ") }}{% if f.cvss %} · CVSS {{ f.cvss }}{% endif %}{% if f.epss %} · EPSS {{ f.epss }}{% endif %}{% if f.kev %} · <strong>CISA KEV</strong>{% endif %}</div>{% endif %}
+  {% if f.description %}<p>{{ f.description }}</p>{% endif %}
+  {% if f.remediation %}<p><strong>Remediation:</strong> {{ f.remediation }}</p>{% endif %}
+  {% if f.factors %}<p class="muted">Risk factors: {{ f.factors }}</p>{% endif %}
+</div>
+{% else %}<p class="muted">No findings in scope of this report.</p>{% endfor %}
+{% endif %}
+
+{% if sections.inventory %}
+<h2>Asset inventory ({{ assets|length }})</h2>
+<table><tr><th>Asset</th><th>Type</th><th>IP</th><th>Approval</th><th>Owner</th><th>First seen</th><th>Last seen</th><th>Risk</th><th>Findings</th></tr>
+{% for a in assets %}<tr><td>{{ a.value }}</td><td>{{ a.type }}</td><td>{{ a.ip }}</td><td>{{ a.approval }}</td><td>{{ a.owner }}</td>
+<td>{{ a.first_seen }}</td><td>{{ a.last_seen }}</td><td>{{ a.risk_score }}</td><td>{{ a.open_findings }}</td></tr>{% endfor %}</table>
+{% endif %}
+
+{% if sections.changes %}
+<h2>Changes ({{ events|length }})</h2>
+<table><tr><th>When</th><th>Severity</th><th>Change</th><th>Previous → Current</th></tr>
+{% for e in events %}<tr><td>{{ e.when }}</td><td><span class="sev {{ e.severity }}">{{ e.severity }}</span></td><td>{{ e.title }}</td><td>{{ e.diff }}</td></tr>
+{% else %}<tr><td colspan="4" class="muted">No changes in this period.</td></tr>{% endfor %}</table>
+{% endif %}
+
+{% if sections.trend %}
+<h2>Risk trend</h2>
+{{ charts.risk_trend | safe }}
+<table><tr><th>Day</th><th>Risk</th><th>Active assets</th><th>New</th><th>Unverified</th><th>Critical</th><th>High</th></tr>
+{% for t in trend %}<tr><td>{{ t.day }}</td><td>{{ t.risk_score }}</td><td>{{ t.active_assets }}</td><td>{{ t.new_assets }}</td>
+<td>{{ t.unknown_assets }}</td><td>{{ t.critical }}</td><td>{{ t.high }}</td></tr>{% endfor %}</table>
+{% endif %}
+
+<footer>{{ brand }} · Continuous External Attack Surface Management · {{ classification }}.
+Findings reflect automated, non-intrusive observation of internet-facing assets within the authorized scope at the time of scanning.</footer>
+</div>
+</body>
+</html>

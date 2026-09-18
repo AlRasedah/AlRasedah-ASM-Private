@@ -1,0 +1,235 @@
+# Exteriq ASM — default deployment.
+#
+#   cp .env.example .env && python scripts/generate_env.py   (or: sh scripts/generate-env.sh)
+#   docker compose up -d
+#
+# Network isolation:
+#   edge     – reverse-proxy <-> asm-web / asm-api                  (only the proxy publishes a port)
+#   data     – asm-api / asm-worker / asm-scheduler / asm-migrate <-> postgres, redis   (internal)
+#   sensors  – asm-scanner <-> redis                                  (internal; no database access)
+#   egress   – asm-scanner's route to the internet (scanning), and asm-worker's (feeds, webhooks)
+#
+# Optional profiles:  --profile osint (SpiderFoot)  --profile s3 (MinIO)  --profile dev (Mailpit)
+
+x-platform: &platform
+  image: ${ASM_IMAGE_REGISTRY:-alrasedah}/asm-platform:${ASM_VERSION:-0.1.0}
+  build:
+    context: .
+    dockerfile: docker/backend/Dockerfile
+  env_file: .env
+  environment: &platform-env
+    ASM_DATABASE_URL: postgresql+psycopg://${ASM_DB_USER:-asm}:${ASM_DB_PASSWORD:?set ASM_DB_PASSWORD}@postgres:5432/${ASM_DB_NAME:-asm}
+    ASM_REDIS_URL: redis://:${ASM_REDIS_PASSWORD:?set ASM_REDIS_PASSWORD}@redis:6379/0
+    ASM_STORAGE_LOCAL_PATH: /data/storage
+    ASM_INTEGRATION_EXPORT_DIR: /data/exports
+    ASM_SPIDERFOOT_URL: ${ASM_SPIDERFOOT_URL:-}
+  volumes:
+    - asm-storage:/data/storage
+    - asm-exports:/data/exports
+  read_only: true
+  tmpfs: [/tmp]
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+  depends_on:
+    postgres: { condition: service_healthy }
+    redis: { condition: service_healthy }
+
+services:
+  reverse-proxy:
+    image: nginxinc/nginx-unprivileged:1.27-alpine
+    ports:
+      - "${ASM_HTTP_PORT:-8080}:8080"
+      - "${ASM_HTTPS_PORT:-8443}:8443"
+    volumes:
+      - ${ASM_PROXY_CONF:-./docker/proxy/nginx.conf}:/etc/nginx/conf.d/default.conf:ro
+      - ./docker/proxy/certs:/etc/nginx/certs:ro
+    depends_on: [asm-api, asm-web]
+    networks: [edge]
+    read_only: true
+    tmpfs: [/tmp, /var/cache/nginx]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  asm-web:
+    image: ${ASM_IMAGE_REGISTRY:-alrasedah}/asm-web:${ASM_VERSION:-0.1.0}
+    build:
+      context: .
+      dockerfile: docker/web/Dockerfile
+    networks: [edge]
+    read_only: true
+    tmpfs: [/tmp, /var/cache/nginx]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+
+  asm-migrate:
+    <<: *platform
+    command: ["migrate"]
+    restart: "no"
+    networks: [data]
+
+  asm-api:
+    <<: *platform
+    command: ["api"]
+    # egress: DNS ownership verification of scope entries and SMTP for password resets.
+    networks: [edge, data, egress]
+    depends_on:
+      asm-migrate: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health').status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits: { cpus: "2", memory: 1g }
+
+  asm-worker:
+    <<: *platform
+    command: ["worker"]
+    networks: [data, egress]
+    depends_on:
+      asm-migrate: { condition: service_completed_successfully }
+    deploy:
+      resources:
+        limits: { cpus: "2", memory: 2g }
+
+  asm-scheduler:
+    <<: *platform
+    command: ["scheduler"]
+    networks: [data]
+    depends_on:
+      asm-migrate: { condition: service_completed_successfully }
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 256m }
+
+  asm-scanner:
+    image: ${ASM_IMAGE_REGISTRY:-alrasedah}/asm-scanner:${ASM_VERSION:-0.1.0}
+    build:
+      context: .
+      dockerfile: docker/scanner/Dockerfile
+      args:
+        INSTALL_BBOT: ${ASM_INSTALL_BBOT:-false}
+    command: ["worker"]
+    environment:
+      # Deliberately no database credentials: sensors only talk to the broker.
+      ASM_CELERY_BROKER_URL: redis://:${ASM_REDIS_PASSWORD:?set ASM_REDIS_PASSWORD}@redis:6379/0
+      ASM_SCANNER_TRANSPORT_KEY: ${ASM_SCANNER_TRANSPORT_KEY:?set ASM_SCANNER_TRANSPORT_KEY}
+      ASM_SENSOR_QUEUES: ${ASM_SENSOR_QUEUES:-scanners.default}
+      ASM_SENSOR_CONCURRENCY: ${ASM_SENSOR_CONCURRENCY:-2}
+      ASM_SCANNER_MAX_RATE: ${ASM_SCANNER_MAX_RATE:-2000}
+      ASM_NUCLEI_AUTO_UPDATE: ${ASM_NUCLEI_AUTO_UPDATE:-true}
+      ASM_SPIDERFOOT_URL: ${ASM_SPIDERFOOT_URL:-}
+      ASM_CRTSH_URL: ${ASM_CRTSH_URL:-}
+    volumes:
+      - nuclei-templates:/data/nuclei-templates
+      - nuclei-home:/data/nuclei-home
+    tmpfs: [/tmp, /data/home]
+    read_only: true
+    cap_drop: [ALL]        # connect() scans need no raw-socket capability
+    security_opt: ["no-new-privileges:true"]
+    networks: [sensors, egress]
+    depends_on:
+      redis: { condition: service_healthy }
+    restart: unless-stopped
+    deploy:
+      replicas: ${ASM_SENSOR_REPLICAS:-1}
+      resources:
+        limits: { cpus: "2", memory: 2g }
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${ASM_POSTGRES_SUPERUSER_PASSWORD:?set ASM_POSTGRES_SUPERUSER_PASSWORD}
+      POSTGRES_DB: postgres
+      ASM_DB_USER: ${ASM_DB_USER:-asm}
+      ASM_DB_PASSWORD: ${ASM_DB_PASSWORD:?set ASM_DB_PASSWORD}
+      ASM_DB_NAME: ${ASM_DB_NAME:-asm}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    networks: [data]
+    shm_size: 256m
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres && psql -U postgres -tAc \"select 1 from pg_database where datname='${ASM_DB_NAME:-asm}'\" | grep -q 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Valkey (BSD-3-Clause), a drop-in Redis-compatible broker. Redis 7.4+ is RSALv2/SSPL
+  # licensed, which matters for a future SaaS offering — see THIRD_PARTY_LICENSES.md.
+  redis:
+    image: valkey/valkey:8-alpine
+    command: ["valkey-server", "--requirepass", "${ASM_REDIS_PASSWORD:?set ASM_REDIS_PASSWORD}", "--appendonly", "yes",
+              "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis-data:/data
+    networks: [data, sensors]
+    read_only: true
+    cap_drop: [ALL]
+    # The image's entrypoint starts as root, fixes ownership of /data and then drops to
+    # the unprivileged `valkey` user — it needs exactly these capabilities to do so.
+    cap_add: [CHOWN, SETUID, SETGID, DAC_OVERRIDE]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli -a \"$${REDIS_PASSWORD}\" --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    environment:
+      REDIS_PASSWORD: ${ASM_REDIS_PASSWORD}
+
+  # ---------------------------------------------------------------- optional
+  spiderfoot:
+    profiles: ["osint"]
+    build:
+      context: https://github.com/smicallef/spiderfoot.git#v4.0
+    networks: [sensors, egress]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+
+  # MinIO is AGPL-3.0 (optional, for local S3 testing only). Production deployments
+  # typically point ASM_S3_ENDPOINT_URL at the provider's object storage instead.
+  minio:
+    profiles: ["s3"]
+    image: minio/minio:latest
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${ASM_S3_ACCESS_KEY:-asm}
+      MINIO_ROOT_PASSWORD: ${ASM_S3_SECRET_KEY:-change-me-please}
+    volumes: [minio-data:/data]
+    networks: [data]
+    restart: unless-stopped
+
+  mailpit:
+    profiles: ["dev"]
+    image: axllent/mailpit:latest
+    ports: ["127.0.0.1:8025:8025"]
+    networks: [data, egress]
+
+networks:
+  edge: {}
+  data: { internal: true }
+  sensors: { internal: true }
+  egress: {}
+
+volumes:
+  pg-data: {}
+  redis-data: {}
+  asm-storage: {}
+  asm-exports: {}
+  nuclei-templates: {}
+  nuclei-home: {}
+  minio-data: {}
