@@ -1,0 +1,634 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Exteriq ASM — User Guide</title>
+<meta name="description" content="User guide for Exteriq ASM: continuous external attack surface management. How to define scope, run scans, review assets and findings, respond to changes, generate reports and configure alerting." />
+<style>
+  :root{
+    --brand:#a3571f; --brand-strong:#8f4b18; --copper-tint:#f6ece1;
+    --navy:#0e2338; --navy-2:#16324f;
+    --bg:#f6f7f9; --surface:#ffffff; --surface-2:#f0f2f5; --border:#e2e6ec;
+    --fg:#182130; --fg-muted:#57616f; --fg-subtle:#8a94a2;
+    --ok:#1f7a4d; --warn:#b26a00; --danger:#b3261e;
+    --crit:#b3261e; --high:#c15400; --med:#a5760a; --low:#3763a8; --info:#5b6572;
+    --radius:12px; --radius-sm:8px; --maxw:1180px;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    --shadow:0 1px 2px rgba(16,35,56,.06),0 8px 24px rgba(16,35,56,.06);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --brand:#d98a4b; --brand-strong:#e0996a; --copper-tint:#2a1f16; --navy:#0a1626; --navy-2:#0f2136;
+      --bg:#0b1420; --surface:#111d2c; --surface-2:#16253a; --border:#243349;
+      --fg:#e7edf5; --fg-muted:#a7b4c4; --fg-subtle:#6f7d8f;
+      --ok:#4cc38a; --warn:#e0a44a; --danger:#f2685f;
+      --crit:#f2685f; --high:#f0934a; --med:#e6c15a; --low:#7fa8e6; --info:#93a0b2;
+      --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="dark"]{
+      --brand:#d98a4b; --brand-strong:#e0996a; --copper-tint:#2a1f16; --navy:#0a1626; --navy-2:#0f2136;
+      --bg:#0b1420; --surface:#111d2c; --surface-2:#16253a; --border:#243349;
+      --fg:#e7edf5; --fg-muted:#a7b4c4; --fg-subtle:#6f7d8f;
+      --ok:#4cc38a; --warn:#e0a44a; --danger:#f2685f;
+      --crit:#f2685f; --high:#f0934a; --med:#e6c15a; --low:#7fa8e6; --info:#93a0b2;
+      --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.35);
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--sans);line-height:1.62;font-size:16px;-webkit-text-size-adjust:100%}
+  a{color:var(--brand);text-decoration:none}
+  a:hover{text-decoration:underline}
+  code{font-family:var(--mono);background:var(--surface-2);border:1px solid var(--border);border-radius:5px;padding:.08em .38em;font-size:.87em}
+  kbd{font-family:var(--mono);background:var(--surface);border:1px solid var(--border);border-bottom-width:2px;border-radius:6px;padding:.05em .45em;font-size:.82em}
+  h1,h2,h3,h4{line-height:1.25;color:var(--fg);font-weight:680}
+  h2{font-size:1.5rem;margin:0 0 .5rem;padding-top:.2rem}
+  h3{font-size:1.16rem;margin:1.6rem 0 .4rem}
+  h4{font-size:1rem;margin:1.2rem 0 .3rem}
+  p{margin:.55rem 0}
+  ul,ol{margin:.5rem 0 .5rem;padding-inline-start:1.4rem}
+  li{margin:.28rem 0}
+
+  /* Top bar */
+  header.top{position:sticky;top:0;z-index:40;background:var(--navy);color:#fff;border-bottom:1px solid rgba(255,255,255,.08)}
+  .top-inner{max-width:var(--maxw);margin:0 auto;display:flex;align-items:center;gap:14px;padding:12px 20px}
+  .brand{display:flex;align-items:center;gap:11px;color:#fff}
+  .brand .name{font-weight:700;letter-spacing:.2px}
+  .brand .sub{font-size:.72rem;color:#b9c6d6;letter-spacing:.14em;text-transform:uppercase}
+  .brand svg{display:block}
+  .top .spacer{flex:1}
+  .badge-guide{font-size:.7rem;letter-spacing:.13em;text-transform:uppercase;color:#e7c9ad;border:1px solid rgba(217,138,75,.5);border-radius:999px;padding:3px 11px}
+  .menu-btn{display:none;background:transparent;border:1px solid rgba(255,255,255,.25);color:#fff;border-radius:8px;padding:7px 10px;cursor:pointer;font-size:1rem}
+
+  /* Layout */
+  .wrap{max-width:var(--maxw);margin:0 auto;display:grid;grid-template-columns:290px 1fr;gap:34px;padding:0 20px}
+  nav.toc{position:sticky;top:64px;align-self:start;height:calc(100vh - 64px);overflow-y:auto;padding:22px 6px 60px 0}
+  .toc .search{width:100%;padding:9px 11px;border:1px solid var(--border);border-radius:9px;background:var(--surface);color:var(--fg);font-size:.9rem;margin-bottom:12px}
+  .toc-group{font-size:.72rem;text-transform:uppercase;letter-spacing:.12em;color:var(--fg-subtle);margin:16px 0 5px;font-weight:700}
+  .toc a{display:block;color:var(--fg-muted);padding:5px 12px;border-radius:8px;font-size:.905rem;border-inline-start:2px solid transparent}
+  .toc a:hover{background:var(--surface-2);text-decoration:none;color:var(--fg)}
+  .toc a.active{color:var(--brand);background:var(--copper-tint);border-inline-start-color:var(--brand);font-weight:600}
+  .toc a.sub{padding-inline-start:26px;font-size:.85rem}
+  .toc a.hide{display:none}
+
+  main{min-width:0;padding:26px 0 90px}
+  section{padding-top:14px;margin-bottom:12px;scroll-margin-top:76px}
+  section > h2{border-bottom:1px solid var(--border);padding-bottom:.35rem}
+  .lead{font-size:1.06rem;color:var(--fg-muted)}
+
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px 20px;box-shadow:var(--shadow);margin:14px 0}
+  .note,.tip,.warn-box{border-radius:var(--radius-sm);padding:12px 15px;margin:14px 0;border:1px solid var(--border);font-size:.95rem}
+  .note{background:var(--surface-2)}
+  .tip{background:var(--copper-tint);border-color:color-mix(in srgb,var(--brand) 34%,transparent)}
+  .warn-box{background:color-mix(in srgb,var(--danger) 9%,transparent);border-color:color-mix(in srgb,var(--danger) 34%,transparent)}
+  .note b,.tip b,.warn-box b{color:var(--fg)}
+
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:.93rem;overflow:hidden;border-radius:var(--radius-sm);border:1px solid var(--border)}
+  th,td{text-align:start;padding:9px 12px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{background:var(--surface-2);font-weight:650;font-size:.82rem;letter-spacing:.02em}
+  tr:last-child td{border-bottom:none}
+  td code{white-space:nowrap}
+
+  .pill{display:inline-block;font-size:.72rem;font-weight:600;border-radius:999px;padding:2px 9px;border:1px solid var(--border);white-space:nowrap}
+  .pill.crit{color:var(--crit);border-color:color-mix(in srgb,var(--crit) 40%,transparent);background:color-mix(in srgb,var(--crit) 12%,transparent)}
+  .pill.high{color:var(--high);border-color:color-mix(in srgb,var(--high) 40%,transparent);background:color-mix(in srgb,var(--high) 12%,transparent)}
+  .pill.med{color:var(--med);border-color:color-mix(in srgb,var(--med) 40%,transparent);background:color-mix(in srgb,var(--med) 12%,transparent)}
+  .pill.low{color:var(--low);border-color:color-mix(in srgb,var(--low) 40%,transparent);background:color-mix(in srgb,var(--low) 12%,transparent)}
+  .pill.info{color:var(--info);border-color:color-mix(in srgb,var(--info) 40%,transparent);background:color-mix(in srgb,var(--info) 12%,transparent)}
+  .pill.dast{color:var(--brand);background:var(--copper-tint);border-color:color-mix(in srgb,var(--brand) 45%,transparent)}
+  .pill.kev{color:var(--crit);background:color-mix(in srgb,var(--crit) 12%,transparent);border-color:color-mix(in srgb,var(--crit) 40%,transparent)}
+
+  .steps{counter-reset:step;list-style:none;padding-inline-start:0}
+  .steps > li{counter-increment:step;position:relative;padding-inline-start:42px;margin:.7rem 0}
+  .steps > li::before{content:counter(step);position:absolute;inset-inline-start:0;top:-1px;width:28px;height:28px;border-radius:50%;background:var(--brand);color:#fff;font-weight:700;font-size:.85rem;display:grid;place-items:center}
+
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  footer.foot{max-width:var(--maxw);margin:0 auto;padding:26px 20px 50px;color:var(--fg-subtle);font-size:.85rem;border-top:1px solid var(--border)}
+  .anchor{color:var(--fg-subtle);font-weight:400;text-decoration:none;margin-inline-start:8px;opacity:0;font-size:.8em}
+  h2:hover .anchor,h3:hover .anchor{opacity:1}
+  .back-top{position:fixed;bottom:22px;inset-inline-end:22px;background:var(--brand);color:#fff;border:none;border-radius:50%;width:44px;height:44px;font-size:1.1rem;cursor:pointer;box-shadow:var(--shadow);display:none}
+  .back-top.show{display:block}
+
+  @media (max-width:920px){
+    .wrap{grid-template-columns:1fr;gap:0}
+    nav.toc{position:fixed;inset:56px 0 auto 0;height:auto;max-height:calc(100vh - 56px);background:var(--surface);border-bottom:1px solid var(--border);z-index:30;padding:14px 18px;display:none;overflow-y:auto}
+    nav.toc.open{display:block}
+    .menu-btn{display:inline-block}
+    main{padding-top:18px}
+  }
+  @media print{
+    header.top,nav.toc,.back-top,.menu-btn{display:none!important}
+    .wrap{grid-template-columns:1fr;padding:0}
+    .card{box-shadow:none}
+    a{color:inherit;text-decoration:none}
+  }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="top-inner">
+    <button class="menu-btn" aria-label="Toggle contents" onclick="document.querySelector('nav.toc').classList.toggle('open')">☰</button>
+    <span class="brand">
+      <svg width="34" height="24" viewBox="0 0 34 24" fill="none" aria-hidden="true">
+        <ellipse cx="17" cy="12" rx="16" ry="11" stroke="#d98a4b" stroke-width="2"/>
+        <circle cx="17" cy="12" r="4.6" fill="#d98a4b"/>
+        <circle cx="17" cy="12" r="1.7" fill="#0e2338"/>
+      </svg>
+      <span><span class="name">Exteriq ASM</span><br><span class="sub">Attack Surface Management</span></span>
+    </span>
+    <span class="spacer"></span>
+    <span class="badge-guide">User Guide</span>
+  </div>
+</header>
+
+<div class="wrap">
+  <nav class="toc" id="toc">
+    <input class="search" id="tocSearch" type="search" placeholder="Filter contents…" aria-label="Filter contents" />
+    <div class="toc-group">Getting started</div>
+    <a href="#intro">1. What is Exteriq ASM</a>
+    <a href="#concepts">2. Key concepts</a>
+    <a href="#signin">3. Signing in &amp; the interface</a>
+    <a href="#roles">4. Roles &amp; permissions</a>
+    <div class="toc-group">Daily use</div>
+    <a href="#dashboard">5. Dashboard</a>
+    <a href="#scope">6. Organizations &amp; scope</a>
+    <a href="#scans">7. Scans &amp; profiles</a>
+    <a href="#inventory">8. Asset inventory</a>
+    <a href="#shadow">9. Shadow IT review</a>
+    <a href="#findings">10. Findings</a>
+    <a href="#changes">11. Changes &amp; alerts</a>
+    <a href="#dast">12. Web app testing (DAST)</a>
+    <div class="toc-group">Reporting &amp; config</div>
+    <a href="#reports">13. Reports</a>
+    <a href="#integrations">14. Integrations &amp; notifications</a>
+    <a href="#settings">15. Settings</a>
+    <a href="#users">16. Users</a>
+    <a href="#account">17. Your account</a>
+    <a href="#audit">18. Audit log</a>
+    <div class="toc-group">Reference</div>
+    <a href="#risk">19. How risk scores work</a>
+    <a href="#glossary">20. Glossary</a>
+    <a href="#faq">21. FAQ &amp; troubleshooting</a>
+  </nav>
+
+  <main>
+    <section id="intro">
+      <h2>1. What is Exteriq ASM<a class="anchor" href="#intro">#</a></h2>
+      <p class="lead">Exteriq ASM is a continuous <strong>External Attack Surface Management</strong> platform. It discovers
+      everything your organization exposes to the internet — domains, subdomains, IP addresses, open services, web
+      applications, certificates and cloud resources — keeps that inventory current, and tells you what changed, what is
+      exposed, and what matters most.</p>
+      <p>Unlike a one-off scan, Exteriq ASM builds a living picture of your attack surface. Each scan is compared with
+      what was seen before, so you get a chronological stream of <em>changes</em>: a new subdomain, a newly opened port,
+      an expiring certificate, a vulnerability that appeared — or one that was fixed.</p>
+      <div class="card">
+        <b>What you can do with it</b>
+        <ul>
+          <li><b>Discover</b> your internet-facing assets automatically, including <em>shadow IT</em> you did not know about.</li>
+          <li><b>Assess</b> exposures and vulnerabilities, each scored 0–100 by practical risk (not CVSS alone).</li>
+          <li><b>Crawl and actively test web applications</b> for vulnerabilities such as injection and cross-site scripting (see <a href="#dast">Web application testing</a>).</li>
+          <li><b>Monitor</b> for changes continuously and get alerted through email, webhooks, Slack, Microsoft Teams or your SIEM.</li>
+          <li><b>Report</b> to executives and engineers with ready-made reports in HTML, PDF and CSV.</li>
+        </ul>
+      </div>
+      <p><b>Authorized by design.</b> Exteriq ASM only ever actively contacts assets inside an <a href="#scope">authorized
+      scope</a> you define. Every target is checked against that scope before any traffic is sent, and every decision is
+      logged.</p>
+    </section>
+
+    <section id="concepts">
+      <h2>2. Key concepts<a class="anchor" href="#concepts">#</a></h2>
+      <table>
+        <tr><th>Term</th><th>What it means</th></tr>
+        <tr><td><b>Organization</b></td><td>A unit you monitor (a company, brand or business unit). Each organization has its own scope, assets, findings and risk score.</td></tr>
+        <tr><td><b>Authorized scope</b></td><td>The root domains, IP addresses and network ranges (CIDRs) you are permitted to monitor. Active scanning never happens outside it.</td></tr>
+        <tr><td><b>Asset</b></td><td>Anything discovered on your surface: a domain, subdomain, IP, open port, service, web endpoint, certificate, technology, cloud resource or network (ASN).</td></tr>
+        <tr><td><b>Scan</b></td><td>A run of a <b>profile</b> — an ordered pipeline of discovery and assessment stages — against an organization.</td></tr>
+        <tr><td><b>Finding</b></td><td>A security issue on an asset: a vulnerability, an exposure, a misconfiguration or a certificate problem.</td></tr>
+        <tr><td><b>Change / event</b></td><td>A security-relevant difference between two scans (new asset, port opened, certificate changed, vulnerability resolved, …).</td></tr>
+        <tr><td><b>Baseline</b></td><td>The first successful scan of an organization. It establishes the initial inventory and is <em>not</em> alerted, so you are not flooded on day one.</td></tr>
+        <tr><td><b>Risk score</b></td><td>A 0–100 number (higher is worse) explaining how risky an asset or finding is, using exploitability, exposure and context — see <a href="#risk">§19</a>.</td></tr>
+        <tr><td><b>Approval status</b></td><td>Whether an asset is known and sanctioned (approved, expected), third-party, or still unreviewed (unverified/unknown) — the basis of <a href="#shadow">Shadow IT review</a>.</td></tr>
+      </table>
+    </section>
+
+    <section id="signin">
+      <h2>3. Signing in &amp; the interface<a class="anchor" href="#signin">#</a></h2>
+      <h3>Signing in</h3>
+      <ol class="steps">
+        <li>Open the Exteriq ASM web address provided by your administrator and enter your email and password.</li>
+        <li>If two-factor authentication is enabled on your account, enter the 6-digit code from your authenticator app.</li>
+        <li>Forgot your password? Use <b>Reset password</b> on the sign-in page; you will receive an email with a reset link.</li>
+      </ol>
+      <div class="tip"><b>Tip:</b> Turn on two-factor authentication for your own account under <a href="#account">Your account</a>. Administrators can require it and can reset it for other users.</div>
+
+      <h3>Finding your way around</h3>
+      <p>The left <b>sidebar</b> is your main menu. The top bar has two important selectors:</p>
+      <ul>
+        <li><b>Organization selector</b> — filters the whole app to one organization, or choose <em>All organizations</em> for a combined view.</li>
+        <li><b>Tenant selector</b> — appears only if your account belongs to more than one tenant (workspace); switches between them.</li>
+        <li>The <b>bell / alert count</b> shows unacknowledged medium-or-higher changes; the <b>account chip</b> opens your account; the <b>Documentation</b> link opens this guide.</li>
+      </ul>
+      <p>The sidebar groups screens into <b>daily use</b> (Dashboard, Inventory, Shadow IT, Findings, Changes, Scans, Reports),
+      <b>Configuration</b> (Organizations &amp; scope, Scan profiles, Integrations, Users, Settings, Audit log) and, for
+      platform administrators, <b>Platform</b> (Tenants). Menu items you do not have permission to use are hidden.</p>
+    </section>
+
+    <section id="roles">
+      <h2>4. Roles &amp; permissions<a class="anchor" href="#roles">#</a></h2>
+      <p>Your role controls what you can see and do. Higher roles include everything the lower ones can do.</p>
+      <table>
+        <tr><th>Role</th><th>Can do</th></tr>
+        <tr><td><b>Viewer</b></td><td>Read-only: view the dashboard, inventory, findings, changes, scans and reports.</td></tr>
+        <tr><td><b>Security analyst</b></td><td>Everything a viewer can, plus run scans, triage findings (change status, assign, comment), classify assets, and acknowledge changes.</td></tr>
+        <tr><td><b>Tenant admin</b></td><td>Everything an analyst can, plus manage organizations &amp; scope, scan profiles, integrations, users, settings, data-source keys, and view the audit log.</td></tr>
+        <tr><td><b>Platform admin</b></td><td>Everything above, across the whole platform, plus tenant management.</td></tr>
+      </table>
+      <div class="note">Accepting a finding as a business risk is a separate, elevated permission an administrator can grant to analysts.</div>
+    </section>
+
+    <section id="dashboard">
+      <h2>5. Dashboard<a class="anchor" href="#dashboard">#</a></h2>
+      <p>The <b>Attack surface overview</b> is your starting point — “what is exposed, what changed, and what matters most.”
+      Every card is clickable and takes you to the matching filtered view.</p>
+      <ul>
+        <li><b>KPI tiles:</b> overall risk score, total &amp; active assets, new assets in the last 7 days, unknown / shadow IT count, critical and high findings, known-exploited (KEV) findings, and changes in the last 24 hours.</li>
+        <li><b>Risk trend</b> and <b>attack-surface growth</b> charts over the last 30 days.</li>
+        <li><b>Open findings by severity</b>, <b>asset types</b>, <b>technologies</b>, <b>hosting &amp; cloud</b>, and <b>networks (ASN)</b> breakdowns.</li>
+        <li>Live lists: <b>recent changes</b>, <b>most exposed assets</b>, <b>recently opened services</b>, <b>top vulnerable assets</b> and <b>certificates expiring soon</b>.</li>
+      </ul>
+      <p>If you have not created an organization yet, the dashboard guides you to do that first.</p>
+    </section>
+
+    <section id="scope">
+      <h2>6. Organizations &amp; authorized scope<a class="anchor" href="#scope">#</a></h2>
+      <p>Before anything can be scanned you create an <b>organization</b> and define its <b>authorized scope</b>. This is
+      the single most important safety control in the product: <b>Exteriq ASM never actively scans anything outside the
+      scope you authorize.</b></p>
+
+      <h3>Adding scope</h3>
+      <ol class="steps">
+        <li>Go to <b>Organizations &amp; scope</b> and open (or create) an organization.</li>
+        <li>Under <b>Authorized scope</b>, choose <b>Add</b> and enter your root domains, IP addresses or CIDR ranges — one per line.</li>
+        <li>Decide whether to <b>permit active scanning</b> for these entries (port discovery, web fingerprinting, crawling and vulnerability testing). Leave it off for passive-only monitoring.</li>
+      </ol>
+      <div class="warn-box"><b>Only add assets your organization owns or is explicitly authorized to test.</b> Every addition is recorded in the audit log.</div>
+
+      <h3>Per-entry options</h3>
+      <ul>
+        <li><b>Subdomains</b> — for a domain entry, choose whether subdomains are included.</li>
+        <li><b>Active scanning</b> — toggle whether that entry may be contacted actively.</li>
+        <li><b>Ownership</b> — verify you control a domain by publishing a DNS TXT record (below).</li>
+      </ul>
+
+      <h3>Verifying domain ownership</h3>
+      <p>Click the ownership badge next to a domain to open the verification dialog. Publish the shown DNS <code>TXT</code>
+      record at your DNS provider, then choose <b>Check now</b>. DNS changes can take time to propagate. Your administrator
+      can make verification <em>mandatory</em> before any domain is actively scanned (see <a href="#settings">Settings</a>).</p>
+
+      <h3>Exclusions</h3>
+      <p>Add <b>exclusions</b> for anything that must never be actively scanned (e.g. a sensitive host or a range you do not
+      own). <b>Exclusions always win over inclusions.</b></p>
+
+      <h3>Scanning policy</h3>
+      <ul>
+        <li><b>Actively scan resolved IPs</b> — also scan the IP addresses your in-scope hostnames resolve to (these may be shared hosting; turn off to restrict scanning to explicitly listed ranges).</li>
+        <li><b>Skip shared CDN/WAF edges</b> — avoid port-scanning shared content-delivery / WAF addresses.</li>
+      </ul>
+
+      <h3>Scope checker</h3>
+      <p>Use the <b>Scope checker</b> to test whether a specific host, IP, CIDR or URL would be authorized for active
+      scanning, and why. Great for confirming coverage before a scan.</p>
+      <div class="warn-box">Deleting an organization removes <b>all</b> of its assets, findings and history and cannot be undone. Removing a scope entry keeps existing assets but stops scanning them actively.</div>
+    </section>
+
+    <section id="scans">
+      <h2>7. Scans &amp; profiles<a class="anchor" href="#scans">#</a></h2>
+      <p>A <b>scan</b> runs a <b>profile</b> against an organization. A profile is an ordered pipeline whose stages always
+      run in the same order: discovery → open-source intelligence → DNS → network ownership → ports → web fingerprinting →
+      web crawling → vulnerability detection. A profile can include any subset of these.</p>
+
+      <h3>Built-in profiles</h3>
+      <table>
+        <tr><th>Profile</th><th>What it does</th><th>Contacts your hosts?</th></tr>
+        <tr><td><b>Passive Discovery</b></td><td>Finds subdomains from passive sources and certificate transparency, resolves DNS and maps network ownership.</td><td>No traffic beyond DNS resolution.</td></tr>
+        <tr><td><b>Standard ASM</b></td><td>Passive discovery plus web-service fingerprinting, discovery of commonly exposed services, and safe exposure/vulnerability detection. Recommended for daily monitoring.</td><td>Yes (active).</td></tr>
+        <tr><td><b>Deep Assessment</b></td><td>Extended discovery and port coverage plus the broader safe detection set, including informational exposures.</td><td>Yes (active).</td></tr>
+        <tr><td><b>Web Application Scan (DAST)</b></td><td>Crawls each web application and actively probes it for web vulnerabilities such as injection and cross-site scripting. See <a href="#dast">§12</a>.</td><td>Yes (active, intrusive).</td></tr>
+        <tr><td><b>Exposure Monitoring</b></td><td>A fast re-check of already-known assets (DNS, web services, common ports). Suited to frequent schedules.</td><td>Yes (active).</td></tr>
+      </table>
+      <div class="note">Administrators can also create custom profiles under <b>Scan profiles</b>, choosing which stages to include and their options. Options are validated strictly.</div>
+
+      <h3>Running a scan</h3>
+      <ol class="steps">
+        <li>Open <b>Scans</b> and choose <b>New scan</b> (or <b>Run a scan</b> from the dashboard).</li>
+        <li>Pick the <b>organization</b> and a <b>profile</b>. The dialog lists the stages and warns if the profile sends active traffic.</li>
+        <li>Optionally <b>limit to specific targets</b> (a few hosts or IPs) instead of the whole scope.</li>
+        <li>Choose <b>Start scan</b>. You are taken to the scan’s detail page, which refreshes live.</li>
+      </ol>
+      <div class="tip"><b>First scan:</b> an organization’s first successful scan is its <b>baseline</b>. It builds the initial inventory and its changes are recorded but not alerted.</div>
+
+      <h3>Scan detail</h3>
+      <ul>
+        <li><b>Pipeline</b> tab — each stage with its status, authorized target count, targets rejected by scope, observations and duration. A long-running stage shows how long it has run and its time limit.</li>
+        <li><b>Changes</b> tab — every change this scan recorded.</li>
+        <li><b>Authorization log</b> tab — every target and whether it was <em>allowed</em> or <em>rejected</em> by scope, with the reason and whether it was active or passive. This is your proof that scanning stayed in bounds.</li>
+        <li>KPI tiles show new assets, changes, new/resolved findings and assets that went gone/closed.</li>
+        <li>You can <b>cancel</b> a running scan.</li>
+      </ul>
+      <div class="note">If a stage finds no authorized targets it is <b>skipped</b>. If a required tool is unavailable the stage <b>fails</b>; optional stages are skipped instead. A scan is <em>partial</em> if some stages failed, <em>completed</em> if all succeeded.</div>
+
+      <h3>Scheduling</h3>
+      <p>On the <b>Scan profiles</b> screen you can create <b>schedules</b> that run a profile against an organization on a
+      cron expression in a chosen timezone — for example nightly Standard ASM, weekly Deep Assessment.</p>
+    </section>
+
+    <section id="inventory">
+      <h2>8. Asset inventory<a class="anchor" href="#inventory">#</a></h2>
+      <p><b>Inventory</b> lists every internet-facing asset discovered for your organizations, with ownership and risk.</p>
+      <ul>
+        <li><b>Filter</b> by search text, asset type, active/inactive status, approval status, findings severity, technology, network (ASN), tag, owner, business unit, minimum risk, and first-seen date. A <b>Third-party</b> toggle includes related third-party infrastructure.</li>
+        <li><b>Sort</b> by clicking sortable column headers (Asset, Status, Owner, First/Last seen, Risk, Findings).</li>
+        <li><b>Columns:</b> asset value &amp; title, type, IP(s), activity status &amp; approval status, owner, first/last seen, risk score, open-finding count and tags.</li>
+        <li><b>Bulk update</b> — select rows to set approval status, owner, business unit, criticality, or add tags to many assets at once.</li>
+        <li><b>Export CSV</b> of the current filtered view.</li>
+      </ul>
+      <h3>Asset detail</h3>
+      <p>Click any asset to open its detail page, with tabs for <b>Ownership &amp; classification</b> (owner, business unit,
+      criticality, approval, tags, notes), <b>Relationships</b> (what it resolves to, hosts, serves, belongs to),
+      <b>DNS</b>, <b>Web endpoints</b>, <b>Findings</b>, <b>Timeline</b> of changes, and <b>Raw observations</b> from each
+      scan. Risk is explained factor by factor.</p>
+    </section>
+
+    <section id="shadow">
+      <h2>9. Shadow IT review<a class="anchor" href="#shadow">#</a></h2>
+      <p><b>Shadow IT</b> lists active assets discovered outside your known inventory — their ownership is unknown and their
+      approval unverified until you review them. This is where you triage “what is this, and should it exist?”</p>
+      <ol class="steps">
+        <li>Filter by asset type if you like; the count shows how many assets await classification.</li>
+        <li>For each asset, choose a classification: <b>Approve</b>, <b>Expected</b>, <b>Third party</b>, <b>Unauthorized</b> or <b>Decommissioned</b>.</li>
+        <li>Open the asset first if you need to inspect it before deciding.</li>
+      </ol>
+      <p>Classifying assets keeps your dashboard’s “unknown / shadow IT” count meaningful and feeds the risk score (unknown
+      and unauthorized assets carry extra risk).</p>
+    </section>
+
+    <section id="findings">
+      <h2>10. Findings<a class="anchor" href="#findings">#</a></h2>
+      <p><b>Findings</b> are the vulnerabilities and exposures on your assets, prioritized by practical risk — not CVSS
+      alone.</p>
+      <ul>
+        <li><b>Filter</b> by status (open by default), severity, category, CVE, <b>Known exploited only</b> (CISA KEV) and <b>Unassigned</b>, plus free-text search.</li>
+        <li><b>Columns:</b> risk score, severity, finding title (with badges), affected asset, status, first/last seen and how it was detected.</li>
+        <li><b>Export CSV</b> of the current view.</li>
+      </ul>
+      <h3>Badges you will see</h3>
+      <p>
+        <span class="pill crit">critical</span> <span class="pill high">high</span> <span class="pill med">medium</span>
+        <span class="pill low">low</span> <span class="pill info">info</span> — severity;
+        &nbsp;<span class="pill kev">KEV</span> — listed in CISA’s Known Exploited Vulnerabilities catalog;
+        &nbsp;<span class="pill dast">DAST</span> — <b>dynamically confirmed by active web-application scanning</b> (see <a href="#dast">§12</a>), as opposed to passively observed.
+      </p>
+      <h3>Finding detail &amp; workflow</h3>
+      <p>Open a finding to see its description, remediation guidance, evidence, references, CVE/CWE, CVSS and EPSS scores,
+      and a full explanation of its risk score. Analysts can:</p>
+      <ul>
+        <li><b>Change status</b> along an allowed path — New → Investigating → Remediated / False positive / Accepted risk, and Reopen.</li>
+        <li><b>Assign</b> the finding to a user and add <b>comments</b>; all activity is timestamped.</li>
+        <li><b>Accept the risk</b> (with justification and an optional expiry date) — a separate permission.</li>
+      </ul>
+      <div class="note">Findings resolve automatically. When a later scan that fully re-tested an asset no longer sees the issue, the finding is marked <b>remediated</b> and a “vulnerability resolved” change is recorded. If it comes back, it reopens.</div>
+    </section>
+
+    <section id="changes">
+      <h2>11. Changes &amp; alerts<a class="anchor" href="#changes">#</a></h2>
+      <p><b>Changes</b> is a chronological, security-relevant feed built by comparing each scan with previous observations —
+      new assets and subdomains, DNS/IP changes, ports opening or closing, services and technologies appearing or changing,
+      certificate changes/expiry, vulnerabilities detected/resolved/reopened, risk increases, shadow IT discovered, and more.</p>
+      <ul>
+        <li><b>Filter</b> by change type, minimum severity, acknowledged state and date; optionally <b>include baseline</b> events.</li>
+        <li><b>Acknowledge</b> changes you have reviewed (individually or a whole page) to clear them from the alert count.</li>
+      </ul>
+      <p>To be <em>notified</em> of changes (rather than reviewing them here), configure <a href="#integrations">alert policies and channels</a>.</p>
+    </section>
+
+    <section id="dast">
+      <h2>12. Web application testing (DAST)<a class="anchor" href="#dast">#</a></h2>
+      <p>Exteriq ASM can perform <b>Dynamic Application Security Testing</b> — powered by OWASP ZAP — on the web
+      applications it discovers. This adds two capabilities to the pipeline:</p>
+      <ul>
+        <li><b>Web application crawling</b> — spiders each web application to map its pages and endpoints, expanding the
+        known surface, and <em>passively</em> inspects the responses for hygiene issues (missing security headers, insecure
+        cookies, information disclosure).</li>
+        <li><b>Active vulnerability scanning</b> — actively probes the discovered pages for web vulnerabilities such as SQL
+        injection, cross-site scripting and path traversal.</li>
+      </ul>
+
+      <h3>Running it</h3>
+      <ol class="steps">
+        <li>Make sure the target web applications are inside an <a href="#scope">authorized scope</a> that <b>permits active scanning</b>. Active testing is intrusive.</li>
+        <li>Start a scan with the built-in <b>Web Application Scan (DAST)</b> profile (or a custom profile that includes the crawling and active-scanning stages).</li>
+        <li>Watch progress on the scan’s <b>Pipeline</b> tab; results appear as assets (crawled endpoints) and <a href="#findings">findings</a>.</li>
+      </ol>
+
+      <h3>The DAST badge</h3>
+      <p>Findings confirmed by the active scanner are flagged with a <span class="pill dast">DAST</span> badge in the findings
+      list and a <b>“DAST · actively verified”</b> badge on the finding detail. It tells you the issue was <em>dynamically
+      exercised against the running application</em>, not merely inferred — a strong signal for prioritization.</p>
+
+      <div class="warn-box"><b>Authorization &amp; availability.</b> Active web testing sends real attack-style requests. It only runs
+      against scope that permits active scanning, and it stays strictly on the authorized host. The DAST engine is an
+      optional component; if your deployment does not have it enabled, those stages are skipped. Ask your administrator if
+      the <b>Web Application Scan (DAST)</b> profile is available in your environment.</div>
+    </section>
+
+    <section id="reports">
+      <h2>13. Reports<a class="anchor" href="#reports">#</a></h2>
+      <p>Generate shareable reports in <b>HTML</b>, <b>PDF</b> or <b>CSV</b>.</p>
+      <table>
+        <tr><th>Report</th><th>For</th></tr>
+        <tr><td><b>Executive ASM report</b></td><td>Leadership — posture, trend and highlights.</td></tr>
+        <tr><td><b>Technical attack surface report</b></td><td>Engineers &amp; security teams — detailed findings and assets.</td></tr>
+        <tr><td><b>Asset inventory</b></td><td>A full list of discovered assets.</td></tr>
+        <tr><td><b>Vulnerability report</b></td><td>Findings with severity, risk and remediation.</td></tr>
+        <tr><td><b>New assets &amp; changes</b></td><td>What changed over a period.</td></tr>
+        <tr><td><b>Risk trend</b></td><td>How risk moved over time.</td></tr>
+      </table>
+      <ol class="steps">
+        <li>On <b>Reports</b>, choose a report type, format, organization (or all), and a period in days.</li>
+        <li>Select <b>Generate</b>. The report appears in the list and processes in the background.</li>
+        <li>When complete, <b>view</b> HTML reports in your browser or <b>download</b> any format.</li>
+      </ol>
+    </section>
+
+    <section id="integrations">
+      <h2>14. Integrations &amp; notifications<a class="anchor" href="#integrations">#</a></h2>
+      <p>Deliver changes to the tools your team already uses. The <b>Integrations</b> screen has four tabs.</p>
+      <h3>Channels</h3>
+      <table>
+        <tr><th>Channel</th><th>Use</th></tr>
+        <tr><td><b>Email</b></td><td>Email digest of matching changes to a list of recipients.</td></tr>
+        <tr><td><b>Webhook</b></td><td>JSON POST to your endpoint; set a signing secret to receive an HMAC-SHA256 signature.</td></tr>
+        <tr><td><b>Wazuh (SIEM)</b></td><td>Structured events to Wazuh via syslog, an HTTP receiver, or a JSON file read by a Wazuh agent.</td></tr>
+        <tr><td><b>Slack</b></td><td>Slack incoming webhook.</td></tr>
+        <tr><td><b>Microsoft Teams</b></td><td>Teams workflow / incoming webhook.</td></tr>
+      </table>
+      <p>Add a channel, <b>Test</b> it, and enable/disable it. Secrets (signing keys, webhook URLs) are stored securely and
+      never shown again.</p>
+      <h3>Alert policies</h3>
+      <p>A policy decides <em>which</em> changes go to <em>which</em> channels: set a <b>minimum severity</b>, restrict to
+      certain <b>change types</b> and <b>organizations</b>, choose the destination channels, optionally <b>throttle</b>
+      repeated alerts, and decide whether to include baseline events.</p>
+      <div class="note">Changes from an organization’s first (baseline) scan are never alerted unless a policy explicitly includes baseline events.</div>
+      <h3>Delivery log</h3>
+      <p>See recent notification attempts, their status, attempts and any error. Failed deliveries are retried automatically.</p>
+      <h3>Data-source API keys</h3>
+      <p>Passive discovery works out of the box with free sources. To enrich it, administrators can store third-party
+      data-source API keys here. Keys are encrypted at rest, never displayed again, and delivered to scanners securely.</p>
+    </section>
+
+    <section id="settings">
+      <h2>15. Settings<a class="anchor" href="#settings">#</a></h2>
+      <p>Tenant-wide policies (administrators). Changes apply to all organizations in the tenant.</p>
+      <ul>
+        <li><b>Asset lifecycle</b> — how many consecutive scans can miss an asset before it is considered gone, per asset type, and how long to keep assets that are never seen again.</li>
+        <li><b>Scanning governance</b> — require DNS ownership verification before any domain is actively scanned.</li>
+        <li><b>Risk scoring weights</b> — tune the points added for each risk factor and the score thresholds for each risk level. Saving recomputes scores.</li>
+        <li><b>Built-in detection rules</b> — enable/disable checks for risky ports, management interfaces, certificate problems, weak TLS and exposed API documentation, and set the certificate-expiry warning window.</li>
+        <li><b>Report branding</b> — set the brand name and accent colour used on generated reports.</li>
+      </ul>
+    </section>
+
+    <section id="users">
+      <h2>16. Users<a class="anchor" href="#users">#</a></h2>
+      <p>Administrators manage team members under <b>Users</b>: invite/add users, set their <a href="#roles">role</a>,
+      deactivate or remove them, and reset another user’s two-factor authentication when needed. You manage your own
+      account from <a href="#account">Your account</a> rather than the Users list.</p>
+    </section>
+
+    <section id="account">
+      <h2>17. Your account<a class="anchor" href="#account">#</a></h2>
+      <ul>
+        <li><b>Change password</b> — changing it signs you out of all sessions.</li>
+        <li><b>Two-factor authentication</b> — set up a TOTP authenticator app, then verify a code to enable it. Disabling requires your password and a current code.</li>
+        <li><b>API tokens</b> — create tokens for automation (SIEM, SOAR, CI). A token never exceeds your own role; copy it when created because it is shown only once; revoke it anytime.</li>
+      </ul>
+    </section>
+
+    <section id="audit">
+      <h2>18. Audit log<a class="anchor" href="#audit">#</a></h2>
+      <p>Administrators can review a tamper-evident <b>audit log</b> of every meaningful action: who did what, when, from
+      where. Each entry can be opened to see the before/after detail. The log is chained so any gap or tampering is
+      detectable, and the screen confirms whether the chain is intact.</p>
+    </section>
+
+    <section id="risk">
+      <h2>19. How risk scores work<a class="anchor" href="#risk">#</a></h2>
+      <p>Every finding and asset gets a <b>0–100 risk score</b> (higher is worse), grouped into levels:
+        <span class="pill crit">critical</span> <span class="pill high">high</span> <span class="pill med">medium</span>
+        <span class="pill low">low</span> <span class="pill info">info</span>. The score is <em>explained</em> — open any
+        finding or asset to see exactly which factors contributed.</p>
+      <p>Scores combine, among others:</p>
+      <ul>
+        <li><b>Severity</b> of the underlying issue.</li>
+        <li><b>Known exploitation</b> — listed in CISA KEV, or a high <b>EPSS</b> probability of exploitation, or a public exploit available.</li>
+        <li><b>Exposure</b> — reachable from the internet, a management interface exposed, authentication exposed, or a risky port open.</li>
+        <li><b>Context</b> — unknown / shadow IT or unauthorized assets, and how new the asset is.</li>
+        <li><b>Age</b> — long-standing unresolved issues.</li>
+      </ul>
+      <p>Asset risk rolls up from its findings and from related assets, so a risky endpoint raises the score of the host and
+      domain above it. Administrators can tune all weights and thresholds in <a href="#settings">Settings</a>.</p>
+    </section>
+
+    <section id="glossary">
+      <h2>20. Glossary<a class="anchor" href="#glossary">#</a></h2>
+      <table>
+        <tr><th>Term</th><th>Meaning</th></tr>
+        <tr><td>ASM</td><td>Attack Surface Management.</td></tr>
+        <tr><td>DAST</td><td>Dynamic Application Security Testing — testing a running web application by interacting with it.</td></tr>
+        <tr><td>Crawling / spidering</td><td>Automatically following links to map an application’s pages and endpoints.</td></tr>
+        <tr><td>Passive scanning</td><td>Analysing responses without attacking (e.g. missing security headers).</td></tr>
+        <tr><td>Active scanning</td><td>Sending crafted requests to test for vulnerabilities; intrusive; requires authorization.</td></tr>
+        <tr><td>CVE</td><td>A public identifier for a known vulnerability.</td></tr>
+        <tr><td>CVSS</td><td>A standard 0–10 severity score for a vulnerability.</td></tr>
+        <tr><td>EPSS</td><td>Estimated probability that a vulnerability will be exploited in the next 30 days.</td></tr>
+        <tr><td>KEV</td><td>CISA’s Known Exploited Vulnerabilities catalog — issues known to be exploited in the wild.</td></tr>
+        <tr><td>CIDR</td><td>A notation for a network range, e.g. <code>203.0.113.0/24</code>.</td></tr>
+        <tr><td>ASN</td><td>Autonomous System Number — identifies the network that owns a block of IPs.</td></tr>
+        <tr><td>Endpoint</td><td>A reachable web address (scheme, host and port), e.g. an application’s login page.</td></tr>
+        <tr><td>Baseline</td><td>The first successful scan; establishes inventory and is not alerted.</td></tr>
+      </table>
+    </section>
+
+    <section id="faq">
+      <h2>21. FAQ &amp; troubleshooting<a class="anchor" href="#faq">#</a></h2>
+      <h4>A scan stage says “skipped — no authorized targets.”</h4>
+      <p>Nothing in scope matched that stage. Add the relevant scope, permit active scanning, and (if required) verify domain
+      ownership. Use the <b>Scope checker</b> and the scan’s <b>Authorization log</b> to see why targets were rejected.</p>
+      <h4>I ran a scan but see no changes.</h4>
+      <p>The first scan is a <b>baseline</b>: it builds inventory and its events are hidden by default. Enable <b>Include
+      baseline</b> on the Changes screen to see them, or run a second scan to see real differences.</p>
+      <h4>A finding disappeared.</h4>
+      <p>It was likely <b>resolved</b> automatically — a later scan that fully re-tested the asset no longer saw it. Filter
+      findings by <em>All statuses</em> to see remediated items; check the asset’s timeline for the “vulnerability resolved” change.</p>
+      <h4>The Web Application Scan (DAST) profile is missing or its stages are skipped.</h4>
+      <p>The optional DAST engine may not be enabled in your deployment, or the targets do not permit active scanning. Ask
+      your administrator, and confirm the scope allows active testing.</p>
+      <h4>Nobody was notified about an important change.</h4>
+      <p>Notifications require an <b>alert policy</b> that matches the change’s severity/type and points at an enabled
+      <b>channel</b>. Check the <b>Delivery log</b> for errors, and remember baseline events are excluded unless a policy opts in.</p>
+      <h4>An asset shows as “unknown / unverified.”</h4>
+      <p>It has not been classified yet. Review it under <a href="#shadow">Shadow IT</a> and set its approval status.</p>
+    </section>
+
+    <footer class="foot">
+      Exteriq ASM — User Guide. This guide describes how to use the product; it contains no configuration secrets.
+      For deployment and administration beyond this guide, contact your platform administrator.
+    </footer>
+  </main>
+</div>
+
+<button class="back-top" id="backTop" aria-label="Back to top" onclick="window.scrollTo({top:0,behavior:'smooth'})">↑</button>
+
+<script>
+(function(){
+  var links = Array.prototype.slice.call(document.querySelectorAll('nav.toc a[href^="#"]'));
+  var map = {};
+  links.forEach(function(a){ map[a.getAttribute('href').slice(1)] = a; });
+
+  // Scrollspy: highlight the section currently in view.
+  var obs = new IntersectionObserver(function(entries){
+    entries.forEach(function(e){
+      if(e.isIntersecting){
+        links.forEach(function(a){ a.classList.remove('active'); });
+        var a = map[e.target.id];
+        if(a){ a.classList.add('active'); }
+      }
+    });
+  }, { rootMargin: '-40% 0px -55% 0px', threshold: 0 });
+  document.querySelectorAll('main section[id]').forEach(function(s){ obs.observe(s); });
+
+  // Close the mobile menu after choosing an item.
+  links.forEach(function(a){ a.addEventListener('click', function(){ document.querySelector('nav.toc').classList.remove('open'); }); });
+
+  // Filter the table of contents.
+  var search = document.getElementById('tocSearch');
+  if(search){
+    search.addEventListener('input', function(){
+      var q = this.value.trim().toLowerCase();
+      links.forEach(function(a){
+        var hit = a.textContent.toLowerCase().indexOf(q) !== -1;
+        a.classList.toggle('hide', q.length > 0 && !hit);
+      });
+    });
+  }
+
+  // Back-to-top button.
+  var bt = document.getElementById('backTop');
+  window.addEventListener('scroll', function(){ bt.classList.toggle('show', window.scrollY > 600); }, { passive: true });
+})();
+</script>
+</body>
+</html>

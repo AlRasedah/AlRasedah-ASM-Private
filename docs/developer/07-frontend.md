@@ -65,7 +65,7 @@ overwrite each other in React Router 6.
 
 | Component | Use |
 |---|---|
-| `Layout` | `Brand`/`BrandMark` (logo lockup), sidebar (permission-aware), topbar (organization selector, tenant switcher when the user has several memberships, unacknowledged-change counter, account, sign out) |
+| `Layout` | `Brand`/`BrandMark` (logo lockup), sidebar (permission-aware; a **Documentation** link under a "Help" section opens the offline user guide `public/user-guide.html` in a new tab — see §7.10), topbar (organization selector, tenant switcher when the user has several memberships, unacknowledged-change counter, account, sign out) |
 | `ui.tsx` | `Card`, `PageHead`, `SeverityBadge`, `StatusBadge` (tone map for every status value), `RiskScore` (number + bar coloured by level), `Tags`, `Tabs` (ARIA roles), `Modal` (Esc/backdrop close), `Confirm`, `Pagination`, `Kpi`, `Field`, `JsonView`, `Empty`, `Loading`, `ErrorBox`, `useDebounced` |
 | `Charts.tsx` | `TrendChart` (area) and `HBarChart` (horizontal bars) — shows an empty state instead of a meaningless chart when there is < 2 points; grid, tooltip and default bar colour come from tokens, series colours are passed as `var(--…)` |
 | `Timeline.tsx` | event list used by Changes, asset timeline and scan changes (severity dot, type, baseline/acknowledged badges, previous → current diff) |
@@ -78,7 +78,7 @@ overwrite each other in React Router 6.
 | `/inventory` | `assets/Inventory.tsx` | filters, sortable table, bulk update modal, CSV export; defaults to primary asset types |
 | `/assets/:id` | `assets/AssetDetail.tsx` | tabs depend on asset type: overview (attributes, risk factors, ownership form), relationships, DNS, ports & services, web endpoints, technologies, certificates, findings, timeline, raw observations |
 | `/shadow-it` | `assets/ShadowIT.tsx` | unverified/unknown/unauthorized active assets with one-click classification |
-| `/findings`, `/findings/:id` | `findings/` | prioritized list; detail with workflow (transitions mirror the backend), activity log, evidence, references |
+| `/findings`, `/findings/:id` | `findings/` | prioritized list; detail with workflow (transitions mirror the backend), activity log, evidence, references. A **DAST** badge (`isDast(source)` in `lib/format.ts`, driven by the finding's `source` field) marks findings dynamically confirmed by active web scanning |
 | `/changes` | `pages/Changes.tsx` | event feed, acknowledge |
 | `/scans`, `/scans/:id` | `scans/Scans.tsx`, `ScanDetail.tsx` | start scan modal (profile description, active warning, optional targets); pipeline stages, scan changes, authorization log |
 | `/scan-profiles` | `scans/Profiles.tsx` | built-in/custom profiles (JSON stage editor validated server-side), schedules |
@@ -182,3 +182,16 @@ change the other.
 `api()` by `mockApi()` (`src/test/fixtures.ts`), asserts expected text, and fails on React
 errors logged to the console. Adding a page = add a fixture for its endpoints and a row in
 the `pages` table. `npm test` runs in ~2 s.
+
+## 7.10 User guide (offline documentation)
+
+`public/user-guide.html` is the **end-user** guide — a single, self-contained HTML file
+(inline CSS/JS, inline SVG logo, no external fonts or CDN) so it works both uploaded to a
+public website and served offline by the app. Vite copies `public/` verbatim into `dist/`,
+so it deploys at `/user-guide.html`; the sidebar **Documentation** link (`Layout.tsx`) opens
+it in a new tab. It is a **product/user** document: it describes screens and workflows and
+deliberately contains **no source code, file paths, internal engine ids or configuration
+secrets** — engine names appear only as user-facing capabilities (e.g. "Web Application Scan
+(DAST)", "powered by OWASP ZAP"). Keep it in sync with product changes, and keep
+**developer**-facing changes in this handbook instead. It is intentionally not part of the
+React bundle and not covered by the Vitest suite (it ships no application code).

@@ -115,8 +115,9 @@ tenants, profiles, audit log and private auth tables). `alembic/env.py` sets
 | `styles.css` | The whole Al-Rasedah design system: `@font-face`, navy/copper tokens (dark default + light theme), component classes; logical properties for RTL. See chapter 7.8. |
 | `fonts/` | Self-hosted Inter and IBM Plex Sans Arabic `.woff2` files (SIL OFL 1.1), bundled by Vite. |
 
-`frontend/public/` holds files served as-is: `brand-symbol.svg` (the copper-eye logo) and
-`favicon.svg` (the same symbol).
+`frontend/public/` holds files served as-is: `brand-symbol.svg` (the copper-eye logo),
+`favicon.svg` (the same symbol) and `user-guide.html` (the self-contained end-user
+documentation opened by the sidebar **Documentation** link — see chapter 7.10).
 
 ## `docker/`
 

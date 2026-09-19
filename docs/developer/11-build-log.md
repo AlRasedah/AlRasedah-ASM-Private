@@ -165,7 +165,29 @@ Environment variables (`ASM_*`), database and role names, Docker service and ima
 (`asm-*`) and the image registry namespace are unchanged, so existing deployments and data
 upgrade in place. A tenant's own report brand name (Settings → Report branding) is kept if set.
 
-## 11.8 Recommended next steps
+## 11.8 OWASP ZAP DAST + user guide (post-initial-build)
+
+Added dynamic application security testing and end-user documentation on the
+`claude/zap-proxy-extraiq-asm-e6aa04` branch.
+
+- **ZAP sensor adapters** (`workers/asm_sensors/adapters/zap/`): `zap_spider` (new
+  `web_crawl` stage — spider/AJAX spider + passive scanning) and `zap_active`
+  (`vulnerability_detection` — active scanner). ZAP runs as an optional container
+  (`--profile dast`) driven over its REST API, deployment-configured like SpiderFoot
+  (`ASM_ZAP_URL`/`ASM_ZAP_API_KEY`; key via header, never the URL); per-target ZAP contexts
+  keep it on the authorized origin. New built-in **Web Application Scan (DAST)** profile.
+  Verified against recorded ZAP API output (no live ZAP on the build machine) — see the
+  verification-status note in §11.4 / docs/SENSORS.md; first live run should confirm the
+  ZAP 2.15 API paths and default scan policies.
+- **DAST badge**: findings from `zap_active` are flagged in the UI (findings list + detail).
+  The finding API now exposes the detection engine `source`; `isDast(source)` in
+  `lib/format.ts` drives the copper badge.
+- **User guide**: `frontend/public/user-guide.html` — a single self-contained HTML user
+  guide (chapter 7.10), opened by the sidebar **Documentation** link and also suitable for
+  hosting on a public website. It is a product document with no source code, paths or
+  secrets; developer-facing detail stays in this handbook.
+
+## 11.9 Recommended next steps
 
 1. Run CI (or `docker compose build`) and fix anything the first real image build reveals.
 2. `docker compose run --rm asm-scanner versions`, then Passive Discovery and Standard ASM
