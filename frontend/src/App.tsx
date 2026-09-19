@@ -14,6 +14,7 @@ const AssetDetail = lazy(() => import("@/assets/AssetDetail"));
 const ShadowIT = lazy(() => import("@/assets/ShadowIT"));
 const Findings = lazy(() => import("@/findings/Findings"));
 const FindingDetail = lazy(() => import("@/findings/FindingDetail"));
+const WebApps = lazy(() => import("@/pages/WebApps"));
 const Changes = lazy(() => import("@/pages/Changes"));
 const Scans = lazy(() => import("@/scans/Scans"));
 const ScanDetail = lazy(() => import("@/scans/ScanDetail"));
@@ -50,6 +51,7 @@ export default function App() {
         <Route path="shadow-it" element={page(<ShadowIT />)} />
         <Route path="findings" element={page(<Findings />)} />
         <Route path="findings/:id" element={page(<FindingDetail />)} />
+        <Route path="web-apps" element={page(<WebApps />)} />
         <Route path="changes" element={page(<Changes />)} />
         <Route path="scans" element={page(<Scans />)} />
         <Route path="scans/:id" element={page(<ScanDetail />)} />

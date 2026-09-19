@@ -143,6 +143,52 @@ def summary(db: Session, org_id: uuid.UUID | None = None) -> dict[str, Any]:
     }
 
 
+def web_apps(db: Session, org_id: uuid.UUID | None = None, page: int = 1, page_size: int = 50) -> dict[str, Any]:
+    """Web-application view: each active in-scope HTTP endpoint with its risk, open-finding
+    severity breakdown, how many findings were dynamically verified (DAST / zap_active), and
+    whether it has been crawled."""
+    base = _org(select(Asset).where(Asset.asset_type == AssetType.HTTP_ENDPOINT,
+                                    Asset.status == AssetStatus.ACTIVE,
+                                    Asset.scope_status != ScopeStatus.OUT_OF_SCOPE), org_id)
+    total = db.scalar(select(func.count()).select_from(base.order_by(None).subquery())) or 0
+    rows = db.execute(base.order_by(Asset.risk_score.desc(), Asset.last_seen.desc())
+                      .limit(page_size).offset((page - 1) * page_size)).scalars().all()
+
+    ids = [a.id for a in rows]
+    agg: dict[uuid.UUID, dict[str, int]] = defaultdict(
+        lambda: {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0, "total": 0, "dast": 0})
+    if ids:
+        fq = select(Finding.asset_id, Finding.severity, Finding.source).where(
+            Finding.asset_id.in_(ids), Finding.status.in_([s.value for s in OPEN_FINDING_STATES]))
+        for aid, sev, src in db.execute(fq).all():
+            a = agg[aid]
+            key = getattr(sev, "value", sev)
+            a[key] = a.get(key, 0) + 1
+            a["total"] += 1
+            if src == "zap_active":  # actively verified by DAST
+                a["dast"] += 1
+
+    items = []
+    for a in rows:
+        meta = a.meta or {}
+        f = agg.get(a.id, {})
+        crawled = "zap_spider" in (a.sources or []) or "web_crawl" in (meta.get("discovery_sources") or [])
+        items.append({
+            "id": str(a.id), "url": a.value, "host": meta.get("host"), "title": meta.get("title"),
+            "webserver": meta.get("webserver"), "technologies": meta.get("technologies") or [],
+            "status_code": meta.get("status_code"),
+            "risk_score": a.risk_score, "risk_level": a.risk_level.value,
+            "approval_status": a.approval_status.value,
+            "open_findings": f.get("total", a.open_findings),
+            "by_severity": {k: f.get(k, 0) for k in ("critical", "high", "medium", "low", "info")},
+            "dast_verified": f.get("dast", 0),
+            "crawled": crawled,
+            "first_seen": a.first_seen.isoformat(), "last_seen": a.last_seen.isoformat(),
+            "last_scanned_at": a.last_scanned_at.isoformat() if a.last_scanned_at else None,
+        })
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
 def trends(db: Session, org_id: uuid.UUID | None = None, days: int = 30) -> list[dict[str, Any]]:
     start = date.today() - timedelta(days=days - 1)
     q = select(MetricSnapshot).where(MetricSnapshot.day >= start).order_by(MetricSnapshot.day)

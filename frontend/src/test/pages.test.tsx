@@ -40,6 +40,7 @@ const pages: [string, string | RegExp][] = [
   ["/shadow-it", "Shadow IT review"],
   ["/findings", "Fortinet FortiOS - Path Traversal"],
   ["/findings/f1", "Why this risk score"],
+  ["/web-apps", "Web applications"],
   ["/changes", "Attack surface changes"],
   ["/scans", "Standard ASM"],
   ["/scans/s1", "Pipeline"],

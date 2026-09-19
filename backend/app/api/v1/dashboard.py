@@ -23,3 +23,10 @@ def summary(organization_id: uuid.UUID | None = None, _: Principal = Depends(req
 def trends(organization_id: uuid.UUID | None = None, days: int = Query(30, ge=7, le=365),
            _: Principal = Depends(require(Permission.ASSETS_READ)), db: Session = Depends(get_db)) -> list[dict[str, Any]]:
     return dashboard.trends(db, organization_id, days)
+
+
+@router.get("/web-apps")
+def web_apps(organization_id: uuid.UUID | None = None, page: int = Query(1, ge=1),
+             page_size: int = Query(50, ge=1, le=100), _: Principal = Depends(require(Permission.ASSETS_READ)),
+             db: Session = Depends(get_db)) -> dict[str, Any]:
+    return dashboard.web_apps(db, organization_id, page, page_size)
