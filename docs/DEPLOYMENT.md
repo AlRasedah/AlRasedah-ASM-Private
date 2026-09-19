@@ -53,6 +53,10 @@ Behind an external load balancer that terminates TLS, keep the default proxy con
 
 ## 3a. Troubleshooting first deploy
 
+See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for the full guide (config precedence,
+`.env` changes not applying, HTTPS/cert/port issues, scans finding nothing, resets).
+The most common first-deploy failures:
+
 - **`asm-migrate` exits 1 with `password authentication failed for user "asm"`** — the Postgres
   volume was initialised with a different `ASM_DB_PASSWORD` than `.env` has now (the role
   password is only set on first init). Fresh deploy: `docker compose down -v && docker compose up -d`.
