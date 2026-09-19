@@ -43,10 +43,10 @@ cert you supplied yourself run `chown 101:101 docker/proxy/certs/tls.*` (or `chm
 if you cannot chown).
 
 **Ports and the HTTP redirect.** Only the host side of the port mapping changes; containers
-always listen on 8080/8443. The TLS config redirects HTTP to HTTPS on `ASM_PUBLIC_HTTPS_PORT`
-(defaults to `ASM_HTTPS_PORT`), so the redirect stays correct on a non-standard port instead of
-sending browsers to `:443` (which may be another service). Set `ASM_PUBLIC_HTTPS_PORT` only when
-an external load balancer terminates TLS on a different public port than the one published here.
+always listen on 8080/8443. The TLS config's HTTP listener redirects to HTTPS on the standard
+port (443). If you publish HTTPS on a non-standard host port (`ASM_HTTPS_PORT` != 443), browse
+`https://<host>:<port>` directly — the plain-HTTP port is only a convenience redirect and is not
+needed once you use HTTPS (cookies are `Secure`, so HTTP can't be used to sign in anyway).
 
 Behind an external load balancer that terminates TLS, keep the default proxy config, set
 `ASM_COOKIE_SECURE=true` and make sure the balancer sets `X-Forwarded-Proto: https`.
