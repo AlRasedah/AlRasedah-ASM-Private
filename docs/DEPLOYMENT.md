@@ -25,13 +25,45 @@ profiles, first administrator) on every start before the API and workers start.
 
 ## 3. TLS
 
-1. Put the certificate chain and key in `docker/proxy/certs/tls.crt` and `tls.key`.
+1. Provide a certificate at `docker/proxy/certs/tls.crt` (chain) and `tls.key`.
+   - Real cert: copy your CA/Let's Encrypt `fullchain.pem` → `tls.crt` and `privkey.pem` → `tls.key`.
+   - Testing: `sh scripts/gen-tls-cert.sh <hostname>` generates a self-signed pair **with the
+     right permissions** (see below).
 2. In `.env`: `ASM_PROXY_CONF=./docker/proxy/nginx-tls.conf`, `ASM_COOKIE_SECURE=true`,
-   `ASM_PUBLIC_URL=https://asm.example.com`, `ASM_HTTPS_PORT=443`, `ASM_HTTP_PORT=80`.
-3. `docker compose up -d reverse-proxy asm-api`.
+   `ASM_PUBLIC_URL=https://asm.example.com:<port>`. Choose published ports with
+   `ASM_HTTPS_PORT` / `ASM_HTTP_PORT` (any free ports — 443/80 if available, else e.g. 9443/9080).
+3. `docker compose up -d --force-recreate reverse-proxy asm-api`, then check
+   `docker compose logs --tail=20 reverse-proxy` for a clean start and
+   `curl -sk https://localhost:<port>/healthz`.
+
+**Certificate file permissions.** The proxy runs as the unprivileged nginx user (uid 101), so
+the private key must be readable by it — a root-owned `0600 tls.key` fails with
+`cannot load certificate key ... Permission denied`. `gen-tls-cert.sh` handles this; for a
+cert you supplied yourself run `chown 101:101 docker/proxy/certs/tls.*` (or `chmod 644 tls.key`
+if you cannot chown).
+
+**Ports and the HTTP redirect.** Only the host side of the port mapping changes; containers
+always listen on 8080/8443. The TLS config redirects HTTP to HTTPS on `ASM_PUBLIC_HTTPS_PORT`
+(defaults to `ASM_HTTPS_PORT`), so the redirect stays correct on a non-standard port instead of
+sending browsers to `:443` (which may be another service). Set `ASM_PUBLIC_HTTPS_PORT` only when
+an external load balancer terminates TLS on a different public port than the one published here.
 
 Behind an external load balancer that terminates TLS, keep the default proxy config, set
 `ASM_COOKIE_SECURE=true` and make sure the balancer sets `X-Forwarded-Proto: https`.
+
+## 3a. Troubleshooting first deploy
+
+- **`asm-migrate` exits 1 with `password authentication failed for user "asm"`** — the Postgres
+  volume was initialised with a different `ASM_DB_PASSWORD` than `.env` has now (the role
+  password is only set on first init). Fresh deploy: `docker compose down -v && docker compose up -d`.
+  Keep data: `docker compose exec postgres psql -U postgres -c "ALTER ROLE asm PASSWORD '<value>';"`.
+- **`docker compose up` fails on a missing variable** — run `python scripts/generate_env.py`
+  (it fills every `CHANGE_ME`, collapses duplicate keys, and warns about anything still unset).
+- **`address already in use`** — another service holds that host port; pick a free one with
+  `ASM_HTTP_PORT` / `ASM_HTTPS_PORT` and re-run `docker compose up -d`.
+- **HTTPS port refuses connections** — the proxy is still on the plain config; ensure
+  `ASM_PROXY_CONF=./docker/proxy/nginx-tls.conf` is set (uncommented) and the cert is readable
+  (see above), then `docker compose up -d --force-recreate reverse-proxy`.
 
 ## 4. Email
 

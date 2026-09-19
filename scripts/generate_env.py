@@ -32,18 +32,23 @@ def main() -> int:
     example = ROOT / ".env.example"
     target = ROOT / ".env"
     existing: dict[str, str] = {}
+    dupes: list[str] = []
     if target.exists():
         for line in target.read_text(encoding="utf-8").splitlines():
             if "=" in line and not line.lstrip().startswith("#"):
                 k, v = line.split("=", 1)
-                existing[k.strip()] = v
-    out, generated = [], []
+                k = k.strip()
+                if k in existing:
+                    dupes.append(k)  # a later occurrence wins, matching docker compose
+                existing[k] = v
+    out, generated, emitted = [], [], set()
     for line in example.read_text(encoding="utf-8").splitlines():
         if "=" not in line or line.lstrip().startswith("#"):
             out.append(line)
             continue
         key, value = line.split("=", 1)
         key = key.strip()
+        emitted.add(key)
         if key in existing and "CHANGE_ME" not in existing[key]:
             out.append(f"{key}={existing[key]}")
         elif "CHANGE_ME" in value:
@@ -52,7 +57,18 @@ def main() -> int:
             generated.append(key)
         else:
             out.append(line)
+    # Preserve any keys the user added that are not in the template (emitted once).
+    extra = [k for k in existing if k not in emitted]
+    if extra:
+        out.append("")
+        out.append("# --- extra settings (kept from your existing .env) ---")
+        out.extend(f"{k}={existing[k]}" for k in extra)
     target.write_text("\n".join(out) + "\n", encoding="utf-8")
+    if dupes:
+        print(f"note: collapsed duplicate keys (kept the last value of each): {', '.join(sorted(set(dupes)))}")
+    left = [line.split('=', 1)[0] for line in out if '=' in line and 'CHANGE_ME' in line and not line.lstrip().startswith('#')]
+    if left:
+        print(f"WARNING: these still contain CHANGE_ME — set them before ASM_ENV=production: {', '.join(left)}")
     try:
         os.chmod(target, 0o600)
     except OSError:
