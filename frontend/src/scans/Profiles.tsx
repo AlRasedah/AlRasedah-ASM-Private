@@ -40,7 +40,6 @@ export default function Profiles() {
                 {p.stages.map((s, i) => (
                   <li key={i} style={{ opacity: s.enabled ? 1 : 0.5 }}>
                     {s.label} {s.active && <span className="badge warn">active</span>} {s.optional && <span className="badge neutral">optional</span>}
-                    <span className="muted small"> · engine: {s.engine}</span>
                   </li>
                 ))}
               </ol>
