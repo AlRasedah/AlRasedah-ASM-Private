@@ -14,6 +14,9 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+# Run this checkout's source (backend + sensor framework), ahead of any editable
+# install — important when developing from a git worktree.
+sys.path.insert(0, str(ROOT / "workers"))
 sys.path.insert(0, str(ROOT / "backend"))
 
 DEFAULTS = {
