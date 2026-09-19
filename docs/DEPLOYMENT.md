@@ -60,6 +60,12 @@ and email notification channels fail visibly in the delivery log.
 - **Optional OSINT**: `docker compose --profile osint up -d` and set
   `ASM_SPIDERFOOT_URL=http://spiderfoot:5001`. BBOT: build the sensor image with
   `ASM_INSTALL_BBOT=true` (GPL-3.0 — see THIRD_PARTY_LICENSES.md).
+- **Optional DAST (OWASP ZAP)**: `docker compose --profile dast up -d`, then set
+  `ASM_ZAP_URL=http://zap:8090` and `ASM_ZAP_API_KEY=<random>` (the same key the `zap`
+  service is started with). This enables the `zap_spider` (web crawling + passive scanning)
+  and `zap_active` (active vulnerability scanning) engines and the built-in **Web Application
+  Scan (DAST)** profile. Active scanning is intrusive: it only runs against scope with
+  active-scanning authorization, and ZAP is confined per target to the authorized origin.
 - **Egress identification**: the web and vulnerability sensors send
   `X-ASM-Scanner: Exteriq-ASM` by default (`identify_scanner` in profiles) so customers can
   recognise authorized scanning in their logs.

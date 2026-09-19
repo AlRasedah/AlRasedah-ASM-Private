@@ -41,6 +41,8 @@ def paginate(db: Session, stmt: Select, page: int, page_size: int) -> tuple[list
 
 SOURCE_LABELS = {
     "nuclei": "Vulnerability detection",
+    "zap_spider": "Web application crawling",
+    "zap_active": "Active web scanning",
     "asm-rules": "Exposure rules",
     "spiderfoot": "OSINT enrichment",
     "bbot": "OSINT discovery",

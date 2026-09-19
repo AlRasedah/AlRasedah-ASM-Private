@@ -63,6 +63,7 @@ Stages read their input **from the database**, not from the previous stage's out
 | IP enrichment | active in-scope/derived IPs |
 | port discovery | scope IPs and CIDRs + active **derived** IPs (skipping CDN edges if `skip_cdn_ips`) |
 | HTTP discovery | `host:port` for each in-scope hostname × open non-HTTP-excluded ports of its IPs (bare hostname if none known); IP-only ports; scope IPs; plus every known active endpoint (so disappearance is detectable) |
+| web crawl | active endpoint URLs (same selection as vulnerability detection) — ZAP spiders and passively scans them |
 | vulnerability detection | active endpoint URLs |
 
 It also returns `derived_from` (`ip → in-scope hostnames resolving to it`), built from active

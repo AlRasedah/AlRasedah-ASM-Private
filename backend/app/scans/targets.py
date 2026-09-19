@@ -174,7 +174,10 @@ def build_targets(db: Session, org: Organization, scan: Scan, stage_type: StageT
         for kind, v in sorted(values):
             _t(kind, v, out)
 
-    elif stage_type == StageType.VULNERABILITY_DETECTION:
+    elif stage_type in (StageType.WEB_CRAWL, StageType.VULNERABILITY_DETECTION):
+        # Both crawl and active vulnerability detection operate on the known web
+        # endpoints (in-scope or derived, active); disappearance is handled by the
+        # http_discovery stage re-probing them.
         ip_to_hosts, _ = _resolution_map(db, org)
         out.derived_from = ip_to_hosts
         for (url,) in db.execute(select(Asset.normalized_value).where(

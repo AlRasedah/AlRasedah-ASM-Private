@@ -27,7 +27,7 @@
 | `runner.py` | `execute_job`: build the `ExecutionContext` from job + deployment env, unseal credentials, run the adapter in a temp dir, turn every error into a *failed* `SensorResult` (a sensor never crashes the worker). |
 | `worker.py` | The Celery app for sensor containers (`celery -A asm_sensors.worker worker -Q scanners.default`). |
 | `adapters/_common.py` | `ObservationSet` (dedup while building observations), `clean_hostname/ip/cidr/asn`, `port_value`. |
-| `adapters/<tool>/` | One package per tool: `amass`, `subfinder`, `crtsh`, `dnsx`, `asnlookup`, `naabu`, `httpx`, `nuclei`, `spiderfoot`, `bbot`. |
+| `adapters/<tool>/` | One package per tool: `amass`, `subfinder`, `crtsh`, `dnsx`, `asnlookup`, `naabu`, `httpx`, `nuclei`, `spiderfoot`, `bbot`, `zap` (the OWASP ZAP `zap_spider` + `zap_active` DAST engines). |
 
 ## `backend/app` — the platform
 

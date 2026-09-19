@@ -18,6 +18,8 @@ platform or its database.
 | `naabu` | port discovery | **active** | ProjectDiscovery Naabu (connect scan) | `has_port` within the exact port spec (CDN IPs: 80/443 only) |
 | `httpx` | web fingerprinting | **active** | ProjectDiscovery httpx | `serves` per probed host:port; `uses_technology`; `presents_certificate` |
 | `nuclei` | exposure / vulnerability detection | **active** | ProjectDiscovery Nuclei | finding coverage for the configured severities/tags |
+| `zap_spider` | web crawling (+ passive scanning) | **active** (optional) | OWASP ZAP daemon (spider / AJAX spider / passive scanner) over REST | finding coverage for passive alerts on the crawled endpoints |
+| `zap_active` | vulnerability detection | **active** (optional) | OWASP ZAP daemon (active scanner) over REST | finding coverage for active-scan alerts on the scanned endpoints |
 
 User-facing labels come from the stage (e.g. "Web service fingerprinting"); engine names are
 implementation details shown only in advanced profile views.
@@ -99,6 +101,16 @@ class MyToolAdapter(ScannerAdapter):
   profile; info-level `tech` detections become technology observations.
 - **SpiderFoot** endpoints used (`/startscan`, `/scanstatus`, `/scanexportjsonmulti`) match
   SpiderFoot 4.x — verify against the deployed version.
+- **OWASP ZAP** (`zap_spider`, `zap_active`) is driven over its REST API (`/JSON/spider/*`,
+  `/JSON/ajaxSpider/*`, `/JSON/pscan/*`, `/JSON/ascan/*`, `/JSON/context/*`, `/JSON/core/*`),
+  matching ZAP 2.14+/2.15. The daemon URL and API key are deployment settings (`ASM_ZAP_URL`,
+  `ASM_ZAP_API_KEY`), never scan-profile input, so a profile can never point ZAP at an
+  arbitrary URL (no SSRF) and the key never enters the broker. Each target gets its own ZAP
+  *context* whose inclusion regex matches only the authorized origin, and the scanners run
+  `inScopeOnly` / `subtreeOnly`, so ZAP never leaves the host it was pointed at. The active
+  scanner is intrusive — mark `zap_active` stages `optional` so deployments without ZAP skip
+  them cleanly (a missing `zap_url` makes the stage fail, and an optional failed stage is
+  skipped). Verify API paths and default scan policies against the version you deploy.
 - **BBOT** 2.x output (`-om json` → `output.json`) — verify the CLI flags against the installed version.
 
 Verification status: parsers are tested against recorded output in `tests/sensors/fixtures`.

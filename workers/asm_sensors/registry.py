@@ -27,6 +27,7 @@ BUILTIN_MODULES = (
     "asm_sensors.adapters.nuclei",
     "asm_sensors.adapters.spiderfoot",
     "asm_sensors.adapters.bbot",
+    "asm_sensors.adapters.zap",
 )
 
 

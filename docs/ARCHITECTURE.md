@@ -25,6 +25,7 @@
 | `postgres` | PostgreSQL 16 | System of record | data |
 | `redis` | Valkey 8 | Broker, results, rate-limit counters | data, sensors |
 | `spiderfoot` (optional) | built from upstream | OSINT enrichment over HTTP API | sensors, egress |
+| `zap` (optional) | OWASP ZAP daemon | Web crawling & DAST over REST API (`--profile dast`) | sensors, egress |
 
 The `data` and `sensors` networks are `internal: true`. The sensor containers can reach
 the broker and the internet, but not PostgreSQL. A compromised scanner binary therefore
@@ -58,8 +59,8 @@ class ScannerAdapter:
 `run()` drives the four steps, enforces the global rate cap, and **drops coverage when a
 run failed or was partial** — a broken sensor can never cause "port closed" or "asset gone"
 events. Built-in adapters: `amass`, `subfinder`, `crtsh`, `dnsx`, `asnlookup` (Team Cymru),
-`naabu`, `httpx`, `nuclei`, `spiderfoot` (optional), `bbot` (optional). See
-[SENSORS.md](SENSORS.md) for adding one.
+`naabu`, `httpx`, `nuclei`, `spiderfoot` (optional), `bbot` (optional), `zap_spider` /
+`zap_active` (optional OWASP ZAP DAST). See [SENSORS.md](SENSORS.md) for adding one.
 
 ### Coverage
 

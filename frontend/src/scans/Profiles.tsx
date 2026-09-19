@@ -85,7 +85,7 @@ function ProfileEditor({ base, existing, onClose }: { base?: ScanProfile; existi
         <Field label="Stages (validated server-side; unknown options are rejected)">
           <textarea style={{ minHeight: 320 }} value={stages} onChange={(e) => setStages(e.target.value)} />
         </Field>
-        <div className="small muted">Stages always run in pipeline order: discovery → OSINT → DNS → network ownership → ports → web → detection.
+        <div className="small muted">Stages always run in pipeline order: discovery → OSINT → DNS → network ownership → ports → web → crawl → detection.
           Engine options are strictly validated; free-form command-line arguments are not supported by design.</div>
       </div>
     </Modal>

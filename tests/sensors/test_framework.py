@@ -157,11 +157,16 @@ class TestSealing:
 class TestRegistry:
     def test_builtins_registered(self):
         names = adapter_names()
-        for n in ("amass", "subfinder", "crtsh", "dnsx", "asnlookup", "naabu", "httpx", "nuclei", "spiderfoot", "bbot"):
+        for n in ("amass", "subfinder", "crtsh", "dnsx", "asnlookup", "naabu", "httpx", "nuclei", "spiderfoot",
+                  "bbot", "zap_spider", "zap_active"):
             assert n in names
         described = {d["name"]: d for d in describe_adapters()}
         assert described["naabu"]["active"] is True
         assert "properties" in described["nuclei"]["config_schema"]
+        # ZAP DAST engines are active and cover the crawl / vulnerability stages.
+        assert described["zap_spider"]["active"] is True
+        assert "web_crawl" in described["zap_spider"]["stage_types"]
+        assert "vulnerability_detection" in described["zap_active"]["stage_types"]
 
 
 def test_path_helper(tmp_path: Path):
