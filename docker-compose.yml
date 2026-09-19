@@ -9,7 +9,8 @@
 #   sensors  – asm-scanner <-> redis                                  (internal; no database access)
 #   egress   – asm-scanner's route to the internet (scanning), and asm-worker's (feeds, webhooks)
 #
-# Optional profiles:  --profile osint (SpiderFoot)  --profile s3 (MinIO)  --profile dev (Mailpit)
+# Optional profiles:  --profile osint (SpiderFoot)  --profile dast (OWASP ZAP)
+#                     --profile s3 (MinIO)  --profile dev (Mailpit)
 
 x-platform: &platform
   image: ${ASM_IMAGE_REGISTRY:-alrasedah}/asm-platform:${ASM_VERSION:-0.1.0}
@@ -129,6 +130,10 @@ services:
       ASM_NUCLEI_AUTO_UPDATE: ${ASM_NUCLEI_AUTO_UPDATE:-true}
       ASM_SPIDERFOOT_URL: ${ASM_SPIDERFOOT_URL:-}
       ASM_CRTSH_URL: ${ASM_CRTSH_URL:-}
+      # OWASP ZAP daemon (optional DAST engine; --profile dast). The API key is a
+      # deployment secret and is sent to ZAP in a header, never in a scan profile.
+      ASM_ZAP_URL: ${ASM_ZAP_URL:-}
+      ASM_ZAP_API_KEY: ${ASM_ZAP_API_KEY:-}
     volumes:
       - nuclei-templates:/data/nuclei-templates
       - nuclei-home:/data/nuclei-home
@@ -199,6 +204,37 @@ services:
     networks: [sensors, egress]
     security_opt: ["no-new-privileges:true"]
     restart: unless-stopped
+
+  # OWASP ZAP (Apache-2.0) in daemon mode: dynamic application security testing.
+  # Reachable only from the sensor network; reaches scan targets over egress.
+  # Only runs under `--profile dast`; set ASM_ZAP_URL=http://zap:8090 and
+  # ASM_ZAP_API_KEY=<same key> to enable the zap_spider / zap_active engines
+  # (e.g. the "Web Application Scan (DAST)" profile). The API key uses an empty
+  # default so `docker compose up` works without it — compose interpolates every
+  # service (even inactive profiles) at load time, so a required (:?) default here
+  # would break the whole stack. Set a real key before using the dast profile.
+  zap:
+    profiles: ["dast"]
+    image: ${ASM_ZAP_IMAGE:-zaproxy/zap-stable:2.15.0}
+    command:
+      - "zap.sh"
+      - "-daemon"
+      - "-host"
+      - "0.0.0.0"
+      - "-port"
+      - "8090"
+      - "-config"
+      - "api.key=${ASM_ZAP_API_KEY:-}"
+      - "-config"
+      - "api.addrs.addr.name=.*"
+      - "-config"
+      - "api.addrs.addr.regex=true"
+    networks: [sensors, egress]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits: { cpus: "2", memory: 2g }
 
   # MinIO is AGPL-3.0 (optional, for local S3 testing only). Production deployments
   # typically point ASM_S3_ENDPOINT_URL at the provider's object storage instead.

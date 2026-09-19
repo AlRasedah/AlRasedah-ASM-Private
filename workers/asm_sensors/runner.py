@@ -28,6 +28,8 @@ def deployment_settings() -> dict[str, Any]:
             "nuclei_home": os.environ.get("ASM_NUCLEI_HOME"),
             "spiderfoot_url": os.environ.get("ASM_SPIDERFOOT_URL"),
             "crtsh_url": os.environ.get("ASM_CRTSH_URL"),
+            "zap_url": os.environ.get("ASM_ZAP_URL"),
+            "zap_api_key": os.environ.get("ASM_ZAP_API_KEY"),
         }.items()
         if v
     }

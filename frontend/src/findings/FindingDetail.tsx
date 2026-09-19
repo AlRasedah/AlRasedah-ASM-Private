@@ -6,7 +6,7 @@ import { api } from "@/api/client";
 import type { Activity, FindingDetail as TFinding, Member } from "@/api/types";
 import { useAuth } from "@/auth/AuthContext";
 import { Card, ErrorBox, Field, JsonView, Loading, PageHead, RiskScore, SeverityBadge, StatusBadge } from "@/components/ui";
-import { fmtDate, label } from "@/lib/format";
+import { fmtDate, isDast, label } from "@/lib/format";
 
 const TRANSITIONS: Record<string, string[]> = {
   new: ["investigating", "remediated", "false_positive", "accepted_risk"],
@@ -55,6 +55,8 @@ export default function FindingDetail() {
           <SeverityBadge value={x.severity} /><StatusBadge value={x.status} />
           <span className="badge neutral">{label(x.category)}</span>
           {x.kev && <span className="badge bad">Known exploited (CISA KEV)</span>}
+          {isDast(x.source) && <span className="badge accent"
+            title="Dynamically confirmed by active web scanning (OWASP ZAP)">DAST · actively verified</span>}
           <span className="muted small">{x.source_label} · seen {x.occurrence_count}× · first {fmtDate(x.first_seen)}</span>
         </div>}
         actions={<div className="row"><span className="muted small">Risk</span><RiskScore score={x.risk_score} /></div>} />

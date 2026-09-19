@@ -43,6 +43,7 @@ class StageType(StrEnum):
     IP_ENRICHMENT = "ip_enrichment"
     PORT_DISCOVERY = "port_discovery"
     HTTP_DISCOVERY = "http_discovery"
+    WEB_CRAWL = "web_crawl"
     VULNERABILITY_DETECTION = "vulnerability_detection"
     OSINT_ENRICHMENT = "osint_enrichment"
 

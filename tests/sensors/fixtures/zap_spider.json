@@ -1,0 +1,21 @@
+[
+  {"kind": "url", "root": "https://app.example.com", "value": "https://app.example.com/"},
+  {"kind": "url", "root": "https://app.example.com", "value": "https://app.example.com/login"},
+  {"kind": "url", "root": "https://app.example.com", "value": "https://app.example.com/dashboard?id=1"},
+  {"kind": "url", "root": "https://app.example.com", "value": "https://evil.test/phishing"},
+  {"kind": "url", "root": "https://app.example.com", "value": "not-a-url"},
+  {"kind": "alert", "name": "Missing Anti-clickjacking Header", "risk": "Medium", "confidence": "Medium",
+   "url": "https://app.example.com/login", "param": "x-frame-options", "attack": "", "evidence": "",
+   "description": "The response does not protect against 'ClickJacking' attacks.",
+   "solution": "Set the X-Frame-Options header.", "reference": "https://owasp.org/clickjacking",
+   "cweid": "1021", "wascid": "15", "pluginId": "10020", "alertRef": "10020-1",
+   "tags": {"OWASP_2021_A05": "https://owasp.org/a05", "CWE-1021": "https://cwe.mitre.org/1021"}},
+  {"kind": "alert", "name": "Cookie Without Secure Flag", "risk": "Low", "confidence": "High",
+   "url": "https://app.example.com/login", "param": "session", "attack": "", "evidence": "Set-Cookie: session=abc",
+   "description": "A cookie has been set without the secure flag.", "solution": "Set the secure flag.",
+   "reference": "", "cweid": "614", "wascid": "13", "pluginId": "10011", "alertRef": "10011"},
+  {"kind": "alert", "name": "Information Disclosure - Debug Error Messages", "risk": "Low", "confidence": "Medium",
+   "url": "https://app.example.com/dashboard", "param": "", "attack": "", "evidence": "stack trace",
+   "description": "The response contained debug error messages.", "solution": "Disable debug output.",
+   "reference": "", "cweid": "200", "wascid": "13", "pluginId": "10023", "alertRef": "10023"}
+]

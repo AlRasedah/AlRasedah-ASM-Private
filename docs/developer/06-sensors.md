@@ -100,6 +100,21 @@ the constraints you applied.** Passive discovery tools declare none.
   configuration (not user input, avoiding SSRF); only the `passive` use case is non-active.
 - **bbot** — GPL-3.0, optional and executed only as a program; output read from the scan
   directory's `output.json`.
+- **zap_spider / zap_active** — OWASP ZAP's DAST capabilities (the ZAP proxy's spider, AJAX
+  spider, passive scanner and active scanner) exposed as two adapters that share one module
+  (`adapters/zap/__init__.py`): the client, the alert→finding mapper and both classes live
+  together so there is a single ZAP API surface. Like SpiderFoot, ZAP runs in its own
+  container (`--profile dast`) and is a deployment setting (`zap_url` + `zap_api_key`), never
+  user input — the key travels in the `X-ZAP-API-Key` header, not the URL. Both adapters are
+  `active=True`. `zap_spider` implements the new `web_crawl` stage: it seeds a per-target ZAP
+  *context* whose inclusion regex matches only the authorized origin, runs the spider (and,
+  optionally, the AJAX spider), turns every crawled URL into an `http_endpoint` observation
+  (so the crawl grows the surface the later stages test) and drains the passive scanner into
+  findings. `zap_active` runs the active scanner over the known endpoints as a
+  `vulnerability_detection` engine alongside Nuclei. Findings carry a stable `zap:<alertRef>`
+  rule id; ZAP's `High` risk is the ceiling (it never becomes `critical`). Both emit
+  `FindingCoverage` over the scanned endpoints so a fixed issue auto-resolves, and both are
+  scope-safe: the scanners run `inScopeOnly`/`subtreeOnly` and never leave the host.
 
 ## 6.6 Credentials flow
 

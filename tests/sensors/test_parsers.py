@@ -8,7 +8,17 @@ from asm_sensors.adapters.httpx import HttpxAdapter, HttpxConfig, endpoint_base,
 from asm_sensors.adapters.naabu import NaabuAdapter, NaabuConfig
 from asm_sensors.adapters.nuclei import NucleiAdapter, NucleiConfig
 from asm_sensors.adapters.subfinder import SubfinderAdapter, SubfinderConfig
+from asm_sensors.adapters.zap import (
+    ZapActiveAdapter,
+    ZapActiveConfig,
+    ZapSpiderAdapter,
+    ZapSpiderConfig,
+    alert_to_finding,
+    target_url,
+)
+from asm_sensors.base import RawOutput
 from asm_sensors.observations import (
+    FindingCategory,
     FindingCoverage,
     LivenessCoverage,
     RelationCoverage,
@@ -188,6 +198,72 @@ class TestNuclei:
             NucleiConfig(tags=["cve,-code"])
         with pytest.raises(ValueError):
             NucleiConfig(extra_args="-code")  # type: ignore[call-arg]
+
+
+async def _zap_normalize(adapter, fixture, targets, config):
+    import json
+    records = json.loads(fixture_bytes(fixture))
+    parsed = await adapter.parse_results(RawOutput(records=records))
+    return Obs(await adapter.normalize(parsed, targets, config))
+
+
+class TestZapSpider:
+    async def test_crawl_endpoints_and_passive_findings(self):
+        targets = [t("url", "https://app.example.com")]
+        o = await _zap_normalize(ZapSpiderAdapter(), "zap_spider.json", targets, ZapSpiderConfig())
+        # Every crawled URL becomes an endpoint (query strings collapse to the base);
+        # sensors observe, the platform decides scope, so off-host URLs are still reported.
+        assert "https://app.example.com" in o.values("http_endpoint")
+        assert "https://evil.test/phishing" not in o.values("http_endpoint")  # normalized to base
+        assert "https://evil.test" in o.values("http_endpoint")
+        by_rule = {f.rule_id: f for f in o.findings}
+        clickjack = by_rule["zap:10020-1"]
+        assert clickjack.severity == Severity.MEDIUM
+        assert clickjack.category == FindingCategory.MISCONFIGURATION
+        assert clickjack.cwe == ["CWE-1021"]
+        assert clickjack.asset.value == "https://app.example.com"
+        assert by_rule["zap:10011"].severity == Severity.LOW  # cookie without secure flag
+        assert by_rule["zap:10023"].category == FindingCategory.EXPOSURE  # info disclosure
+        # Passive findings get finding coverage so a fixed header can auto-resolve.
+        cov = [c for c in o.n.coverage if isinstance(c, FindingCoverage)]
+        assert cov and any(a.value == "https://app.example.com" for a in cov[0].assets)
+
+    async def test_passive_scan_off_means_no_coverage(self):
+        o = await _zap_normalize(ZapSpiderAdapter(), "zap_spider.json", [t("url", "https://app.example.com")],
+                                 ZapSpiderConfig(passive_scan=False))
+        assert not [c for c in o.n.coverage if isinstance(c, FindingCoverage)]
+
+    def test_target_url_derivation(self):
+        assert target_url(t("url", "https://app.example.com/x")) == "https://app.example.com/x"
+        assert target_url(t("host_port", "app.example.com:8443")) == "https://app.example.com:8443"
+        assert target_url(t("host_port", "app.example.com:8080")) == "http://app.example.com:8080"
+        assert target_url(t("hostname", "app.example.com")) == "http://app.example.com"
+
+
+class TestZapActive:
+    async def test_active_findings_and_coverage(self):
+        targets = [t("url", "https://app.example.com/search"), t("url", "https://app.example.com/comment")]
+        o = await _zap_normalize(ZapActiveAdapter(), "zap_active.json", targets, ZapActiveConfig())
+        by_rule = {f.rule_id: f for f in o.findings}
+        sqli = by_rule["zap:40018"]
+        assert sqli.severity == Severity.HIGH and sqli.cwe == ["CWE-89"]
+        assert sqli.category == FindingCategory.VULNERABILITY
+        assert sqli.asset.value == "https://app.example.com"
+        assert sqli.evidence["param"] == "q" and "OR '1'='1'" in sqli.evidence["attack"]
+        assert by_rule["zap:40012-1"].category == FindingCategory.VULNERABILITY  # reflected XSS
+        assert by_rule["zap:6"].cwe == ["CWE-22"]  # path traversal
+        # ZAP High is the ceiling — it never becomes "critical".
+        assert all(f.severity != Severity.CRITICAL for f in o.findings)
+        # ftp:// alert is unmappable and dropped.
+        assert not any(f.rule_id == "zap:99999" for f in o.findings)
+        cov = [c for c in o.n.coverage if isinstance(c, FindingCoverage)]
+        assert cov and {a.value for a in cov[0].assets} == {"https://app.example.com"}
+
+    def test_alert_mapping_helper(self):
+        assert alert_to_finding({"url": "ftp://x/y", "risk": "High"}, "zap_active") is None
+        ref, finding = alert_to_finding(
+            {"url": "https://a.example.com/p", "risk": "informational", "name": "X", "pluginId": "1"}, "zap_active")
+        assert ref.value == "https://a.example.com" and finding.severity == Severity.INFO
 
 
 def test_fixture_loader():

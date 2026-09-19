@@ -146,7 +146,7 @@ backend/            FastAPI platform (Python 3.12+)
   app/workers/      Celery app, tasks, dispatch facade
   alembic/          database migrations (incl. RLS policies)
 workers/            sensor framework (package `asm_sensors`)
-  asm_sensors/adapters/{amass,subfinder,crtsh,dnsx,asnlookup,naabu,httpx,nuclei,spiderfoot,bbot}
+  asm_sensors/adapters/{amass,subfinder,crtsh,dnsx,asnlookup,naabu,httpx,nuclei,spiderfoot,bbot,zap}
 frontend/           React + TypeScript (Vite) web UI
 docker/             Dockerfiles, nginx configs, PostgreSQL init
 docs/               architecture, deployment, security, sensors, integrations

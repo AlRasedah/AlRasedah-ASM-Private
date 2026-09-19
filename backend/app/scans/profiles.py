@@ -25,6 +25,7 @@ STAGE_ORDER = [
     StageType.IP_ENRICHMENT,
     StageType.PORT_DISCOVERY,
     StageType.HTTP_DISCOVERY,
+    StageType.WEB_CRAWL,
     StageType.VULNERABILITY_DETECTION,
 ]
 
@@ -35,6 +36,7 @@ STAGE_LABELS = {
     StageType.IP_ENRICHMENT: "Network ownership",
     StageType.PORT_DISCOVERY: "Exposed service discovery",
     StageType.HTTP_DISCOVERY: "Web service fingerprinting",
+    StageType.WEB_CRAWL: "Web application crawling",
     StageType.VULNERABILITY_DETECTION: "Exposure & vulnerability detection",
 }
 
@@ -90,8 +92,25 @@ BUILTIN_PROFILES: list[dict[str, Any]] = [
             {"stage": "http_discovery", "engine": "httpx", "config": {
                 "ports": "80,81,443,591,2082,2083,2087,3000,4443,5000,7001,7443,8000,8008,8080,8081,8088,8443,"
                          "8834,8888,9000,9090,9443,10443"}},
+            {"stage": "web_crawl", "engine": "zap_spider", "config": {"passive_scan": True}, "optional": True},
             {"stage": "vulnerability_detection", "engine": "nuclei",
              "config": {"severities": ["info", "low", "medium", "high", "critical"]}},
+        ],
+    },
+    {
+        "slug": "web-app-scan",
+        "name": "Web Application Scan (DAST)",
+        "description": "Dynamic application security testing with OWASP ZAP: fingerprints web services, crawls each "
+                       "application (spider + passive scanning) and actively probes it for injection and other "
+                       "web vulnerabilities. Requires the optional ZAP engine and active-scanning authorization.",
+        "stages": [
+            {"stage": "dns_resolution", "engine": "dnsx", "config": {}},
+            {"stage": "port_discovery", "engine": "naabu", "config": {"port_set": "web"}, "optional": True},
+            {"stage": "http_discovery", "engine": "httpx", "config": {}},
+            {"stage": "web_crawl", "engine": "zap_spider",
+             "config": {"max_duration_minutes": 20, "passive_scan": True}},
+            {"stage": "vulnerability_detection", "engine": "zap_active",
+             "config": {"max_duration_minutes": 60, "attack_strength": "medium"}},
         ],
     },
     {
@@ -180,7 +199,9 @@ def ensure_builtin_profiles(db: Session) -> None:
 # Per-engine wall-clock budget, mirroring the sensor adapters (asm_sensors/adapters/*):
 # (config key, default minutes, grace seconds). Other engines run until the platform limit.
 _ENGINE_BUDGET = {"amass": ("timeout_minutes", 30, 300), "bbot": ("timeout_minutes", 60, 0),
-                  "subfinder": ("max_time_minutes", 10, 120)}
+                  "subfinder": ("max_time_minutes", 10, 120),
+                  "zap_spider": ("max_duration_minutes", 15, 120),
+                  "zap_active": ("max_duration_minutes", 60, 180)}
 
 
 def stage_time_limit(engine: str, config: dict | None, platform_limit_seconds: int) -> int:

@@ -1,7 +1,7 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
-  Activity, Boxes, Building2, FileText, Gauge, Globe2, LogOut, Plug, Radar, ScrollText, Settings, ShieldAlert,
+  Activity, BookOpen, Boxes, Building2, FileText, Gauge, Globe2, LogOut, Plug, Radar, ScrollText, Settings, ShieldAlert,
   Siren, SlidersHorizontal, Users, Workflow,
 } from "lucide-react";
 import { useAuth } from "@/auth/AuthContext";
@@ -64,6 +64,10 @@ export default function Layout() {
           {can("settings:write") && <Nav to="/settings" icon={Settings}>Settings</Nav>}
           {can("audit:read") && <Nav to="/audit" icon={ScrollText}>Audit log</Nav>}
           {can("tenants:admin") && (<><div className="nav-section">Platform</div><Nav to="/platform" icon={Globe2}>Tenants</Nav></>)}
+          <div className="nav-section">Help</div>
+          <a href="/user-guide.html" target="_blank" rel="noopener noreferrer" title="Open the user guide (works offline)">
+            <BookOpen /> Documentation
+          </a>
         </nav>
       </aside>
       <div className="main">

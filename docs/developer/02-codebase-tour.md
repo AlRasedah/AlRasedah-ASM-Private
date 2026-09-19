@@ -27,7 +27,7 @@
 | `runner.py` | `execute_job`: build the `ExecutionContext` from job + deployment env, unseal credentials, run the adapter in a temp dir, turn every error into a *failed* `SensorResult` (a sensor never crashes the worker). |
 | `worker.py` | The Celery app for sensor containers (`celery -A asm_sensors.worker worker -Q scanners.default`). |
 | `adapters/_common.py` | `ObservationSet` (dedup while building observations), `clean_hostname/ip/cidr/asn`, `port_value`. |
-| `adapters/<tool>/` | One package per tool: `amass`, `subfinder`, `crtsh`, `dnsx`, `asnlookup`, `naabu`, `httpx`, `nuclei`, `spiderfoot`, `bbot`. |
+| `adapters/<tool>/` | One package per tool: `amass`, `subfinder`, `crtsh`, `dnsx`, `asnlookup`, `naabu`, `httpx`, `nuclei`, `spiderfoot`, `bbot`, `zap` (the OWASP ZAP `zap_spider` + `zap_active` DAST engines). |
 
 ## `backend/app` — the platform
 
@@ -115,8 +115,9 @@ tenants, profiles, audit log and private auth tables). `alembic/env.py` sets
 | `styles.css` | The whole Al-Rasedah design system: `@font-face`, navy/copper tokens (dark default + light theme), component classes; logical properties for RTL. See chapter 7.8. |
 | `fonts/` | Self-hosted Inter and IBM Plex Sans Arabic `.woff2` files (SIL OFL 1.1), bundled by Vite. |
 
-`frontend/public/` holds files served as-is: `brand-symbol.svg` (the copper-eye logo) and
-`favicon.svg` (the same symbol).
+`frontend/public/` holds files served as-is: `brand-symbol.svg` (the copper-eye logo),
+`favicon.svg` (the same symbol) and `user-guide.html` (the self-contained end-user
+documentation opened by the sidebar **Documentation** link — see chapter 7.10).
 
 ## `docker/`
 

@@ -33,6 +33,7 @@ class FindingOut(ORM):
     tags: list[str]
     false_positive: bool
     location: str | None
+    source: str  # detection engine (internal id); source_label is the display name
     source_label: str | None = None
     asset: AssetRef | None = None
 

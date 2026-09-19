@@ -28,6 +28,7 @@ consumes only the normalized observation schema, never tool source code.
 | [ProjectDiscovery Nuclei](https://github.com/projectdiscovery/nuclei) | Vulnerability / exposure detection | MIT | Binary; subprocess | |
 | [nuclei-templates](https://github.com/projectdiscovery/nuclei-templates) | Detection content | MIT | Downloaded at runtime to a volume | ⚠ Individual templates reference third-party advisories; review attribution requirements |
 | [SpiderFoot](https://github.com/smicallef/spiderfoot) | Optional OSINT enrichment | MIT | Separate container (`--profile osint`), driven over its HTTP API | Many SpiderFoot modules call third-party services with their own terms |
+| [OWASP ZAP](https://github.com/zaproxy/zaproxy) | Optional web crawling & dynamic application security testing (DAST) | Apache-2.0 | Separate container (`--profile dast`), driven over its REST API; the platform never imports ZAP code | Keep the NOTICE file when redistributing the image; active scanning is intrusive and requires active-scanning authorization in scope |
 | [BBOT](https://github.com/blacklanternsecurity/bbot) | Optional recursive OSINT | ⚠ **GPL-3.0** | Not installed by default. Optional install (`INSTALL_BBOT=true`) into the sensor image; executed only as a separate program | Distributing an image containing BBOT distributes GPL-3.0 software: provide license text and corresponding source. The platform never imports BBOT code |
 
 **Not used:** Nmap is intentionally *not* integrated: the Nmap Public Source

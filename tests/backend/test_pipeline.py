@@ -174,3 +174,39 @@ def test_passive_profile_never_runs_active_sensors(env, tenant_db):
     t, org, fake = env
     run(tenant_db, t.id, org.id, slug="passive-discovery")
     assert not {"naabu", "httpx", "nuclei"} & set(fake.calls)
+
+
+def test_web_app_dast_scan_end_to_end(env, tenant_db):
+    """The ZAP-powered Web Application Scan crawls known endpoints and reports web findings."""
+    t, org, fake = env
+    # httpx discovers https://api.example.com; feed ZAP alerts on that endpoint.
+    fake.set("zap_spider", [
+        {"kind": "url", "root": "https://api.example.com", "value": "https://api.example.com/login"},
+        {"kind": "alert", "name": "Missing Anti-clickjacking Header", "risk": "Medium", "confidence": "Medium",
+         "url": "https://api.example.com/login", "cweid": "1021", "pluginId": "10020", "alertRef": "10020-1",
+         "solution": "Set X-Frame-Options.", "description": "No clickjacking protection."},
+    ])
+    fake.set("zap_active", [
+        {"kind": "alert", "name": "SQL Injection", "risk": "High", "confidence": "Medium",
+         "url": "https://api.example.com/search?q=x", "param": "q", "attack": "q=1' OR '1'='1",
+         "cweid": "89", "pluginId": "40018", "alertRef": "40018", "solution": "Parameterize queries."},
+    ])
+    scan_id = run(tenant_db, t.id, org.id, slug="web-app-scan")
+    with tenant_db(t.id) as db:
+        scan = db.get(Scan, scan_id)
+        assert scan.status == ScanStatus.COMPLETED, [(s.engine, s.status, s.error) for s in scan.stages]
+        by_engine = {s.engine: s for s in scan.stages}
+        assert by_engine["zap_spider"].status == StageStatus.COMPLETED
+        assert by_engine["zap_active"].status == StageStatus.COMPLETED
+        # The active scanner only ever received authorized in-scope endpoint URLs.
+        for targets in fake.calls.get("zap_active", []):
+            assert all(x.startswith("http") and "dev-api.example.com" not in x for x in targets)
+
+        findings = {f.source_finding_id: f for f in db.execute(select(Finding)).scalars()}
+        sqli = findings["zap:40018"]
+        assert sqli.severity.value == "high" and sqli.source == "zap_active"
+        api = db.execute(select(Asset).where(Asset.organization_id == org.id,
+                                             Asset.asset_type == AssetType.HTTP_ENDPOINT,
+                                             Asset.normalized_value == "https://api.example.com")).scalar_one()
+        assert sqli.asset_id == api.id
+        assert findings["zap:10020-1"].source == "zap_spider"
