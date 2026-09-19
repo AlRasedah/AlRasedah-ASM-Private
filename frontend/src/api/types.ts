@@ -173,6 +173,26 @@ export interface Finding {
   asset: AssetRef | null;
 }
 
+export interface WebApp {
+  id: string;
+  url: string;
+  host: string | null;
+  title: string | null;
+  webserver: string | null;
+  technologies: string[];
+  status_code: number | null;
+  risk_score: number;
+  risk_level: RiskLevel;
+  approval_status: string;
+  open_findings: number;
+  by_severity: Record<string, number>;
+  dast_verified: number;
+  crawled: boolean;
+  first_seen: string;
+  last_seen: string;
+  last_scanned_at: string | null;
+}
+
 export interface FindingDetail extends Finding {
   description: string | null;
   remediation: string | null;

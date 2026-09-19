@@ -59,6 +59,24 @@ def test_scope_check_endpoint(ctx):
                                                            "value": "evil.com"}).status_code == 403
 
 
+def test_web_apps_dashboard(ctx):
+    c, admin, analyst, *_ = ctx
+    org = setup_org(c, admin)
+    run_scan(c, analyst, org)
+    r = c.get("/api/v1/dashboard/web-apps", headers=analyst, params={"organization_id": org["id"]})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["total"] >= 1 and data["items"]
+    for row in data["items"]:
+        assert row["url"].startswith(("http://", "https://"))
+        for k in ("risk_score", "by_severity", "dast_verified", "crawled", "open_findings"):
+            assert k in row
+        # standard-asm has no ZAP engine, so nothing is DAST-verified or crawled
+        assert row["dast_verified"] == 0 and row["crawled"] is False
+    # at least one web app carries open findings with a real severity breakdown
+    assert any(x["open_findings"] > 0 and sum(x["by_severity"].values()) > 0 for x in data["items"])
+
+
 def test_full_workflow(ctx):
     c, admin, analyst, tenant, admin_user, analyst_user = ctx
     org = setup_org(c, admin)
