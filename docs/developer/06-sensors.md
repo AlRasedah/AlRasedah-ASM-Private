@@ -115,6 +115,13 @@ the constraints you applied.** Passive discovery tools declare none.
   rule id; ZAP's `High` risk is the ceiling (it never becomes `critical`). Both emit
   `FindingCoverage` over the scanned endpoints so a fixed issue auto-resolves, and both are
   scope-safe: the scanners run `inScopeOnly`/`subtreeOnly` and never leave the host.
+  **Authenticated scanning** uses the `zap_auth` credential provider (`credential_providers`),
+  so the tenant's session secret is sealed and delivered through the normal credential channel
+  (`ctx.credentials`, `auth_secret()`). When present, each target adds a ZAP Replacer rule
+  (`replacer/action/addRule`, `matchType=REQ_HEADER`) that injects the header
+  (`auth_header_name`, default `Cookie`) into every request whose URL matches the origin regex,
+  then removes it in a `finally`. The `url`-scoping keeps the secret on the authorized origin
+  only; CRLF in the value is rejected to prevent header injection.
 
 ## 6.6 Credentials flow
 
