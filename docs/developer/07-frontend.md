@@ -65,7 +65,7 @@ overwrite each other in React Router 6.
 
 | Component | Use |
 |---|---|
-| `Layout` | `Brand`/`BrandMark` (logo lockup), sidebar (permission-aware; a **Documentation** link under a "Help" section opens the offline user guide `public/user-guide.html` in a new tab — see §7.10), topbar (organization selector, tenant switcher when the user has several memberships, unacknowledged-change counter, account, sign out) |
+| `Layout` | `Brand`/`BrandMark` (logo lockup), sidebar (permission-aware; includes a **Web apps** item and a **Documentation** link under a "Help" section that opens the offline user guide `public/user-guide.html` in a new tab — see §7.10), topbar (organization selector, tenant switcher when the user has several memberships, unacknowledged-change counter, account, sign out) |
 | `ui.tsx` | `Card`, `PageHead`, `SeverityBadge`, `StatusBadge` (tone map for every status value), `RiskScore` (number + bar coloured by level), `Tags`, `Tabs` (ARIA roles), `Modal` (Esc/backdrop close), `Confirm`, `Pagination`, `Kpi`, `Field`, `JsonView`, `Empty`, `Loading`, `ErrorBox`, `useDebounced` |
 | `Charts.tsx` | `TrendChart` (area) and `HBarChart` (horizontal bars) — shows an empty state instead of a meaningless chart when there is < 2 points; grid, tooltip and default bar colour come from tokens, series colours are passed as `var(--…)` |
 | `Timeline.tsx` | event list used by Changes, asset timeline and scan changes (severity dot, type, baseline/acknowledged badges, previous → current diff) |
@@ -79,6 +79,7 @@ overwrite each other in React Router 6.
 | `/assets/:id` | `assets/AssetDetail.tsx` | tabs depend on asset type: overview (attributes, risk factors, ownership form), relationships, DNS, ports & services, web endpoints, technologies, certificates, findings, timeline, raw observations |
 | `/shadow-it` | `assets/ShadowIT.tsx` | unverified/unknown/unauthorized active assets with one-click classification |
 | `/findings`, `/findings/:id` | `findings/` | prioritized list; detail with workflow (transitions mirror the backend), activity log, evidence, references. A **DAST** badge (`isDast(source)` in `lib/format.ts`, driven by the finding's `source` field) marks findings dynamically confirmed by active web scanning |
+| `/web-apps` | `pages/WebApps.tsx` | web-application security view: each HTTP endpoint with risk, open-finding severity chips, total findings, a DAST-verified badge and a crawled indicator; rows drill into the asset detail. Backed by `GET /dashboard/web-apps` (`services/dashboard.web_apps`) |
 | `/changes` | `pages/Changes.tsx` | event feed, acknowledge |
 | `/scans`, `/scans/:id` | `scans/Scans.tsx`, `ScanDetail.tsx` | start scan modal (profile description, active warning, optional targets); pipeline stages, scan changes, authorization log |
 | `/scan-profiles` | `scans/Profiles.tsx` | built-in/custom profiles (JSON stage editor validated server-side), schedules |
@@ -89,8 +90,10 @@ overwrite each other in React Router 6.
 Pages are lazy-loaded in `App.tsx` (initial bundle ≈ 243 KB, 78 KB gzipped).
 
 Terminology: the UI speaks in platform terms (stage labels like "Web service
-fingerprinting", "Detection source: Vulnerability detection"); engine names appear only in
-the advanced profile view and raw observations.
+fingerprinting", "Detection source: Vulnerability detection"). Engine names are treated as
+proprietary and are **not** shown on the read-only profile cards; they appear only in the
+admin-only profile editor (the JSON stage editor, behind `profiles:write`) and raw
+observations.
 
 ## 7.8 Styling (`styles.css`) — the Al-Rasedah design system
 

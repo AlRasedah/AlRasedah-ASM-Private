@@ -82,7 +82,7 @@
 | `services/secrets.py` | Encrypted secrets (DB backend, Vault seam), scanner credential lookup. |
 | `services/storage.py` | Object store abstraction (local / S3-compatible). |
 | `services/metrics.py` | Daily `MetricSnapshot` per organization. |
-| `services/dashboard.py` | Dashboard summary and trends (also used by reports). |
+| `services/dashboard.py` | Dashboard summary, trends, and the web-application view (`web_apps`, served at `GET /dashboard/web-apps`); also used by reports. |
 | `services/maintenance.py` | Age-out, certificate expiry alerts, risk-acceptance expiry, retention purge, schedule firing. |
 | `workers/celery_app.py` | Celery app for core worker + beat schedule. |
 | `workers/tasks.py` | Scan state machine tasks and periodic tasks. |
