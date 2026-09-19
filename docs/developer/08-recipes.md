@@ -110,6 +110,22 @@ Task in `app/workers/tasks.py` (name `asm.core.<name>`; open tenant sessions per
 schedule in `beat_schedule` (`app/workers/celery_app.py`) → pure logic in a service module
 so it is testable without Celery.
 
+## Set up or wipe a demo environment
+
+For customer demos, two admin commands live in `app/cli.py`:
+
+- `python -m app.cli demo-seed` — idempotently create a demo tenant, platform-admin, an
+  organization and its scope (structure only; populate it by running a scan).
+- `python -m app.cli demo-reset` — delete that tenant and **all** of its data. It briefly
+  toggles the audit log's `FORCE ROW LEVEL SECURITY` and immutability trigger off (inside the
+  transaction, restored in `finally`) to remove the tenant's audit rows, because the append-only
+  log otherwise blocks the FK's `SET NULL` and collides on the gapless per-chain index.
+
+Cloud demos use the `docker-compose.demo.yml` overlay (seeds on `up`, resets via the `tools`
+profile). Full runbook: [`DEMO.md`](../../DEMO.md). For a local demo with rich pre-populated
+data, `scripts/seed_demo.py` replays recorded scanner output through the real pipeline. Tests:
+`tests/backend/test_cli_demo.py`.
+
 ## Add a plan/quota
 
 Column on `Plan` (+ migration) or a key in `plans.features`; enforcement function in
