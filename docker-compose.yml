@@ -207,8 +207,12 @@ services:
 
   # OWASP ZAP (Apache-2.0) in daemon mode: dynamic application security testing.
   # Reachable only from the sensor network; reaches scan targets over egress.
-  # Set ASM_ZAP_URL=http://zap:8090 and ASM_ZAP_API_KEY=<same key> to enable the
-  # zap_spider / zap_active engines (e.g. the "Web Application Scan (DAST)" profile).
+  # Only runs under `--profile dast`; set ASM_ZAP_URL=http://zap:8090 and
+  # ASM_ZAP_API_KEY=<same key> to enable the zap_spider / zap_active engines
+  # (e.g. the "Web Application Scan (DAST)" profile). The API key uses an empty
+  # default so `docker compose up` works without it — compose interpolates every
+  # service (even inactive profiles) at load time, so a required (:?) default here
+  # would break the whole stack. Set a real key before using the dast profile.
   zap:
     profiles: ["dast"]
     image: ${ASM_ZAP_IMAGE:-zaproxy/zap-stable:2.15.0}
@@ -220,7 +224,7 @@ services:
       - "-port"
       - "8090"
       - "-config"
-      - "api.key=${ASM_ZAP_API_KEY:?set ASM_ZAP_API_KEY}"
+      - "api.key=${ASM_ZAP_API_KEY:-}"
       - "-config"
       - "api.addrs.addr.name=.*"
       - "-config"
