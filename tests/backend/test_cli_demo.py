@@ -17,6 +17,10 @@ def _seed(**kw):
     cmd_demo_seed(argparse.Namespace(**args))
 
 
+def _reset(tenant="CLI Demo Co", force=False):
+    cmd_demo_reset(argparse.Namespace(tenant=tenant, force=force))
+
+
 def test_demo_seed_creates_tenant_admin_org_scope(db_clean):
     _seed()
     with system_session() as db:
@@ -36,7 +40,7 @@ def test_demo_seed_is_idempotent(db_clean):
 
 def test_demo_reset_deletes_everything_and_keeps_audit_immutable(db_clean):
     _seed()
-    cmd_demo_reset(argparse.Namespace(tenant="CLI Demo Co"))
+    _reset()
     with system_session() as db:
         assert db.execute(select(Tenant).where(Tenant.name == "CLI Demo Co")).scalar_one_or_none() is None
         assert db.execute(select(User).where(User.email == "demo-admin@demo.test")).scalar_one_or_none() is None
@@ -49,4 +53,25 @@ def test_demo_reset_deletes_everything_and_keeps_audit_immutable(db_clean):
 
 
 def test_demo_reset_missing_tenant_is_noop(db_clean):
-    cmd_demo_reset(argparse.Namespace(tenant="Does Not Exist"))  # must not raise
+    _reset(tenant="Does Not Exist")  # must not raise
+
+
+def test_demo_reset_refuses_tenant_with_a_non_demo_org(factory):
+    _seed()
+    with system_session() as db:
+        tid = db.execute(select(Tenant.id).where(Tenant.name == "CLI Demo Co")).scalar_one()
+    factory.org(tid, name="Real Corp", domains=("real-corp.com",))  # a real org, not demo-seeded
+    _reset()  # no --force: must refuse
+    with system_session() as db:
+        assert db.execute(select(Tenant).where(Tenant.name == "CLI Demo Co")).scalar_one_or_none() is not None
+        assert db.scalar(select(func.count()).select_from(Organization).where(Organization.tenant_id == tid)) == 2
+
+
+def test_demo_reset_force_deletes_tenant_with_a_non_demo_org(factory):
+    _seed()
+    with system_session() as db:
+        tid = db.execute(select(Tenant.id).where(Tenant.name == "CLI Demo Co")).scalar_one()
+    factory.org(tid, name="Real Corp", domains=("real-corp.com",))
+    _reset(force=True)  # --force: deletes everything
+    with system_session() as db:
+        assert db.execute(select(Tenant).where(Tenant.name == "CLI Demo Co")).scalar_one_or_none() is None

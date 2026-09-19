@@ -139,7 +139,8 @@ def cmd_demo_seed(a: argparse.Namespace) -> None:
         org = db.execute(select(Organization).where(Organization.name == a.org)).scalar_one_or_none()
         if org is None:
             org = Organization(tenant_id=tid, name=a.org, industry="Financial services",
-                               description="Demo organization (documentation address ranges)", settings={})
+                               description="Demo organization (documentation address ranges)",
+                               settings={"demo_seed": True})
             db.add(org)
             db.flush()
             add_entry(db, tenant_id=tid, organization_id=org.id, entry_type=ScopeEntryType.DOMAIN, value="example.com")
@@ -155,11 +156,14 @@ def cmd_demo_seed(a: argparse.Namespace) -> None:
 def cmd_demo_reset(a: argparse.Namespace) -> None:
     """Delete a demo tenant and **all** of its data (organizations, assets, findings,
     scans, events, scope, integrations, profiles, memberships) plus any users that
-    belonged only to it. Idempotent; safe to run when nothing is there."""
+    belonged only to it. Idempotent; safe to run when nothing is there.
+
+    Refuses (unless ``--force``) if the tenant contains any organization not created
+    by ``demo-seed``, so it cannot silently wipe real data that shares the tenant."""
     from sqlalchemy import delete, func, select, text
 
     from app.db.session import system_session
-    from app.models import Tenant, TenantMembership, User
+    from app.models import Organization, Tenant, TenantMembership, User
 
     with system_session() as db:
         tenant = db.execute(select(Tenant).where(Tenant.name == a.tenant)).scalar_one_or_none()
@@ -167,6 +171,20 @@ def cmd_demo_reset(a: argparse.Namespace) -> None:
             print(f"no tenant named {a.tenant!r}; nothing to delete")
             return
         tid = tenant.id
+        # Safety: show what will be deleted, and refuse if the tenant holds any
+        # organization that was NOT created by demo-seed (i.e. possibly real data),
+        # unless --force is given. This prevents wiping real orgs that happen to share
+        # a tenant with demo data.
+        orgs = db.execute(select(Organization).where(Organization.tenant_id == tid)).scalars().all()
+        non_demo = [o for o in orgs if not (o.settings or {}).get("demo_seed")]
+        if orgs:
+            print(f"tenant {a.tenant!r} contains {len(orgs)} organization(s): "
+                  + ", ".join(f"{o.name}{'' if (o.settings or {}).get('demo_seed') else ' [NOT demo-seeded]'}" for o in orgs))
+        if non_demo and not getattr(a, "force", False):
+            print(f"REFUSING to delete: {len(non_demo)} organization(s) were not created by demo-seed "
+                  f"and may contain real data: {', '.join(o.name for o in non_demo)}")
+            print("Re-run with --force if you are certain you want to delete this tenant and ALL of its data.")
+            return
         user_ids = {u for (u,) in db.execute(select(TenantMembership.user_id).where(TenantMembership.tenant_id == tid))}
         # Deleting the tenant cascades every tenant-scoped row (ON DELETE CASCADE) and its
         # custom profiles. The audit log is append-only and gapless per chain, so we cannot
@@ -236,6 +254,8 @@ def main(argv: list[str] | None = None) -> None:
     ds.set_defaults(fn=cmd_demo_seed)
     dr = sub.add_parser("demo-reset")
     dr.add_argument("--tenant", default="Demo Holding")
+    dr.add_argument("--force", action="store_true",
+                    help="delete even if the tenant contains organizations not created by demo-seed")
     dr.set_defaults(fn=cmd_demo_reset)
     v = sub.add_parser("verify-audit")
     v.add_argument("--tenant")
