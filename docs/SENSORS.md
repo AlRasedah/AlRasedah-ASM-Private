@@ -111,6 +111,12 @@ class MyToolAdapter(ScannerAdapter):
   scanner is intrusive — mark `zap_active` stages `optional` so deployments without ZAP skip
   them cleanly (a missing `zap_url` makes the stage fail, and an optional failed stage is
   skipped). Verify API paths and default scan policies against the version you deploy.
+  **Authenticated scanning:** store a `zap_auth` credential (a logged-in session cookie, or a
+  bearer token) and both engines crawl/attack as that user — the secret is injected into every
+  in-scope request via a ZAP Replacer rule scoped to the authorized origin (never leaks
+  off-host) and cleaned up after each target. `auth_header_name` selects the header (`Cookie`
+  by default, or `Authorization`). This is session/token auth; automatic form login is a
+  future enhancement.
 - **BBOT** 2.x output (`-om json` → `output.json`) — verify the CLI flags against the installed version.
 
 Verification status: parsers are tested against recorded output in `tests/sensors/fixtures`.

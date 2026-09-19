@@ -102,6 +102,11 @@ and email notification channels fail visibly in the delivery log.
   and `zap_active` (active vulnerability scanning) engines and the built-in **Web Application
   Scan (DAST)** profile. Active scanning is intrusive: it only runs against scope with
   active-scanning authorization, and ZAP is confined per target to the authorized origin.
+  For **authenticated scanning**, store a `zap_auth` credential (Integrations → Data-source
+  API keys) — a logged-in session cookie (default header `Cookie`, e.g.
+  `PHPSESSID=…; security=low`) or a bearer token (set the stage's `auth_header_name` to
+  `Authorization`). ZAP then crawls and attacks as that user; the secret is injected only on
+  the authorized origin.
 - **Egress identification**: the web and vulnerability sensors send
   `X-ASM-Scanner: Exteriq-ASM` by default (`identify_scanner` in profiles) so customers can
   recognise authorized scanning in their logs.

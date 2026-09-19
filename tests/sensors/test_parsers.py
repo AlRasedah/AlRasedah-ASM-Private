@@ -9,14 +9,16 @@ from asm_sensors.adapters.naabu import NaabuAdapter, NaabuConfig
 from asm_sensors.adapters.nuclei import NucleiAdapter, NucleiConfig
 from asm_sensors.adapters.subfinder import SubfinderAdapter, SubfinderConfig
 from asm_sensors.adapters.zap import (
+    AUTH_PROVIDER,
     ZapActiveAdapter,
     ZapActiveConfig,
     ZapSpiderAdapter,
     ZapSpiderConfig,
     alert_to_finding,
+    auth_secret,
     target_url,
 )
-from asm_sensors.base import RawOutput
+from asm_sensors.base import ExecutionContext, RawOutput
 from asm_sensors.observations import (
     FindingCategory,
     FindingCoverage,
@@ -264,6 +266,78 @@ class TestZapActive:
         ref, finding = alert_to_finding(
             {"url": "https://a.example.com/p", "risk": "informational", "name": "X", "pluginId": "1"}, "zap_active")
         assert ref.value == "https://a.example.com" and finding.severity == Severity.INFO
+
+
+class _FakeZap:
+    """Records API calls and serves canned responses so the per-target ZAP flow can run offline."""
+
+    def __init__(self):
+        self.calls = []
+        self.auth_added = []
+        self.auth_removed = []
+
+    async def new_context(self, name, include_regex):
+        self.calls.append(("new_context", name, include_regex))
+        return "1"
+
+    async def add_auth_header(self, description, header_name, value, url_regex):
+        self.auth_added.append({"description": description, "header": header_name, "value": value, "url": url_regex})
+
+    async def remove_auth_header(self, description):
+        self.auth_removed.append(description)
+
+    async def call(self, component, kind, action, params=None):
+        self.calls.append((component, kind, action, params or {}))
+        if action == "scan":
+            return {"scan": "1"}
+        if action == "status":
+            return {"status": "100"}
+        if action == "results":
+            return {"results": ["https://app.example.com/login"]}
+        if action == "recordsToScan":
+            return {"recordsToScan": "0"}
+        if action == "alerts":
+            return {"alerts": []}
+        return {}
+
+
+class TestZapAuth:
+    def test_credential_provider_and_header_config(self):
+        assert AUTH_PROVIDER == "zap_auth"
+        assert ZapSpiderAdapter.credential_providers == ("zap_auth",)
+        assert ZapActiveAdapter.credential_providers == ("zap_auth",)
+        assert ZapSpiderConfig().auth_header_name == "Cookie"
+        assert ZapActiveConfig(auth_header_name="Authorization").auth_header_name == "Authorization"
+        import pytest
+        with pytest.raises(ValueError):
+            ZapActiveConfig(auth_header_name="Bad Header: x")  # header injection attempt rejected
+
+    def test_auth_secret_extraction(self, tmp_path):
+        def ctx(creds):
+            return ExecutionContext(workdir=tmp_path, credentials=creds)
+        assert auth_secret(ctx({AUTH_PROVIDER: ["PHPSESSID=abc; security=low"]})) == "PHPSESSID=abc; security=low"
+        assert auth_secret(ctx({})) is None
+        assert auth_secret(ctx({AUTH_PROVIDER: ["bad\r\nInjected: 1"]})) is None  # CRLF rejected
+
+    async def test_spider_injects_and_removes_scoped_auth_header(self, tmp_path):
+        zap = _FakeZap()
+        raw = RawOutput()
+        ctx = ExecutionContext(workdir=tmp_path)
+        cookie = "PHPSESSID=abc; security=low"
+        await ZapSpiderAdapter()._crawl_one(zap, "https://app.example.com", ZapSpiderConfig(), ctx, raw,
+                                            "asm-crawl-0", auth=cookie)
+        assert len(zap.auth_added) == 1
+        rule = zap.auth_added[0]
+        assert rule["header"] == "Cookie" and rule["value"] == cookie
+        assert rule["url"].startswith("https://app\\.example\\.com") or "app" in rule["url"]  # scoped to origin
+        assert zap.auth_removed == [rule["description"]]  # cleaned up afterwards
+
+    async def test_active_no_auth_when_no_credential(self, tmp_path):
+        zap = _FakeZap()
+        raw = RawOutput()
+        await ZapActiveAdapter()._scan_one(zap, "https://app.example.com", ZapActiveConfig(), raw,
+                                           "asm-ascan-0", auth=None)
+        assert zap.auth_added == [] and zap.auth_removed == []
 
 
 def test_fixture_loader():
