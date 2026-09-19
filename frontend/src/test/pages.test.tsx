@@ -120,6 +120,12 @@ describe("fixes from the 2026-09-18 test reports", () => {
     expect(screen.getByText("After")).toBeTruthy();
   });
 
+  it("actively-verified web findings (OWASP ZAP) get a DAST badge", async () => {
+    renderAt("/findings");
+    await screen.findByText("SQL Injection");
+    expect(await screen.findByText("DAST")).toBeTruthy();
+  });
+
   it("only API-sortable columns get a sort control", async () => {
     renderAt("/inventory");
     await screen.findByText("Asset inventory");

@@ -168,6 +168,7 @@ export interface Finding {
   tags: string[];
   false_positive: boolean;
   location: string | null;
+  source: string;
   source_label: string | null;
   asset: AssetRef | null;
 }

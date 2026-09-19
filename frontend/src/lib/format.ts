@@ -92,6 +92,14 @@ export const EVENT_LABELS: Record<string, string> = {
   scan_completed: "Scan completed",
 };
 
+// Findings dynamically confirmed by active web scanning (OWASP ZAP active scanner) —
+// as opposed to passively observed or template-matched. Worth flagging to analysts.
+export const DAST_SOURCES = new Set(["zap_active"]);
+
+export function isDast(source: string | null | undefined): boolean {
+  return !!source && DAST_SOURCES.has(source);
+}
+
 export const SEV_COLOR: Record<string, string> = {
   critical: "var(--sev-critical)",
   high: "var(--sev-high)",

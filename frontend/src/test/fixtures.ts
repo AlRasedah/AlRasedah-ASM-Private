@@ -55,7 +55,18 @@ const finding = {
   id: "f1", organization_id: "o1", asset_id: "a3", title: "Fortinet FortiOS - Path Traversal", category: "vulnerability",
   severity: "critical", status: "new", cve: ["CVE-2018-13379"], cvss_score: 9.8, epss_score: 0.97, kev: true,
   risk_score: 95, risk_level: "critical", first_seen: earlier, last_seen: now, resolved_at: null, assigned_to: null,
-  tags: ["cve"], false_positive: false, location: "https://vpn.example.com:10443/remote/x", source_label: "Vulnerability detection",
+  tags: ["cve"], false_positive: false, location: "https://vpn.example.com:10443/remote/x",
+  source: "nuclei", source_label: "Vulnerability detection",
+  asset: ref("a3", "http_endpoint", "https://vpn.example.com:10443"),
+};
+
+// A dynamically-confirmed web vulnerability from the OWASP ZAP active scanner (DAST).
+const dastFinding = {
+  id: "f2", organization_id: "o1", asset_id: "a3", title: "SQL Injection", category: "vulnerability",
+  severity: "high", status: "new", cve: [], cvss_score: null, epss_score: null, kev: false,
+  risk_score: 72, risk_level: "high", first_seen: earlier, last_seen: now, resolved_at: null, assigned_to: null,
+  tags: ["zap"], false_positive: false, location: "https://vpn.example.com:10443/search [q]",
+  source: "zap_active", source_label: "Active web scanning",
   asset: ref("a3", "http_endpoint", "https://vpn.example.com:10443"),
 };
 
@@ -104,7 +115,7 @@ export function mockApi(path: string): unknown {
     [/^\/assets\/[^/]+\/timeline$/, page([event])],
     [/^\/assets\/[^/]+\/observations$/, page([{ id: 1, scan_id: "s1", source: "dnsx", source_label: "DNS resolution", observed_at: now, data: { resolves: true } }])],
     [/^\/assets\/[^/]+$/, assetDetail],
-    [/^\/findings$/, page([finding])],
+    [/^\/findings$/, page([finding, dastFinding])],
     [/^\/findings\/[^/]+\/activity$/, [{ id: "ac1", user_id: null, user_email: null, activity_type: "detected", previous: null, new: { severity: "critical" }, comment: null, scan_id: "s1", created_at: earlier }]],
     [/^\/findings\/[^/]+$/, { ...finding, description: "Path traversal", remediation: "Upgrade", references: [], evidence: { matcher: "x" },
       cwe: ["CWE-22"], cvss_vector: "CVSS:3.1/AV:N", epss_percentile: 0.99, kev_due_date: null, exploit_available: true, confidence: 90,

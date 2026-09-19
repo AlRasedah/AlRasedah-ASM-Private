@@ -6,7 +6,7 @@ import { api, download } from "@/api/client";
 import type { Finding, Page } from "@/api/types";
 import { useOrg } from "@/auth/OrgContext";
 import { Card, Empty, ErrorBox, Loading, PageHead, Pagination, RiskScore, SeverityBadge, SortTh, StatusBadge, useDebounced } from "@/components/ui";
-import { FINDING_STATES, SEVERITIES, fmtDay, label, timeAgo } from "@/lib/format";
+import { FINDING_STATES, SEVERITIES, fmtDay, isDast, label, timeAgo } from "@/lib/format";
 import { useFilters } from "@/lib/useFilters";
 
 const MULTI = ["status", "severity", "category"] as const;
@@ -89,7 +89,9 @@ export default function Findings() {
                         <td><SeverityBadge value={x.severity} /></td>
                         <td>
                           <div className="cell-main"><Link to={`/findings/${x.id}`} className="row-link" onClick={(e) => e.stopPropagation()}>{x.title}</Link>
-                            {x.kev && <span className="badge bad" style={{ marginInlineStart: 6 }}>KEV</span>}</div>
+                            {x.kev && <span className="badge bad" style={{ marginInlineStart: 6 }}>KEV</span>}
+                            {isDast(x.source) && <span className="badge accent" style={{ marginInlineStart: 6 }}
+                              title="Dynamically confirmed by active web scanning (OWASP ZAP)">DAST</span>}</div>
                           <div className="cell-sub">{x.cve.join(", ")}{x.epss_score ? ` · EPSS ${(x.epss_score * 100).toFixed(0)}%` : ""}</div>
                         </td>
                         <td className="small">{x.asset ? <Link to={`/assets/${x.asset.id}`} onClick={(e) => e.stopPropagation()}>{x.asset.value}</Link> : "—"}</td>
