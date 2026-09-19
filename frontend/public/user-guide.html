@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Exteriq ASM — User Guide</title>
 <meta name="description" content="User guide for Exteriq ASM: continuous external attack surface management. How to define scope, run scans, review assets and findings, respond to changes, generate reports and configure alerting." />
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA5NiA2NCIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsPSJBbC1SYXNlZGFoIHN5bWJvbCI+DQogIDxkZWZzPg0KICAgIDxsaW5lYXJHcmFkaWVudCBpZD0iY29wcGVyIiB4MT0iMTIiIHkxPSI1NiIgeDI9Ijg0IiB5Mj0iOCIgZ3JhZGllbnRVbml0cz0idXNlclNwYWNlT25Vc2UiPg0KICAgICAgPHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjOGY0YzIwIi8+DQogICAgICA8c3RvcCBvZmZzZXQ9Ii4zNSIgc3RvcC1jb2xvcj0iI2MzNzMzMSIvPg0KICAgICAgPHN0b3Agb2Zmc2V0PSIuNTgiIHN0b3AtY29sb3I9IiNmMmI2NmIiLz4NCiAgICAgIDxzdG9wIG9mZnNldD0iLjc3IiBzdG9wLWNvbG9yPSIjZTA5MDQ5Ii8+DQogICAgICA8c3RvcCBvZmZzZXQ9IjEiIHN0b3AtY29sb3I9IiM4ZjRjMjAiLz4NCiAgICA8L2xpbmVhckdyYWRpZW50Pg0KICAgIDxsaW5lYXJHcmFkaWVudCBpZD0iZWRnZSIgeDE9IjE0IiB5MT0iNTgiIHgyPSI4MiIgeTI9IjYiIGdyYWRpZW50VW5pdHM9InVzZXJTcGFjZU9uVXNlIj4NCiAgICAgIDxzdG9wIG9mZnNldD0iMCIgc3RvcC1jb2xvcj0iIzA5MGMxNiIvPg0KICAgICAgPHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjMjYzODU4Ii8+DQogICAgPC9saW5lYXJHcmFkaWVudD4NCiAgICA8cmFkaWFsR3JhZGllbnQgaWQ9ImNlbnRlciIgY3g9IjUwJSIgY3k9IjQ1JSIgcj0iNjAlIj4NCiAgICAgIDxzdG9wIG9mZnNldD0iMCIgc3RvcC1jb2xvcj0iI2Y2Y2I5MSIvPg0KICAgICAgPHN0b3Agb2Zmc2V0PSIuNDgiIHN0b3AtY29sb3I9IiNlMDkwNDkiLz4NCiAgICAgIDxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzhmNGMyMCIvPg0KICAgIDwvcmFkaWFsR3JhZGllbnQ+DQogIDwvZGVmcz4NCiAgPHJlY3Qgd2lkdGg9Ijk2IiBoZWlnaHQ9IjY0IiByeD0iMCIgZmlsbD0ibm9uZSIvPg0KICA8cGF0aCBkPSJNOCAzMkMyMSAxMyA0NCA3IDY2IDE0Yy0xMiAxLTIzIDctMzIgMTcgOC02IDE4LTggMjktNi0xNSA4LTI2IDE4LTM1IDMwQzE5IDUwIDEyIDQyIDggMzJaIiBmaWxsPSJ1cmwoI2VkZ2UpIiBvcGFjaXR5PSIuOTUiLz4NCiAgPHBhdGggZD0iTTEyIDMyQzI1IDE1IDQ4IDkgNjcgMTYgNTQgMTcgNDIgMjMgMzQgMzRjOS03IDIxLTkgMzItNi0xNCA2LTI1IDE1LTM1IDI4LTgtNS0xNS0xMy0xOS0yNFoiIGZpbGw9InVybCgjY29wcGVyKSIvPg0KICA8cGF0aCBkPSJNODggMzJDNzUgNTEgNTIgNTcgMzAgNTBjMTItMSAyMy03IDMyLTE3LTggNi0xOCA4LTI5IDYgMTUtOCAyNi0xOCAzNS0zMCA5IDUgMTYgMTMgMjAgMjNaIiBmaWxsPSJ1cmwoI2VkZ2UpIiBvcGFjaXR5PSIuOTUiLz4NCiAgPHBhdGggZD0iTTg0IDMyQzcxIDQ5IDQ4IDU1IDI5IDQ4YzEzLTEgMjUtNyAzMy0xOC05IDctMjEgOS0zMiA2IDE0LTYgMjUtMTUgMzUtMjggOCA1IDE1IDEzIDE5IDI0WiIgZmlsbD0idXJsKCNjb3BwZXIpIi8+DQogIDxjaXJjbGUgY3g9IjQ4IiBjeT0iMzIiIHI9IjEyLjUiIGZpbGw9IiMwOTBjMTYiIG9wYWNpdHk9Ii41NSIvPg0KICA8Y2lyY2xlIGN4PSI0OCIgY3k9IjMyIiByPSIxMCIgZmlsbD0idXJsKCNjZW50ZXIpIi8+DQogIDxjaXJjbGUgY3g9IjQ4IiBjeT0iMzIiIHI9IjE4IiBmaWxsPSJub25lIiBzdHJva2U9IiMwZjFhMzkiIHN0cm9rZS1vcGFjaXR5PSIuMTgiIHN0cm9rZS13aWR0aD0iMiIvPg0KPC9zdmc+DQo=" />
 <style>
   :root{
     --brand:#a3571f; --brand-strong:#8f4b18; --copper-tint:#f6ece1;
@@ -131,10 +132,27 @@
   <div class="top-inner">
     <button class="menu-btn" aria-label="Toggle contents" onclick="document.querySelector('nav.toc').classList.toggle('open')">☰</button>
     <span class="brand">
-      <svg width="34" height="24" viewBox="0 0 34 24" fill="none" aria-hidden="true">
-        <ellipse cx="17" cy="12" rx="16" ry="11" stroke="#d98a4b" stroke-width="2"/>
-        <circle cx="17" cy="12" r="4.6" fill="#d98a4b"/>
-        <circle cx="17" cy="12" r="1.7" fill="#0e2338"/>
+      <svg width="36" height="24" viewBox="0 0 96 64" role="img" aria-label="Al-Rasedah symbol">
+        <defs>
+          <linearGradient id="ex-copper" x1="12" y1="56" x2="84" y2="8" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#8f4c20"/><stop offset=".35" stop-color="#c37331"/>
+            <stop offset=".58" stop-color="#f2b66b"/><stop offset=".77" stop-color="#e09049"/>
+            <stop offset="1" stop-color="#8f4c20"/>
+          </linearGradient>
+          <linearGradient id="ex-edge" x1="14" y1="58" x2="82" y2="6" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#090c16"/><stop offset="1" stop-color="#263858"/>
+          </linearGradient>
+          <radialGradient id="ex-center" cx="50%" cy="45%" r="60%">
+            <stop offset="0" stop-color="#f6cb91"/><stop offset=".48" stop-color="#e09049"/><stop offset="1" stop-color="#8f4c20"/>
+          </radialGradient>
+        </defs>
+        <path d="M8 32C21 13 44 7 66 14c-12 1-23 7-32 17 8-6 18-8 29-6-15 8-26 18-35 30C19 50 12 42 8 32Z" fill="url(#ex-edge)" opacity=".95"/>
+        <path d="M12 32C25 15 48 9 67 16 54 17 42 23 34 34c9-7 21-9 32-6-14 6-25 15-35 28-8-5-15-13-19-24Z" fill="url(#ex-copper)"/>
+        <path d="M88 32C75 51 52 57 30 50c12-1 23-7 32-17-8 6-18 8-29 6 15-8 26-18 35-30 9 5 16 13 20 23Z" fill="url(#ex-edge)" opacity=".95"/>
+        <path d="M84 32C71 49 48 55 29 48c13-1 25-7 33-18-9 7-21 9-32 6 14-6 25-15 35-28 8 5 15 13 19 24Z" fill="url(#ex-copper)"/>
+        <circle cx="48" cy="32" r="12.5" fill="#090c16" opacity=".55"/>
+        <circle cx="48" cy="32" r="10" fill="url(#ex-center)"/>
+        <circle cx="48" cy="32" r="18" fill="none" stroke="#0f1a39" stroke-opacity=".18" stroke-width="2"/>
       </svg>
       <span><span class="name">Exteriq ASM</span><br><span class="sub">Attack Surface Management</span></span>
     </span>
