@@ -187,7 +187,26 @@ Added dynamic application security testing and end-user documentation on the
   hosting on a public website. It is a product document with no source code, paths or
   secrets; developer-facing detail stays in this handbook.
 
-## 11.9 Recommended next steps
+## 11.9 DAST follow-ups and web-app view (v0.1.1)
+
+Merged into `main` and released as **v0.1.1** (the first fully-working baseline; `v0.1.0`
+predated the reverse-proxy fix):
+
+- **Authenticated scanning** for both ZAP engines: a `zap_auth` credential (session cookie or
+  bearer token) is injected into every in-scope request via a ZAP Replacer rule scoped to the
+  authorized origin, added per target and removed after. `auth_header_name` selects the header
+  (`Cookie` default, or `Authorization`). Session/token based; form auto-login is still a
+  future step. See chapter 6 / docs/SENSORS.md.
+- **Web apps page** (`/web-apps`, `pages/WebApps.tsx`) backed by `GET /dashboard/web-apps`
+  (`services/dashboard.web_apps`): each HTTP endpoint with risk, open-finding severity
+  breakdown, DAST-verified count and crawl status. See §7.7.
+- **Engine names hidden** on the read-only scan-profile cards (proprietary); still shown in the
+  admin-only profile editor. See §7.7 terminology note.
+- **Deployment hardening** (env-hygiene, cert helper, DB-auth hint), the reverse-proxy fix
+  (the nginx-template rendering that broke the proxy was reverted to the static mount), and
+  `docs/TROUBLESHOOTING.md`.
+
+## 11.10 Recommended next steps
 
 1. Run CI (or `docker compose build`) and fix anything the first real image build reveals.
 2. `docker compose run --rm asm-scanner versions`, then Passive Discovery and Standard ASM
