@@ -29,6 +29,26 @@ case "$role" in
       --schedule /tmp/celerybeat-schedule "$@"
     ;;
   migrate)
+    # Advisory preflight: turn the opaque SQLAlchemy stack trace into an actionable
+    # hint for the most common first-deploy failure (role password / stale volume).
+    # Never blocks — alembic still runs and reports the authoritative result.
+    python - <<'PY' || true
+import os, sys
+try:
+    from sqlalchemy import create_engine, text
+    with create_engine(os.environ.get("ASM_DATABASE_URL", ""), pool_pre_ping=True).connect() as c:
+        c.execute(text("select 1"))
+except Exception as exc:  # noqa: BLE001
+    if "authentication failed" in str(exc).lower():
+        sys.stderr.write(
+            "\n[asm] Cannot authenticate to PostgreSQL as the application role.\n"
+            "      The database volume was almost certainly initialised with a different\n"
+            "      ASM_DB_PASSWORD than the one in .env now (the role password is only set on\n"
+            "      first init of the volume). Fix with one of:\n"
+            "        fresh deploy (no data to keep):  docker compose down -v && docker compose up -d\n"
+            "        keep existing data:              docker compose exec postgres \\\n"
+            "          psql -U postgres -c \"ALTER ROLE asm PASSWORD '<ASM_DB_PASSWORD from .env>';\"\n\n")
+PY
     alembic -c /app/alembic.ini upgrade head
     exec python -m app.cli bootstrap
     ;;

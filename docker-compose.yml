@@ -42,13 +42,21 @@ services:
     ports:
       - "${ASM_HTTP_PORT:-8080}:8080"
       - "${ASM_HTTPS_PORT:-8443}:8443"
+    # The config is mounted as a template so the nginx image renders ${ASM_*}
+    # placeholders at start-up (e.g. the HTTPS port in the TLS redirect). nginx's
+    # own $variables are untouched (they are not environment variables).
+    # Defaults to the published HTTPS port so the redirect targets where users
+    # actually browse; override ASM_HTTPS_PORT (or this value) if you terminate
+    # TLS on a different public port via an external load balancer.
+    environment:
+      ASM_PUBLIC_HTTPS_PORT: ${ASM_HTTPS_PORT:-8443}
     volumes:
-      - ${ASM_PROXY_CONF:-./docker/proxy/nginx.conf}:/etc/nginx/conf.d/default.conf:ro
+      - ${ASM_PROXY_CONF:-./docker/proxy/nginx.conf}:/etc/nginx/templates/default.conf.template:ro
       - ./docker/proxy/certs:/etc/nginx/certs:ro
     depends_on: [asm-api, asm-web]
     networks: [edge]
     read_only: true
-    tmpfs: [/tmp, /var/cache/nginx]
+    tmpfs: [/tmp, /var/cache/nginx, /etc/nginx/conf.d]
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     restart: unless-stopped
