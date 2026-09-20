@@ -41,7 +41,8 @@ def recompute_organization(db: Session, org: Organization, *, scan_id: uuid.UUID
             continue
         r = score_finding(f, asset, cfg, now)
         f.risk_score, f.risk_level, f.risk_factors = r.score, r.level, r.factors
-        if f.status in OPEN_FINDING_STATES and asset.status == AssetStatus.ACTIVE:
+        # Unverified third-party reports (Shodan CVE matches) never move risk scores.
+        if f.status in OPEN_FINDING_STATES and asset.status == AssetStatus.ACTIVE and not f.unverified:
             by_asset[f.asset_id].append(r.score)
             counts[f.asset_id] += 1
 

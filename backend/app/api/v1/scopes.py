@@ -143,3 +143,13 @@ def verify(entry_id: uuid.UUID, _: Principal = Depends(require(Permission.SCOPE_
     e = scope.verify_entry(db, entry_id)
     db.commit()
     return e
+
+
+@router.post("/{entry_id}/approve", response_model=ScopeEntryOut)
+def approve(entry_id: uuid.UUID, _: Principal = Depends(require(Permission.TENANTS_ADMIN)),
+            db: Session = Depends(get_db)) -> ScopeEntry:
+    """Approve an IP/CIDR inclusion for active scanning where verification is required (platform admins)."""
+    _entry(db, entry_id)
+    e = scope.approve_entry(db, entry_id)
+    db.commit()
+    return e

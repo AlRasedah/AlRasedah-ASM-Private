@@ -71,6 +71,16 @@ class Scan(UUIDPk, TenantScoped, Timestamps, Base):
     stats: Mapped[dict[str, Any]] = mapped_column(default=dict)
     error: Mapped[str | None] = mapped_column(Text)
     is_baseline: Mapped[bool] = mapped_column(default=False)
+    # Sign-in secret supplied for this scan only (encrypted, AAD-bound to the scan).
+    # Handed to the web application scanner in the sealed job envelope and erased
+    # when the scan finishes or is cancelled. Never exposed by the API.
+    auth_secret_encrypted: Mapped[str | None] = mapped_column(Text)
+    auth_header_name: Mapped[str | None] = mapped_column(String(64))
+
+    @property
+    def authenticated(self) -> bool:
+        """Whether this scan was given a sign-in value (kept true after it is erased)."""
+        return self.auth_header_name is not None
 
     stages: Mapped[list[ScanStage]] = relationship(
         back_populates="scan", order_by="ScanStage.position", lazy="selectin", cascade="all, delete-orphan")
@@ -90,7 +100,12 @@ class ScanStage(UUIDPk, TenantScoped, Base):
     target_count: Mapped[int] = mapped_column(Integer, default=0)
     rejected_count: Mapped[int] = mapped_column(Integer, default=0)
     observation_count: Mapped[int] = mapped_column(Integer, default=0)
+    # The dispatched sensor job's id (also its Celery task id). A result is accepted
+    # only for this job, from ``worker_pool``; ``dispatched_at`` is set once the job
+    # is on the broker.
     task_id: Mapped[str | None] = mapped_column(String(64))
+    worker_pool: Mapped[str | None] = mapped_column(String(64))
+    dispatched_at: Mapped[datetime | None]
     started_at: Mapped[datetime | None]
     finished_at: Mapped[datetime | None]
     tool_version: Mapped[str | None] = mapped_column(String(64))

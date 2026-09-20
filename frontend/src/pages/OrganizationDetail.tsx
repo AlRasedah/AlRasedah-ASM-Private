@@ -27,6 +27,7 @@ export default function OrganizationDetail() {
     onSuccess: refresh,
   });
   const remove = useMutation({ mutationFn: (e: ScopeEntry) => api(`/scopes/${e.id}`, { method: "DELETE" }), onSuccess: refresh });
+  const approve = useMutation({ mutationFn: (e: ScopeEntry) => api(`/scopes/${e.id}/approve`, { method: "POST" }), onSuccess: refresh });
   const settings = useMutation({
     mutationFn: (body: Record<string, unknown>) => api(`/organizations/${id}`, { method: "PATCH", body: { settings: body } }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["org", id] }),
@@ -58,7 +59,13 @@ export default function OrganizationDetail() {
           {!exclusion && <td><label className="check small"><input type="checkbox" checked={e.allow_active_scanning} disabled={!writable}
             onChange={(ev) => patch.mutate({ entry: e, body: { allow_active_scanning: ev.target.checked } })} /> permitted</label></td>}
           {!exclusion && <td>{e.entry_type === "domain" ? (
-            <button className="btn sm ghost" onClick={() => setVerify(e)}><StatusBadge value={e.verification_status} /></button>) : "—"}</td>}
+            <button className="btn sm ghost" onClick={() => setVerify(e)}><StatusBadge value={e.verification_status} /></button>)
+            : e.verification_status === "not_required" ? "—" : <>
+              <StatusBadge value={e.verification_status} />
+              {e.verification_status !== "verified" && can("tenants:admin") &&
+                <button className="btn sm" style={{ marginLeft: 6 }} onClick={() => approve.mutate(e)}
+                        title="Approve this address range for active scanning (platform administrators)">Approve</button>}
+            </>}</td>}
           <td className="small">{fmtDate(e.created_at)}</td>
           <td>{writable && <button className="btn sm danger" onClick={() => setRemoving(e)} aria-label="Remove"><Trash2 /></button>}</td>
         </tr>

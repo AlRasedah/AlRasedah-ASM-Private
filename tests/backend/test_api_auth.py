@@ -139,7 +139,9 @@ def test_mfa_flow(client, factory):
     t = factory.tenant()
     u = factory.user(t.id)
     h = bearer(login(client, u.email))
-    setup = client.post("/api/v1/auth/mfa/setup", headers=h).json()
+    # Enrolling an authenticator requires re-entering the password.
+    assert client.post("/api/v1/auth/mfa/setup", headers=h, json={"password": "wrong-password"}).status_code == 401
+    setup = client.post("/api/v1/auth/mfa/setup", headers=h, json={"password": "Sup3r-Secret-Passw0rd!"}).json()
     totp = pyotp.TOTP(setup["secret"])
     assert client.post("/api/v1/auth/mfa/enable", headers=h, json={"code": "000000"}).status_code == 422
     assert client.post("/api/v1/auth/mfa/enable", headers=h, json={"code": totp.now()}).status_code == 200

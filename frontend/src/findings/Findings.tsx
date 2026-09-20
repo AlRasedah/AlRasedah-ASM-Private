@@ -10,7 +10,8 @@ import { FINDING_STATES, SEVERITIES, fmtDay, isDast, label, timeAgo } from "@/li
 import { useFilters } from "@/lib/useFilters";
 
 const MULTI = ["status", "severity", "category"] as const;
-type Key = "status" | "severity" | "category" | "open_only" | "kev" | "q" | "cve" | "sort" | "order" | "page" | "unassigned";
+type Key = "status" | "severity" | "category" | "open_only" | "kev" | "q" | "cve" | "sort" | "order" | "page" | "unassigned"
+  | "unverified";
 const CATEGORIES = ["vulnerability", "exposure", "misconfiguration", "certificate", "service_exposure", "information"];
 
 export default function Findings() {
@@ -31,6 +32,8 @@ export default function Findings() {
     return () => el?.removeEventListener("search", h);
   });
   const statuses = f.getAll("status");
+  // Third-party reports nobody tested (Shodan CVE matches) have their own view.
+  const unverified = f.get("unverified") === "true";
   const query = {
     ...f.query,
     open_only: statuses.length ? undefined : f.get("open_only") ?? "true",
@@ -47,7 +50,16 @@ export default function Findings() {
     <>
       <PageHead title="Findings" sub="Vulnerabilities and exposures, prioritized by practical risk — not CVSS alone."
                 actions={<button className="btn" onClick={() => download("/findings/export.csv", { ...query, page: undefined, page_size: undefined }, "findings.csv")}><Download /> Export CSV</button>} />
+      <div className="tabs" style={{ marginBottom: 12 }}>
+        <button className={`btn sm ${unverified ? "ghost" : "primary"}`}
+                onClick={() => f.set("unverified", undefined)}>Confirmed findings</button>
+        <button className={`btn sm ${unverified ? "primary" : "ghost"}`} title="Reported by a third-party database (e.g. Shodan) from the service version it saw, and not yet verified against the live service"
+                onClick={() => f.set("unverified", "true")}>Reported, unverified</button>
+      </div>
       <Card flush>
+        {unverified && <div className="card-body"><div className="info-box">These issues were reported by an external
+          database from the service version it observed — nobody tested them. They do not affect risk scores, reports or
+          alerts. A scan that confirms one shows it under “Confirmed findings”.</div></div>}
         <div className="filters">
           <input ref={searchRef} type="search" placeholder="Search title, location, rule…" value={search} aria-label="Search findings"
                  onChange={(e) => onSearch(e.target.value)} />
@@ -91,7 +103,9 @@ export default function Findings() {
                           <div className="cell-main"><Link to={`/findings/${x.id}`} className="row-link" onClick={(e) => e.stopPropagation()}>{x.title}</Link>
                             {x.kev && <span className="badge bad" style={{ marginInlineStart: 6 }}>KEV</span>}
                             {isDast(x.source) && <span className="badge accent" style={{ marginInlineStart: 6 }}
-                              title="Dynamically confirmed by active web scanning (OWASP ZAP)">DAST</span>}</div>
+                              title="Dynamically confirmed by active web scanning (OWASP ZAP)">DAST</span>}
+                            {x.unverified && <span className="badge warn" style={{ marginInlineStart: 6 }}
+                              title="Reported by an external database, not verified against the live service">unverified</span>}</div>
                           <div className="cell-sub">{x.cve.join(", ")}{x.epss_score ? ` · EPSS ${(x.epss_score * 100).toFixed(0)}%` : ""}</div>
                         </td>
                         <td className="small">{x.asset ? <Link to={`/assets/${x.asset.id}`} onClick={(e) => e.stopPropagation()}>{x.asset.value}</Link> : "—"}</td>

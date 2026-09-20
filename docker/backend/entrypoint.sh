@@ -24,6 +24,13 @@ case "$role" in
       --concurrency "${ASM_CORE_CONCURRENCY:-4}" --loglevel "${ASM_LOG_LEVEL:-INFO}" \
       --max-tasks-per-child 200 "$@"
     ;;
+  ingest)
+    # Consumes results.<pool> for every pool in ASM_WORKER_POOLS (default: default).
+    exec celery -A app.workers.results:results_app worker \
+      --concurrency "${ASM_INGEST_CONCURRENCY:-2}" --loglevel "${ASM_LOG_LEVEL:-INFO}" \
+      --without-gossip --without-mingle --hostname "ingest@%h" \
+      --max-tasks-per-child 200 "$@"
+    ;;
   scheduler)
     exec celery -A app.workers.celery_app beat --loglevel "${ASM_LOG_LEVEL:-INFO}" \
       --schedule /tmp/celerybeat-schedule "$@"

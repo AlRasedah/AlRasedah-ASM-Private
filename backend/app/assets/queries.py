@@ -121,7 +121,7 @@ def build(f: AssetFilter) -> Select:
     if f.severity:
         conds.append(exists(select(Finding.id).where(
             Finding.asset_id == Asset.id, Finding.status.in_([s.value for s in OPEN_FINDING_STATES]),
-            Finding.severity.in_([s.value for s in f.severity]))))
+            Finding.unverified.is_(False), Finding.severity.in_([s.value for s in f.severity]))))
     if conds:
         stmt = stmt.where(and_(*conds))
     col = SORTS.get(f.sort, Asset.risk_score)

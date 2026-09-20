@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from croniter import croniter
 from pydantic import BaseModel, Field, field_validator
@@ -45,6 +45,8 @@ class ScanOut(ORM):
     created_at: datetime
     stats: dict[str, Any]
     error: str | None
+    # A sign-in value was supplied for this scan (the value itself is never returned).
+    authenticated: bool = False
 
 
 class ScanDetail(ScanOut):
@@ -55,6 +57,23 @@ class ScanCreate(Input):
     organization_id: uuid.UUID
     profile_id: uuid.UUID
     targets: list[str] | None = Field(default=None, max_length=1000)
+    # Sign-in secret for this one scan: a logged-in session cookie (default) or a
+    # token. Used only by the web application scanner, only on the authorized
+    # origin; stored encrypted and erased when the scan ends. Never returned.
+    auth_secret: str | None = Field(default=None, max_length=4096)
+    auth_header_name: Literal["Cookie", "Authorization"] = "Cookie"
+
+    @field_validator("auth_secret")
+    @classmethod
+    def _one_header_line(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            return None
+        if "\r" in v or "\n" in v:
+            raise ValueError("the value must be a single line (no line breaks)")
+        return v
 
 
 class DecisionOut(ORM):

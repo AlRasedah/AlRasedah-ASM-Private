@@ -26,7 +26,7 @@ from ...base import (
     ScannerAdapter,
     StageType,
     iter_json_lines,
-    read_output_file,
+    tool_output,
     write_targets_file,
 )
 from ...execution import minimal_env, resolve_binary, run_process
@@ -164,8 +164,8 @@ class NucleiAdapter(ScannerAdapter):
         proc = await run_process(argv, timeout=ctx.timeout_seconds, cwd=str(ctx.workdir),
                                  env=minimal_env(home=str(ctx.settings.get("nuclei_home") or ctx.workdir)),
                                  max_output_bytes=ctx.max_output_bytes)
-        data = read_output_file(out, ctx.max_output_bytes) or proc.stdout
-        return RawOutput(process=proc, files={"nuclei.jsonl": data})
+        data, truncated = tool_output(out, proc, ctx.max_output_bytes)
+        return RawOutput(process=proc, files={"nuclei.jsonl": data}, truncated=truncated)
 
     async def parse_results(self, raw: RawOutput) -> list[dict[str, Any]]:
         return list(iter_json_lines(raw.primary))

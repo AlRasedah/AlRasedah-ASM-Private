@@ -27,22 +27,22 @@ complete with `POST /auth/mfa/verify`.
 
 | Prefix | Operations |
 |---|---|
-| `/auth` | login, mfa/verify, refresh, logout, me, switch-tenant, password/forgot, password/reset, password/change, mfa/setup, mfa/enable, mfa/disable, api-tokens |
+| `/auth` | login, mfa/verify, refresh, logout, me, switch-tenant, password/forgot, password/reset, password/change, mfa/setup (body: `{"password"}`), mfa/enable, mfa/disable, api-tokens. Password change, MFA setup/enable/disable and API-token creation/revocation require an interactive session: API tokens get 403 |
 | `/organizations` | list (with summary metrics), create, get, update (incl. scanning policy), delete |
-| `/scopes` | list, create, bulk, update, delete, check (authorization test), `{id}/verification`, `{id}/verify` |
+| `/scopes` | list, create, bulk, update, delete, check (authorization test), `{id}/verification`, `{id}/verify`, `{id}/approve` (platform admin: approve an IP/CIDR entry when verification is required) |
 | `/assets` | list (filters: type, status, scope, approval, unknown, owner, business_unit, criticality, tag, technology, asn, severity, risk range, first/last seen, q, sort), facets, export.csv, get, update, bulk-update, `{id}/timeline`, `{id}/observations` |
-| `/findings` | list (filters: status/open_only, severity, risk level, category, asset, assignee, cve, kev, tag, q), stats, export.csv, get, update (workflow), `{id}/activity`, `{id}/comments` |
-| `/scans` | list, create, get (with stages), cancel, `{id}/decisions` (authorization log), `{id}/artifacts`, artifact download |
+| `/findings` | list (filters: status/open_only, severity, risk level, category, asset, assignee, cve, kev, tag, q, `unverified` — third-party reports are excluded unless `unverified=true`), stats, export.csv, get, update (workflow), `{id}/activity`, `{id}/comments` |
+| `/scans` | list, create (optional `auth_secret` + `auth_header_name` — a sign-in cookie/token for this scan's web application stages: stored encrypted, never returned, erased when the scan ends; `authenticated` reports whether one was given), get (with stages), cancel, `{id}/decisions` (authorization log), `{id}/artifacts`, artifact download |
 | `/scan-profiles` | list, engines (adapter schemas), get, create, update, delete |
 | `/schedules` | list, create, update, delete |
 | `/events` | list (filters: type, min_severity, asset, scan, acknowledged, include_baseline, since/until), acknowledge (bulk), `{id}/acknowledge` |
 | `/dashboard` | summary, trends |
 | `/reports` | list, create (executive, technical, asset_inventory, vulnerability, changes, risk_trend × html/pdf/csv), get, download |
 | `/integrations` | types, list, create, update, delete, `{id}/test`, policies (CRUD), deliveries |
-| `/credentials` | providers, list (metadata only), set (`PUT /credentials/{provider}`), delete |
+| `/credentials` | providers (with description, group, key format and whether a key can be checked), list (metadata only), set (`PUT /credentials/{provider}`), test (`POST /credentials/{provider}/test`), delete |
 | `/users` | list, create/invite, update (role, active), remove, `POST /{id}/mfa/reset` (admin MFA reset) |
 | `/tenants` | (platform admin) list, plans, create, update |
-| `/settings` | get, update (inactivity rules, risk weights, scanning governance, detection rules, branding) |
+| `/settings` | get, update (inactivity rules, risk weights, scanning governance, detection rules, branding); `email` get/put + `email/test` (platform admin: the mail server, stored encrypted, overriding `ASM_SMTP_*`); `my-alerts` get/put (this user's own alerts, sent to their login address) |
 | `/audit-logs` | list (each entry has a gapless per-tenant `chain_seq`), verify (sequence, hash links and hashes; returns `reason`) |
 | `/intel` | feeds, `cve/{id}`, refresh (platform admin) |
 | `/health`, `/health/ready` | liveness / readiness |

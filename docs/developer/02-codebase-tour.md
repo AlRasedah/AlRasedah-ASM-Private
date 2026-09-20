@@ -74,7 +74,9 @@
 | `scans/orchestrator.py` | `create_scan`, `cancel_scan`, `try_start`, `prepare_next_stage` (authorization + job), `complete_stage` (ingest + rules), `fail_stage`, `finalize_scan`, `run_inline`. |
 | `scans/schedules.py` | Cron/timezone helpers. |
 | `intel/service.py` | KEV, EPSS, NVD fetch/parse/cache, offline import, re-enrichment. |
-| `integrations/channels.py` | Notification channel adapters and their config models; SSRF guard; Wazuh/syslog formatting. |
+| `integrations/channels.py` | Notification channel adapters and their config models; SSRF guard; Wazuh/syslog formatting; shared email formatting. Channels with `implemented = False` (Jira, ServiceNow) stay in the code but are **not offered by the API or UI** until they work. |
+| `integrations/providers.py` | What each data-source credential is, its group, key format and where to get it — the single source for the UI and the user guide. |
+| `services/platform_settings.py` | Deployment settings a platform admin edits in the UI (mail server; password encrypted), overriding `ASM_SMTP_*`. |
 | `integrations/notifications.py` | Policy matching, throttling, batching per channel, delivery log, retries, test sends. |
 | `integrations/mailer.py` | SMTP sending; password reset mail. |
 | `reporting/` | `service.py` (context building, HTML/PDF/CSV rendering, `run_report`), `charts.py` (dependency-free SVG), `templates/report.html`. |

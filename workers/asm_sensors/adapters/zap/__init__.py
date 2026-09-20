@@ -25,15 +25,24 @@ Two adapters are provided:
   stage. Runs the active scanner against the already-known endpoints and reports
   its alerts as findings.
 
-Both adapters are strictly host-scoped: a ZAP *context* is created per target
-whose inclusion regex matches only the authorized origin, and the scanners are
-told to stay ``inScopeOnly`` / ``subtreeOnly``. ZAP never wanders off the host
-it was pointed at, mirroring the httpx "same-host redirects only" rule.
+Both adapters are strictly origin-scoped: a ZAP *context* is created per target
+whose anchored inclusion regex matches exactly the authorized
+``scheme://host[:port]`` (no look-alike hosts, other ports or userinfo), the
+scanners are told to stay ``inScopeOnly`` / ``subtreeOnly`` within that context,
+and the site is seeded without following redirects.
+
+**Isolation.** A ZAP daemon's session (history, alerts, contexts), scanner
+options and Replacer rules are global. Each job therefore holds a pool-wide
+lease on the daemon for its whole run and works in a fresh session that is
+replaced again when it finishes, so concurrent or consecutive jobs — possibly
+for different tenants — never see each other's traffic, alerts or credentials.
+Deployments that must isolate tenants from each other give each worker pool its
+own daemon.
 
 **Authenticated scanning.** If the tenant stores a ``zap_auth`` credential, both
 adapters crawl and attack as an authenticated user: the secret is injected into
-every in-scope request via a ZAP Replacer rule scoped to the authorized origin
-(so it never leaks off-host). The header defaults to ``Cookie`` (paste a logged-in
+every in-scope request via a ZAP Replacer rule scoped by the same anchored
+origin regex (so it never leaks off-origin). The header defaults to ``Cookie`` (paste a logged-in
 session cookie such as ``PHPSESSID=...; security=low``) and can be set to
 ``Authorization`` (for ``Bearer ...`` tokens) via ``auth_header_name``. The secret
 travels through the normal sealed-credential channel — never in a scan profile.
@@ -48,14 +57,18 @@ docs/SENSORS.md.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import hashlib
 import re
 import time
+from collections.abc import AsyncIterator
 from typing import Annotated, Any, Literal
 
 import httpx
 from pydantic import AfterValidator, Field
 
 from ...base import AdapterConfig, ExecutionContext, RawOutput, ScannerAdapter, StageType
+from ...coordination import LeaseUnavailable
 from ...observations import (
     AssetRef,
     FindingCategory,
@@ -250,17 +263,73 @@ class _ZapClient:
     async def remove_auth_header(self, description: str) -> None:
         await self.call("replacer", "action", "removeRule", {"description": description})
 
+    async def remove_context(self, name: str) -> None:
+        await self.call("context", "action", "removeContext", {"contextName": name})
+
+    async def new_session(self) -> None:
+        """Replace the daemon's session: drops all history, sites, alerts and contexts."""
+        await self.call("core", "action", "newSession", {"name": "", "overwrite": "true"})
+
+    async def alerts(self, url: str, max_alerts: int, raw: RawOutput, source: str) -> None:
+        """Collect this origin's alerts into ``raw`` (only alerts whose URL is on the origin)."""
+        origin = endpoint_base(url)
+        body = await self.call("core", "view", "alerts", {"baseurl": url, "start": 0, "count": max_alerts})
+        found = [a for a in body.get("alerts") or [] if isinstance(a, dict)]
+        if len(found) >= max_alerts:
+            raw.errors.append(f"{source}: alert limit ({max_alerts}) reached for {url}; results are incomplete")
+        for a in found:
+            base = endpoint_base(str(a.get("url") or ""))
+            if origin and base and base[0] == origin[0]:
+                raw.records.append({"kind": "alert", **a})
+
 
 def _include_regex(url: str) -> str:
-    """A ZAP inclusion regex matching only the target's own origin (scheme://host[:port])."""
+    """A ZAP regex matching exactly the target's origin (scheme://host[:port]) and its paths.
+
+    Anchored at both ends with an explicit authority boundary, so look-alike hosts
+    (``example.com.attacker.test``), other ports, and ``user@host`` tricks never
+    match. The same regex scopes the ZAP context *and* the credential Replacer rule.
+    """
     base = endpoint_base(url)
-    origin = base[0] if base else url.rstrip("/")
-    return re.escape(origin) + r".*"
+    if not base:
+        raise ValueError(f"not an http(s) URL: {url!r}")
+    _origin, scheme, host, port = base
+    netloc = f"[{host}]" if ":" in host else host
+    default = 443 if scheme == "https" else 80
+    port_part = rf"(?::{default})?" if port == default else f":{port}"
+    return "^" + re.escape(f"{scheme}://{netloc}") + port_part + r"(?:[/?#].*)?$"
 
 
 def _require_zap(ctx: ExecutionContext) -> None:
     if not ctx.settings.get("zap_url"):
         raise RuntimeError("ZAP integration is not enabled in this deployment (zap_url unset)")
+
+
+def _lease_name(ctx: ExecutionContext) -> str:
+    return "zap:" + hashlib.sha256(str(ctx.settings["zap_url"]).encode()).hexdigest()[:16]
+
+
+@contextlib.asynccontextmanager
+async def _exclusive_daemon(zap: _ZapClient, ctx: ExecutionContext) -> AsyncIterator[None]:
+    """Hold the ZAP daemon exclusively for this job, in a fresh, empty session.
+
+    A daemon's session (history, sites tree, alerts, contexts), scanner options
+    and Replacer rules are global, so jobs never share it: the pool-wide lease
+    serializes them, and the session is replaced before and after the job so no
+    job sees another's traffic, alerts or credentials.
+    """
+    async with ctx.coordinator.lease(_lease_name(ctx), ttl=120, wait=max(60, ctx.timeout_seconds // 2)):
+        await zap.new_session()
+        try:
+            yield
+        finally:
+            with contextlib.suppress(httpx.HTTPError):
+                await zap.new_session()
+
+
+async def _stop(zap: _ZapClient, component: str, params: dict[str, Any]) -> None:
+    with contextlib.suppress(httpx.HTTPError):
+        await zap.call(component, "action", "stop", params)
 
 
 class ZapSpiderConfig(AdapterConfig):
@@ -297,17 +366,22 @@ class ZapSpiderAdapter(ScannerAdapter):
         api_key = (ctx.settings.get("zap_api_key") or None)
         # Per-request timeout is short; the long waits are bounded by explicit deadlines below.
         auth = auth_secret(ctx)
-        async with _ZapClient(base_url, api_key, timeout=60) as zap:
-            await self._set_options(zap, config, raw)
-            for i, t in enumerate(targets):
-                url = target_url(t)
-                if not url:
-                    raw.errors.append(f"zap_spider: cannot derive a URL for {t.value}")
-                    continue
-                try:
-                    await self._crawl_one(zap, url, config, ctx, raw, ctx_name=f"asm-crawl-{i}", auth=auth)
-                except (httpx.HTTPError, ValueError, KeyError) as exc:
-                    raw.errors.append(f"zap_spider error for {url}: {type(exc).__name__}")
+        try:
+            async with _ZapClient(base_url, api_key, timeout=60) as zap, _exclusive_daemon(zap, ctx):
+                await self._set_options(zap, config, raw)
+                for i, t in enumerate(targets):
+                    url = target_url(t)
+                    if not url:
+                        raw.errors.append(f"zap_spider: cannot derive a URL for {t.value}")
+                        continue
+                    try:
+                        await self._crawl_one(zap, url, config, raw, ctx_name=f"asm-{ctx.job_id}-{i}", auth=auth)
+                    except (httpx.HTTPError, ValueError, KeyError) as exc:
+                        raw.errors.append(f"zap_spider error for {url}: {type(exc).__name__}")
+        except LeaseUnavailable:
+            raw.errors.append("zap_spider: the ZAP daemon stayed busy with another job; nothing was crawled")
+        except httpx.HTTPError as exc:
+            raw.errors.append(f"zap_spider: ZAP daemon unavailable: {type(exc).__name__}")
         return raw
 
     async def _set_options(self, zap: _ZapClient, config: ZapSpiderConfig, raw: RawOutput) -> None:
@@ -318,84 +392,100 @@ class ZapSpiderAdapter(ScannerAdapter):
         except httpx.HTTPError as exc:
             raw.errors.append(f"zap_spider: could not set options: {type(exc).__name__}")
 
-    async def _crawl_one(self, zap: _ZapClient, url: str, config: ZapSpiderConfig, ctx: ExecutionContext,
-                         raw: RawOutput, ctx_name: str, auth: str | None = None) -> None:
+    async def _crawl_one(self, zap: _ZapClient, url: str, config: ZapSpiderConfig, raw: RawOutput, ctx_name: str,
+                         auth: str | None = None) -> None:
         origin = _include_regex(url)
         await zap.new_context(ctx_name, origin)
         rule = None
-        if auth:
-            rule = f"asm-auth-{ctx_name}"
-            try:
-                await zap.add_auth_header(rule, config.auth_header_name, auth, origin)
-            except httpx.HTTPError:
-                rule = None
-                raw.errors.append(f"zap_spider: could not apply authentication for {url}; scanning unauthenticated")
+        scan_id = ""
+        spider_done = ajax_done = True
         try:
-            await zap.call("core", "action", "accessUrl", {"url": url, "followRedirects": "true"})
+            if auth:
+                rule = f"asm-auth-{ctx_name}"
+                try:
+                    await zap.add_auth_header(rule, config.auth_header_name, auth, origin)
+                except httpx.HTTPError:
+                    rule = None
+                    raw.errors.append(f"zap_spider: could not apply authentication for {url}; scanning unauthenticated")
+            # Seed without following redirects: a redirect must never put another host on the request path.
+            await zap.call("core", "action", "accessUrl", {"url": url, "followRedirects": "false"})
 
             started = await zap.call("spider", "action", "scan", {
                 "url": url, "maxChildren": config.max_children or "", "recurse": "true",
                 "subtreeOnly": "true", "contextName": ctx_name})
             scan_id = str(started.get("scan") or "")
-            if scan_id:
-                await self._await_status(zap, "spider", {"scanId": scan_id}, config)
+            if not scan_id or not scan_id.isdigit():
+                raw.errors.append(f"zap_spider: daemon refused to crawl {url}")
+                scan_id = ""
+            else:
+                spider_done = False
+                spider_done = await self._await_status(zap, "spider", {"scanId": scan_id}, config)
+                if not spider_done:
+                    raw.errors.append(f"zap_spider: crawl of {url} did not finish before its deadline")
                 results = await zap.call("spider", "view", "results", {"scanId": scan_id})
                 for u in results.get("results") or []:
                     raw.records.append({"kind": "url", "root": url, "value": str(u)})
 
             if config.ajax_spider:
+                ajax_done = False
                 await zap.call("ajaxSpider", "action", "scan", {"url": url, "inScope": "true", "contextName": ctx_name})
                 deadline = time.monotonic() + config.max_duration_minutes * 60
                 while time.monotonic() < deadline:
                     st = await zap.call("ajaxSpider", "view", "status", {})
                     if str(st.get("status") or "").lower() != "running":
+                        ajax_done = True
                         break
                     await asyncio.sleep(config.poll_interval_seconds)
+                if not ajax_done:
+                    raw.errors.append(f"zap_spider: AJAX crawl of {url} did not finish before its deadline")
                 full = await zap.call("ajaxSpider", "view", "fullResults", {})
-                for bucket in ("inScope", "outOfScope"):
-                    for item in (full.get(bucket) or []) if isinstance(full, dict) else []:
-                        u = (item or {}).get("requestHeader", "").split(" ")[1:2]
-                        if bucket == "inScope" and u:
-                            raw.records.append({"kind": "url", "root": url, "value": u[0]})
+                for item in (full.get("inScope") or []) if isinstance(full, dict) else []:
+                    u = (item or {}).get("requestHeader", "").split(" ")[1:2]
+                    if u:
+                        raw.records.append({"kind": "url", "root": url, "value": u[0]})
 
             if config.passive_scan:
-                await self._drain_passive(zap, config, ctx)
-                alerts = await zap.call("core", "view", "alerts",
-                                        {"baseurl": url, "start": 0, "count": config.max_alerts})
-                for a in alerts.get("alerts") or []:
-                    if isinstance(a, dict):
-                        raw.records.append({"kind": "alert", **a})
+                if not await self._drain_passive(zap, config):
+                    raw.errors.append(f"zap_spider: passive analysis of {url} did not finish before its deadline")
+                await zap.alerts(url, config.max_alerts, raw, "zap_spider")
         finally:
-            if rule:
-                try:
+            if scan_id and not spider_done:
+                await _stop(zap, "spider", {"scanId": scan_id})
+            if not ajax_done:
+                await _stop(zap, "ajaxSpider", {})
+            with contextlib.suppress(httpx.HTTPError):
+                if rule:
                     await zap.remove_auth_header(rule)
-                except httpx.HTTPError:
-                    pass
+            with contextlib.suppress(httpx.HTTPError):
+                await zap.remove_context(ctx_name)
 
-    async def _drain_passive(self, zap: _ZapClient, config: ZapSpiderConfig, ctx: ExecutionContext) -> None:
+    async def _drain_passive(self, zap: _ZapClient, config: ZapSpiderConfig) -> bool:
         deadline = time.monotonic() + config.max_duration_minutes * 60
         while time.monotonic() < deadline:
             st = await zap.call("pscan", "view", "recordsToScan", {})
             try:
                 remaining = int(st.get("recordsToScan") or 0)
             except (TypeError, ValueError):
-                remaining = 0
+                return False
             if remaining <= 0:
-                return
+                return True
             await asyncio.sleep(config.poll_interval_seconds)
+        return False
 
     async def _await_status(self, zap: _ZapClient, component: str, params: dict[str, Any],
-                            config: ZapSpiderConfig) -> None:
+                            config: ZapSpiderConfig) -> bool:
+        """Poll until the scan reports 100%; False if the deadline passed or the status was unreadable."""
         # The scanner's own max-duration option stops it; this is the outer safety deadline.
         deadline = time.monotonic() + config.max_duration_minutes * 60 + 60
         while time.monotonic() < deadline:
             st = await zap.call(component, "view", "status", params)
             try:
                 if int(st.get("status") or 0) >= 100:
-                    return
+                    return True
             except (TypeError, ValueError):
-                return
+                return False
             await asyncio.sleep(config.poll_interval_seconds)
+        return False
 
     async def parse_results(self, raw: RawOutput) -> list[dict[str, Any]]:
         return list(raw.records)
@@ -470,17 +560,22 @@ class ZapActiveAdapter(ScannerAdapter):
         base_url = str(ctx.settings["zap_url"])
         api_key = (ctx.settings.get("zap_api_key") or None)
         auth = auth_secret(ctx)
-        async with _ZapClient(base_url, api_key, timeout=60) as zap:
-            await self._set_options(zap, config, raw)
-            for i, t in enumerate(targets):
-                url = target_url(t)
-                if not url:
-                    raw.errors.append(f"zap_active: cannot derive a URL for {t.value}")
-                    continue
-                try:
-                    await self._scan_one(zap, url, config, raw, ctx_name=f"asm-ascan-{i}", auth=auth)
-                except (httpx.HTTPError, ValueError, KeyError) as exc:
-                    raw.errors.append(f"zap_active error for {url}: {type(exc).__name__}")
+        try:
+            async with _ZapClient(base_url, api_key, timeout=60) as zap, _exclusive_daemon(zap, ctx):
+                await self._set_options(zap, config, raw)
+                for i, t in enumerate(targets):
+                    url = target_url(t)
+                    if not url:
+                        raw.errors.append(f"zap_active: cannot derive a URL for {t.value}")
+                        continue
+                    try:
+                        await self._scan_one(zap, url, config, raw, ctx_name=f"asm-{ctx.job_id}-{i}", auth=auth)
+                    except (httpx.HTTPError, ValueError, KeyError) as exc:
+                        raw.errors.append(f"zap_active error for {url}: {type(exc).__name__}")
+        except LeaseUnavailable:
+            raw.errors.append("zap_active: the ZAP daemon stayed busy with another job; nothing was scanned")
+        except httpx.HTTPError as exc:
+            raw.errors.append(f"zap_active: ZAP daemon unavailable: {type(exc).__name__}")
         return raw
 
     async def _set_options(self, zap: _ZapClient, config: ZapActiveConfig, raw: RawOutput) -> None:
@@ -494,44 +589,50 @@ class ZapActiveAdapter(ScannerAdapter):
     async def _scan_one(self, zap: _ZapClient, url: str, config: ZapActiveConfig, raw: RawOutput, ctx_name: str,
                         auth: str | None = None) -> None:
         origin = _include_regex(url)
-        await zap.new_context(ctx_name, origin)
+        context_id = await zap.new_context(ctx_name, origin)
         rule = None
-        if auth:
-            rule = f"asm-auth-{ctx_name}"
-            try:
-                await zap.add_auth_header(rule, config.auth_header_name, auth, origin)
-            except httpx.HTTPError:
-                rule = None
-                raw.errors.append(f"zap_active: could not apply authentication for {url}; scanning unauthenticated")
+        scan_id = ""
+        finished = False
         try:
-            # Seed the sites tree so the active scanner has something to attack.
-            await zap.call("core", "action", "accessUrl", {"url": url, "followRedirects": "true"})
+            if auth:
+                rule = f"asm-auth-{ctx_name}"
+                try:
+                    await zap.add_auth_header(rule, config.auth_header_name, auth, origin)
+                except httpx.HTTPError:
+                    rule = None
+                    raw.errors.append(f"zap_active: could not apply authentication for {url}; scanning unauthenticated")
+            # Seed the sites tree so the active scanner has something to attack — without
+            # following redirects, so no other host ever enters the request path.
+            await zap.call("core", "action", "accessUrl", {"url": url, "followRedirects": "false"})
             started = await zap.call("ascan", "action", "scan", {
                 "url": url, "recurse": str(config.recurse).lower(), "inScopeOnly": str(config.in_scope_only).lower(),
-                "scanPolicyName": config.scan_policy, "method": "", "postData": ""})
+                "scanPolicyName": config.scan_policy, "method": "", "postData": "", "contextId": context_id})
             scan_id = str(started.get("scan") or "")
-            if not scan_id or scan_id.startswith("does_not_exist"):
+            if not scan_id.isdigit():
                 raw.errors.append(f"zap_active: daemon refused active scan for {url}")
+                scan_id = ""
                 return
             deadline = time.monotonic() + config.max_duration_minutes * 60 + 120
             while time.monotonic() < deadline:
                 st = await zap.call("ascan", "view", "status", {"scanId": scan_id})
                 try:
                     if int(st.get("status") or 0) >= 100:
+                        finished = True
                         break
                 except (TypeError, ValueError):
                     break
                 await asyncio.sleep(config.poll_interval_seconds)
-            alerts = await zap.call("core", "view", "alerts", {"baseurl": url, "start": 0, "count": config.max_alerts})
-            for a in alerts.get("alerts") or []:
-                if isinstance(a, dict):
-                    raw.records.append({"kind": "alert", **a})
+            if not finished:
+                raw.errors.append(f"zap_active: active scan of {url} did not finish before its deadline")
+            await zap.alerts(url, config.max_alerts, raw, "zap_active")
         finally:
-            if rule:
-                try:
+            if scan_id and not finished:
+                await _stop(zap, "ascan", {"scanId": scan_id})
+            with contextlib.suppress(httpx.HTTPError):
+                if rule:
                     await zap.remove_auth_header(rule)
-                except httpx.HTTPError:
-                    pass
+            with contextlib.suppress(httpx.HTTPError):
+                await zap.remove_context(ctx_name)
 
     async def parse_results(self, raw: RawOutput) -> list[dict[str, Any]]:
         return list(raw.records)

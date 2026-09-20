@@ -351,10 +351,12 @@ def reset_password(db: Session, raw_token: str, new_password: str) -> None:
 
 
 # ---------------------------------------------------------------------- MFA
-def mfa_begin_setup(db: Session, user_id: uuid.UUID) -> tuple[str, str]:
+def mfa_begin_setup(db: Session, user_id: uuid.UUID, password: str) -> tuple[str, str]:
     user = db.get(User, user_id)
     if user is None:
         raise Unauthorized("Unknown user")
+    if not verify_password(password, user.password_hash):
+        raise Unauthorized("Password is incorrect")
     if user.mfa_enabled:
         raise ValidationFailed("MFA is already enabled")
     secret = pyotp.random_base32()

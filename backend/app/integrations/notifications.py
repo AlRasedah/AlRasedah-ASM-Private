@@ -22,11 +22,15 @@ from app.models import (
     NotificationPolicy,
     Organization,
     Tenant,
+    TenantMembership,
+    User,
+    UserAlertPreference,
 )
 from app.models.enums import DeliveryStatus, Severity
 from app.services.secrets import get_secret_value
 
-from .channels import CHANNELS, ChannelError
+from .channels import CHANNELS, ChannelError, email_message
+from .mailer import MailNotConfigured, send_email
 
 log = logging.getLogger(__name__)
 _RANK = {s.value: i for i, s in enumerate(Severity)}
@@ -95,9 +99,72 @@ def deliver(db: Session, integration: Integration, payloads: list[dict[str, Any]
     channel.send(integration.config or {}, secret, payloads)
 
 
+# A user who has not chosen otherwise gets high and critical changes in their inbox.
+DEFAULT_ALERTS = {"enabled": True, "min_severity": Severity.HIGH, "event_types": [], "organization_ids": [],
+                  "include_baseline": False}
+
+
+def personal_preferences(db: Session, tenant_id: uuid.UUID) -> list[tuple[User, UserAlertPreference | None]]:
+    """Active members of the tenant with their alert preferences (None = the default)."""
+    rows = db.execute(select(User, TenantMembership).join(TenantMembership, TenantMembership.user_id == User.id)
+                      .where(TenantMembership.tenant_id == tenant_id, TenantMembership.is_active.is_(True),
+                             User.is_active.is_(True))).all()
+    prefs = {p.user_id: p for p in db.execute(select(UserAlertPreference).where(
+        UserAlertPreference.tenant_id == tenant_id)).scalars()}
+    return [(user, prefs.get(user.id)) for user, _ in rows]
+
+
+def personal_matches(pref: UserAlertPreference | None, ev: AssetEvent) -> bool:
+    """Does this event belong in the user's own inbox?"""
+    enabled = pref.enabled if pref else DEFAULT_ALERTS["enabled"]
+    if not enabled:
+        return False
+    min_severity = pref.min_severity if pref else DEFAULT_ALERTS["min_severity"]
+    if _RANK[ev.severity.value] < _RANK[min_severity.value]:
+        return False
+    include_baseline = pref.include_baseline if pref else DEFAULT_ALERTS["include_baseline"]
+    if ev.is_baseline and not include_baseline:
+        return False
+    event_types = (pref.event_types if pref else None) or []
+    if event_types and ev.event_type.value not in event_types:
+        return False
+    organizations = (pref.organization_ids if pref else None) or []
+    return not organizations or ev.organization_id in organizations
+
+
+def _deliver_personal(db: Session, tenant: Tenant | None, tenant_id: uuid.UUID, events: list[AssetEvent],
+                      payloads: dict[uuid.UUID, dict[str, Any]], now: datetime, stats: dict[str, int]) -> None:
+    """Email each member the changes they asked for, at their own login address.
+
+    The address is never user-supplied: it is the account's verified login email,
+    and members only ever receive their own tenant's events.
+    """
+    if not events:
+        return
+    for user, pref in personal_preferences(db, tenant_id):
+        mine = [ev for ev in events if personal_matches(pref, ev)]
+        if not mine:
+            continue
+        batch = [payloads.get(ev.id) or event_payload(db, ev, tenant) for ev in mine]
+        subject, body = email_message(batch)
+        try:
+            send_email([user.email], subject, body)
+            stats["personal_sent"] += len(mine)
+            if pref is not None:
+                pref.last_sent_at = now
+        except MailNotConfigured:
+            stats["personal_skipped"] += len(mine)
+            log.info("personal alerts for %s skipped: email delivery is not configured", tenant_id)
+            return  # no mail server: nothing to send for anyone in this tenant
+        except Exception as exc:  # noqa: BLE001 - one bad address must not stop the rest
+            stats["personal_failed"] += len(mine)
+            log.warning("personal alert delivery failed for a user in tenant %s: %s", tenant_id, type(exc).__name__)
+
+
 def dispatch_pending(db: Session, limit: int = 1000) -> dict[str, int]:
     """Process events not yet evaluated for notification (system session)."""
-    stats = {"events": 0, "sent": 0, "failed": 0, "skipped": 0}
+    stats = {"events": 0, "sent": 0, "failed": 0, "skipped": 0,
+             "personal_sent": 0, "personal_failed": 0, "personal_skipped": 0}
     events = db.execute(select(AssetEvent).where(AssetEvent.notified.is_(False)).order_by(AssetEvent.occurred_at)
                         .limit(limit).with_for_update(skip_locked=True)).scalars().all()
     if not events:
@@ -114,6 +181,7 @@ def dispatch_pending(db: Session, limit: int = 1000) -> dict[str, int]:
             Integration.tenant_id == tenant_id, Integration.enabled.is_(True))).scalars()}
         # (integration) -> [(event, policy, payload)] so each channel gets one batched delivery.
         outbox: dict[uuid.UUID, list[tuple[AssetEvent, NotificationPolicy, dict[str, Any]]]] = defaultdict(list)
+        payloads: dict[uuid.UUID, dict[str, Any]] = {}
         for ev in evs:
             stats["events"] += 1
             ev.notified, ev.notified_at = True, now
@@ -125,6 +193,7 @@ def dispatch_pending(db: Session, limit: int = 1000) -> dict[str, int]:
                     stats["skipped"] += 1
                     continue
                 payload = payload or event_payload(db, ev, tenant)
+                payloads[ev.id] = payload
                 for iid in policy.integration_ids or []:
                     if iid in integrations and not any(e.id == ev.id for e, _, _ in outbox[iid]):
                         outbox[iid].append((ev, policy, payload))
@@ -145,6 +214,7 @@ def dispatch_pending(db: Session, limit: int = 1000) -> dict[str, int]:
                 integ.last_error, integ.last_error_at = str(exc)[:1000], now
                 stats["failed"] += len(items)
                 log.warning("notification via integration %s failed: %s", iid, exc)
+        _deliver_personal(db, tenant, tenant_id, evs, payloads, now, stats)
         db.commit()
     return stats
 

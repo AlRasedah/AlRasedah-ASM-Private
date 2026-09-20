@@ -71,16 +71,45 @@ The most common first-deploy failures:
 
 ## 4. Email
 
-Set `ASM_SMTP_HOST`, `ASM_SMTP_PORT`, credentials and `ASM_SMTP_FROM`. Without SMTP,
-password resets and user invitations fall back to one-time links shown to administrators,
-and email notification channels fail visibly in the delivery log.
+Configure the mail server in the web interface: **Settings → Email delivery** (platform
+administrators), which also sends a test message. The settings are stored encrypted in the
+database, take effect immediately (no restart) and override the environment.
+
+`ASM_SMTP_HOST`, `ASM_SMTP_PORT`, credentials and `ASM_SMTP_FROM` remain as a bootstrap
+default — useful when you want mail working before anyone signs in. Without either,
+password resets and invitations fall back to one-time links shown to administrators, and
+email deliveries fail visibly in the delivery log.
+
+Users switch on alerts to their own login address under **Your account → Email alerts**
+(on by default for high and critical changes); no mail-server access is needed for that.
 
 ## 5. Sensors
 
 - **Pools**: `tenants.worker_pool` (default `default`) routes a tenant's sensor jobs to queue
-  `scanners.<pool>`. Run additional sensor workers for dedicated pools:
-  `ASM_SENSOR_QUEUES=scanners.bank-a docker compose up -d --scale asm-scanner=2`, or add a
-  second service with a different `ASM_SENSOR_QUEUES`.
+  `scanners.<pool>`; results come back on `results.<pool>`. A pool is also a trust boundary
+  (its own broker user and key — see ARCHITECTURE.md §2), so tenants that must not share
+  scanners get their own pool. To add pool `bank-a`:
+  1. Copy the redis service's `--user scanner-default …` block in `docker-compose.yml`,
+     replacing every `default` with `bank-a` (queue, bookkeeping and binding keys,
+     `asm.pool.bank-a.*`, `*.asm-bank-a.pidbox`, `&/0.asm-bank-a.pidbox`) and giving it its
+     own password variable.
+  2. Add a scanner service like `asm-scanner` with `ASM_SENSOR_POOL: bank-a`, the new broker
+     user in `ASM_CELERY_BROKER_URL`, and `ASM_SCANNER_TRANSPORT_KEY` set to the output of
+     `docker compose run --rm asm-api cli scanner-pool-key bank-a`. Never give sensor
+     containers the platform's `ASM_SCANNER_TRANSPORT_KEY` or `ASM_REDIS_PASSWORD`.
+  3. Add the pool to `ASM_WORKER_POOLS` (e.g. `default,bank-a`) and restart `asm-ingest`.
+  4. If the pool runs DAST, give it its own ZAP daemon (`ASM_ZAP_URL`).
+- **Egress firewall (required for untrusted scope)**: the platform refuses to actively scan
+  non-public addresses, and sensors re-check every resolved destination just before
+  connecting, but a hostname can change its DNS answer between that check and the tool's own
+  lookup. Enforce the rule at the network layer too: drop traffic from the `egress` network
+  of scanner/ZAP containers to loopback, RFC 1918, link-local (incl. `169.254.169.254`
+  metadata), CGNAT and your own infrastructure — e.g. rules in the host's `DOCKER-USER`
+  iptables chain, or a cloud security group on a dedicated scanning host.
+  `ASM_ALLOW_NON_PUBLIC_SCOPE` / `ASM_SCANNER_ALLOW_NON_PUBLIC` are for labs only.
+- **Broker redelivery**: `ASM_BROKER_VISIBILITY_TIMEOUT` (default 6 h) must exceed
+  `ASM_STAGE_TIMEOUT_SECONDS` + 900 s and be the same for every service (the platform refuses
+  to start otherwise). Sensor workers also ignore a redelivered job they already claimed.
 - **Placement**: sensors only need the broker and internet egress. They can run on separate
   hosts/regions (e.g. a dedicated scanning egress IP that customers allow-list) with
   `ASM_CELERY_BROKER_URL` pointing at the broker over a private network or TLS tunnel.
@@ -101,7 +130,10 @@ and email notification channels fail visibly in the delivery log.
   service is started with). This enables the `zap_spider` (web crawling + passive scanning)
   and `zap_active` (active vulnerability scanning) engines and the built-in **Web Application
   Scan (DAST)** profile. Active scanning is intrusive: it only runs against scope with
-  active-scanning authorization, and ZAP is confined per target to the authorized origin.
+  active-scanning authorization, and ZAP is confined per target to exactly the authorized
+  origin (anchored regex, no seeding redirects). One job uses a daemon at a time (a
+  pool-wide lease) in a fresh session that is wiped afterwards, so parallel DAST stages queue
+  for the daemon; deploy one daemon per pool for tenant isolation and throughput.
   For **authenticated scanning**, store a `zap_auth` credential (Integrations → Data-source
   API keys) — a logged-in session cookie (default header `Cookie`, e.g.
   `PHPSESSID=…; security=low`) or a bearer token (set the stage's `auth_header_name` to
@@ -147,8 +179,10 @@ the storage volume, start the stack.
 - `ASM_ENCRYPTION_KEYS=k2:<new>,k1:<old>` — new secrets use `k2`, old ones still decrypt.
   Re-save credentials (or re-run a rotation job) before removing `k1`.
 - `ASM_SECRET_KEY` rotation signs everyone out (JWTs and hashed refresh/reset tokens).
-- `ASM_SCANNER_TRANSPORT_KEY` must be identical on platform and sensor containers; rotate
-  both together while no scans are running.
+- `ASM_SCANNER_TRANSPORT_KEY` is the platform's master key; each pool's sensor containers get
+  only their derived pool key (`ASM_SCANNER_POOL_KEY` for `default`, `cli scanner-pool-key
+  <pool>` for others). Rotate the master key while no scans are running, then re-derive and
+  redeploy every pool key (`python scripts/generate_env.py` refreshes the default one).
 
 ## 9. Upgrades
 
@@ -157,6 +191,15 @@ git pull && docker compose build && docker compose up -d   # asm-migrate applies
 ```
 
 Read release notes for tool version changes (new detection behaviour can change findings).
+
+**Upgrading to the sensor trust-boundary release (migration 0003).** Run
+`python scripts/generate_env.py` first: it adds `ASM_SCANNER_POOL_KEY` (derived from your
+existing master key) and `ASM_SCANNER_REDIS_PASSWORD`, and drops the obsolete
+`ASM_SENSOR_QUEUES` (a scanner container now serves one pool, `ASM_SENSOR_POOL`). Let running
+scans finish first: in-flight results from the old pipeline are not accepted and those stages
+are failed by the watchdog. Redis must be recreated to pick up the ACL users
+(`docker compose up -d --force-recreate redis`), and the new `asm-ingest` service must run.
+MFA enrollment now asks for the account password.
 
 ## 10. Operations
 

@@ -118,33 +118,40 @@ class Channel:
         raise NotImplementedError
 
 
+def email_message(payloads: list[dict[str, Any]], subject_prefix: str = "[Exteriq ASM]") -> tuple[str, str]:
+    """Subject and plain-text body for a batch of events (shared by the email channel
+    and the per-user alerts people switch on for their own login address)."""
+    top = max(payloads, key=lambda p: ["info", "low", "medium", "high", "critical"].index(p["severity"]))
+    subject = (f"{subject_prefix} {top['severity'].upper()}: {top['title']}" if len(payloads) == 1
+               else f"{subject_prefix} {len(payloads)} attack surface changes")
+    lines = []
+    for p in payloads:
+        lines.append(f"[{p['severity'].upper()}] {p['title']}")
+        if p.get("organization"):
+            lines.append(f"  Organization: {p['organization']}")
+        if p.get("asset"):
+            lines.append(f"  Asset: {p['asset']}" + (f" ({p['ip']})" if p.get("ip") else ""))
+        if p.get("summary"):
+            lines.append(f"  {p['summary']}")
+        if p.get("previous") or p.get("current"):
+            lines.append(f"  Previous: {json.dumps(p.get('previous'))}")
+            lines.append(f"  Current:  {json.dumps(p.get('current'))}")
+        lines.append(f"  When: {p['occurred_at']}   Risk: {p.get('risk_score', '-')}")
+        if p.get("url"):
+            lines.append(f"  {p['url']}")
+        lines.append("")
+    return subject, "\n".join(lines)
+
+
 class EmailChannel(Channel):
     type = "email"
     config_model = EmailConfig
 
     def send(self, config: dict[str, Any], secret: str | None, payloads: list[dict[str, Any]]) -> None:
         cfg = EmailConfig.model_validate(config)
-        top = max(payloads, key=lambda p: ["info", "low", "medium", "high", "critical"].index(p["severity"]))
-        subject = (f"{cfg.subject_prefix} {top['severity'].upper()}: {top['title']}" if len(payloads) == 1
-                   else f"{cfg.subject_prefix} {len(payloads)} attack surface changes")
-        lines = []
-        for p in payloads:
-            lines.append(f"[{p['severity'].upper()}] {p['title']}")
-            if p.get("organization"):
-                lines.append(f"  Organization: {p['organization']}")
-            if p.get("asset"):
-                lines.append(f"  Asset: {p['asset']}" + (f" ({p['ip']})" if p.get("ip") else ""))
-            if p.get("summary"):
-                lines.append(f"  {p['summary']}")
-            if p.get("previous") or p.get("current"):
-                lines.append(f"  Previous: {json.dumps(p.get('previous'))}")
-                lines.append(f"  Current:  {json.dumps(p.get('current'))}")
-            lines.append(f"  When: {p['occurred_at']}   Risk: {p.get('risk_score', '-')}")
-            if p.get("url"):
-                lines.append(f"  {p['url']}")
-            lines.append("")
+        subject, body = email_message(payloads, cfg.subject_prefix)
         try:
-            send_email([str(r) for r in cfg.recipients], subject, "\n".join(lines))
+            send_email([str(r) for r in cfg.recipients], subject, body)
         except Exception as exc:  # noqa: BLE001
             raise ChannelError(f"email delivery failed: {type(exc).__name__}") from exc
 
@@ -281,10 +288,14 @@ class _Planned(Channel):
 
 
 class JiraChannel(_Planned):
+    """Ticket creation for findings. Planned; hidden in the UI until it works."""
+
     type = "jira"
 
 
 class ServiceNowChannel(_Planned):
+    """Incident creation for findings. Planned; hidden in the UI until it works."""
+
     type = "servicenow"
 
 

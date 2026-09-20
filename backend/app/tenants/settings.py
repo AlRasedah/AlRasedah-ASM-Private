@@ -74,7 +74,13 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any] | None) -> dict[st
 
 
 def tenant_settings(tenant: Any) -> dict[str, Any]:
-    return deep_merge(DEFAULT_TENANT_SETTINGS, getattr(tenant, "settings", None) or {})
+    out = deep_merge(DEFAULT_TENANT_SETTINGS, getattr(tenant, "settings", None) or {})
+    from app.core.config import get_settings
+
+    if get_settings().require_scope_verification:
+        # Platform floor (ASM_REQUIRE_SCOPE_VERIFICATION): a tenant cannot switch it off.
+        out["scanning"]["require_scope_verification"] = True
+    return out
 
 
 def org_settings(org: Any) -> dict[str, Any]:

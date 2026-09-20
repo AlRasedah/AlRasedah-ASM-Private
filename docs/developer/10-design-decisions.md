@@ -47,11 +47,43 @@ sensor framework is isolated in its own package.
 **Alternatives**: async SQLAlchemy in the API + sync in workers (duplicated code paths).
 
 ## ADR-007 Celery state machine, sensors on their own queues
-**Decision**: `start_scan → advance_scan → chain(sensor on scanners.<pool>, ingest on core)
-→ advance_scan`, errback `stage_failed`, watchdog for lost jobs; results via the broker.
-**Consequences**: no task blocks waiting on another; sensors need only broker credentials;
-per-tenant pools come for free. Large results travel through Redis/Valkey (gzip-compressed).
-**Alternatives**: sensors writing to the DB directly (breaks isolation), Kafka (unjustified).
+**Decision**: `start_scan → advance_scan → [sensor job on scanners.<pool>] → authenticated
+result on results.<pool> → asm-ingest → advance_scan`; watchdog for lost jobs; results via
+the broker. *(Revised after the 2026-09-19 audit: the original design chained the sensor task
+to a core `ingest_stage` task, which meant sensor workers published core tasks and shared the
+platform's broker account and key.)*
+**Consequences**: no task blocks waiting on another; sensors need only their pool's broker
+user and key; a pool is a trust boundary (ACLs, per-pool HKDF keys, MAC'd results bound to
+the persisted job, a result consumer that registers a single task). Large results travel
+through Redis/Valkey. State transitions are row-locked and committed before publishing.
+**Alternatives**: sensors writing to the DB directly (breaks isolation), Celery's X.509
+message signing for every task (heavier key management; ACLs + result MACs cover the same
+threats here), Kafka (unjustified).
+
+## ADR-016 Third-party intelligence is historical and unverified
+**Decision**: sensors that report a third-party database's view (today `shodan`) set
+`SensorResult.historical`; ingestion then adds new knowledge but never refreshes `last_seen`,
+reactivates an asset, or lets that source close anything. Their CVE reports are stored with
+`findings.unverified = true`, hidden from the findings list, risk scores, reports and alerts
+until a sensor that actually tested the service reports the same issue.
+**Consequences**: Shodan (and later similar sources) widen coverage — including for scope
+that may not be actively scanned — without weakening change detection or inflating risk.
+The UI needs a second findings view, and the API a filter, which is the honest trade.
+**Alternatives**: treating Shodan like a live scanner (dead services would look alive and
+version-matched CVEs would drive risk scores), or discarding its CVE list entirely (loses a
+useful lead).
+
+## ADR-017 Platform-managed email
+**Decision**: the mail server lives in `platform_settings` (encrypted password), editable by
+platform administrators in the UI and overriding `ASM_SMTP_*`; every user can have alerts
+sent to their own *login* address (`user_alert_preferences`, default on for high/critical).
+**Consequences**: a deployment can be operated entirely from the web interface, which is the
+product requirement; `.env` stays a bootstrap default. Tenants do not get their own mail
+server: in a multi-tenant deployment that would let a tenant admin change how everyone's
+password resets are sent. Per-user alerts never take a typed address, so they cannot be used
+to forward another tenant's events.
+**Alternatives**: SMTP only in `.env` (needs shell access for every change — rejected),
+per-tenant relays (revisit if a customer needs their own sending domain).
 
 ## ADR-008 Inline mode
 **Decision**: `ASM_SENSOR_MODE=inline` runs the same orchestrator synchronously.

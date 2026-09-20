@@ -8,6 +8,8 @@ re-running never rotates secrets that are already set.
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import os
 import secrets
 import sys
@@ -18,6 +20,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def b64key() -> str:
     return base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip("=")
+
+
+def pool_key(master_b64: str, pool: str = "default") -> str:
+    """HKDF-SHA256 (RFC 5869, no salt, 32 bytes) — identical to asm_sensors.jobs.pool_key."""
+    master = base64.urlsafe_b64decode(master_b64 + "=" * (-len(master_b64) % 4))
+    prk = hmac.new(b"\x00" * 32, master, hashlib.sha256).digest()
+    okm = hmac.new(prk, f"exteriq-asm/scanner-pool/v1/{pool}".encode() + b"\x01", hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(okm).decode().rstrip("=")
 
 
 GENERATORS = {
@@ -57,8 +67,16 @@ def main() -> int:
             generated.append(key)
         else:
             out.append(line)
+    # The default pool's key is always derived from the master transport key, never random.
+    master = next((ln.split("=", 1)[1] for ln in out if ln.startswith("ASM_SCANNER_TRANSPORT_KEY=")), "")
+    if master and "CHANGE_ME" not in master:
+        derived = pool_key(master)
+        for i, ln in enumerate(out):
+            if ln.startswith("ASM_SCANNER_POOL_KEY=") and ln != f"ASM_SCANNER_POOL_KEY={derived}":
+                out[i] = f"ASM_SCANNER_POOL_KEY={derived}"
+                generated.append("ASM_SCANNER_POOL_KEY")
     # Preserve any keys the user added that are not in the template (emitted once).
-    extra = [k for k in existing if k not in emitted]
+    extra = [k for k in existing if k not in emitted and k != "ASM_SENSOR_QUEUES"]  # replaced by ASM_SENSOR_POOL
     if extra:
         out.append("")
         out.append("# --- extra settings (kept from your existing .env) ---")

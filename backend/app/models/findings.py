@@ -52,6 +52,10 @@ class Finding(UUIDPk, TenantScoped, Timestamps, Base):
     remediation: Mapped[str | None] = mapped_column(Text)
     references: Mapped[list[str]] = mapped_column(ARRAY(String(1024)), default=list)
     confidence: Mapped[int] = mapped_column(SmallInteger, default=90)
+    # Reported by a third-party database (e.g. Shodan matching a service version
+    # against a CVE list) and never tested: hidden from the main findings list,
+    # risk scores and alerts until a scanner confirms it.
+    unverified: Mapped[bool] = mapped_column(default=False)
 
     first_seen: Mapped[datetime]
     last_seen: Mapped[datetime]

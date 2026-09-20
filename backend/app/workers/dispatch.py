@@ -77,13 +77,14 @@ def refresh_intel() -> None:
     _send("asm.core.refresh_intel")
 
 
-def revoke(task_ids: list[str]) -> None:
-    if not task_ids or _inline():
+def revoke(tasks: list[tuple[str, str]]) -> None:
+    """Stop running sensor jobs: ``(task_id, worker_pool)`` pairs, sent on each pool's control channel."""
+    if not tasks or _inline():
         return
-    from app.workers.celery_app import celery_app
+    from app.workers.celery_app import pool_control
 
-    for tid in task_ids:
+    for tid, pool in tasks:
         try:
-            celery_app.control.revoke(tid, terminate=True, signal="SIGTERM")
+            pool_control(pool).control.revoke(tid, terminate=True, signal="SIGTERM")
         except Exception:  # noqa: BLE001
-            log.warning("could not revoke task %s", tid)
+            log.warning("could not revoke task %s in pool %s", tid, pool)

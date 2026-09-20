@@ -53,6 +53,7 @@ SOURCE_LABELS = {
     "httpx": "Web fingerprinting",
     "naabu": "Service discovery",
     "asnlookup": "Network ownership",
+    "shodan": "Internet exposure intelligence",
     "scope": "Authorized scope",
     "manual": "Manual entry",
 }

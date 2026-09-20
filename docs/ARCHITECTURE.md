@@ -18,18 +18,39 @@
 | `reverse-proxy` | nginx (unprivileged) | Single public entry point, TLS, request limits | edge |
 | `asm-web` | nginx + static React build | Web UI | edge |
 | `asm-api` | platform | REST API, authentication, RBAC | edge, data, egress (DNS verification, SMTP) |
-| `asm-worker` | platform | Celery `core` queue: orchestration, ingestion, change detection, detection rules, risk, notifications, reports, intel | data, egress |
+| `asm-worker` | platform | Celery `core` queue: orchestration, change detection, detection rules, risk, notifications, reports, intel | data, egress |
+| `asm-ingest` | platform | Separate Celery app on `results.<pool>`: verifies and ingests sensor results; runs nothing else | data |
 | `asm-scheduler` | platform | Celery beat: schedules, queued scans, watchdog, maintenance, nightly risk/metrics, intel refresh | data |
 | `asm-migrate` | platform | One-shot: `alembic upgrade head` + bootstrap (plans, built-in profiles, first admin) | data |
-| `asm-scanner` | sensor image | Celery `scanners.<pool>` queue: executes sensor jobs; **no database credentials** | sensors, egress |
+| `asm-scanner` | sensor image | One worker pool: consumes `scanners.<pool>`, submits to `results.<pool>`; **no database credentials**, restricted broker user | sensors, egress |
 | `postgres` | PostgreSQL 16 | System of record | data |
-| `redis` | Valkey 8 | Broker, results, rate-limit counters | data, sensors |
+| `redis` | Valkey 8 | Broker (per-pool ACL users), platform task results, rate-limit counters | data, sensors |
 | `spiderfoot` (optional) | built from upstream | OSINT enrichment over HTTP API | sensors, egress |
 | `zap` (optional) | OWASP ZAP daemon | Web crawling & DAST over REST API (`--profile dast`) | sensors, egress |
 
 The `data` and `sensors` networks are `internal: true`. The sensor containers can reach
-the broker and the internet, but not PostgreSQL. A compromised scanner binary therefore
-cannot read or tamper with other tenants' data.
+the broker and the internet, but not PostgreSQL.
+
+**Sensor trust boundary.** The platform treats sensor workers as untrusted and isolates
+worker pools from each other and from the platform:
+
+- *Broker ACLs.* Each pool has its own broker user (docker-compose `--user scanner-<pool>`)
+  that can consume only `scanners.<pool>`, write only `results.<pool>`, and touch only its
+  own bookkeeping keys, coordination keys (`asm.pool.<pool>.*`) and control channel. It
+  cannot read other pools' jobs or results, write the platform's `core` queue, or run
+  administrative commands. `tests/integration/test_broker_isolation.py` checks the compose
+  ACL against a real server.
+- *Per-pool keys.* Each pool holds only its own key, derived with HKDF from the platform's
+  master transport key: it opens only its own pool's sealed credentials and authenticates
+  results only as its own pool.
+- *Authenticated, bound results.* Sensor workers never publish platform tasks. A result is
+  an HMAC'd envelope consumed by `asm-ingest`, a separate Celery app whose registry holds
+  only result submission (platform tasks and Celery built-ins such as `celery.group` are
+  discarded). It is accepted only if the MAC verifies with the claimed pool's key *and* it
+  answers the job persisted for that stage (job id, tenant, scan, stage, engine, pool).
+
+A compromised scanner can therefore affect only the jobs of its own pool. Tenants that must
+not share even that give each tenant (or group) its own pool, and its own ZAP daemon.
 
 ## 3. Sensor framework (`workers/asm_sensors`)
 
@@ -56,9 +77,11 @@ class ScannerAdapter:
     async def normalize(self, parsed, targets, config) -> NormalizedOutput: ...
 ```
 
-`run()` drives the four steps, enforces the global rate cap, and **drops coverage when a
-run failed or was partial** — a broken sensor can never cause "port closed" or "asset gone"
-events. Built-in adapters: `amass`, `subfinder`, `crtsh`, `dnsx`, `asnlookup` (Team Cymru),
+`run()` drives the four steps, enforces the global rate cap, and **drops coverage unless the
+run proved it finished**: any recorded error (a failed API call, a deadline, a result limit),
+a failed or timed-out process, or output clipped at the capture limit makes the run partial
+(or failed, with no observations). The platform enforces the same rule again when ingesting,
+so a broken sensor can never cause "port closed", "asset gone" or "finding resolved" events. Built-in adapters: `amass`, `subfinder`, `crtsh`, `dnsx`, `asnlookup` (Team Cymru),
 `naabu`, `httpx`, `nuclei`, `spiderfoot` (optional), `bbot` (optional), `zap_spider` /
 `zap_active` (optional OWASP ZAP DAST). See [SENSORS.md](SENSORS.md) for adding one.
 
@@ -93,15 +116,27 @@ resolution re-checks every known in-scope name; port discovery covers every auth
 That is what allows disappearance to be detected.
 
 Orchestration is a Celery state machine (`app/workers/tasks.py`):
-`start_scan → advance_scan → [sensor job on scanners.<pool>] → ingest_stage → advance_scan …`,
-with `stage_failed` as error callback and a watchdog for lost jobs. Optional stages
+`start_scan → advance_scan → [sensor job on scanners.<pool>] → (asm-ingest) submit_result → advance_scan …`.
+Transitions are transactional and idempotent: slot reservation is serialized by an advisory
+lock (concurrency limits hold under parallel starts); `advance_scan` and result ingestion take
+the scan's row lock; a stage's RUNNING state and job binding are committed *before* the job
+is published (an immediate result is never lost), and a failed publish fails the stage. The
+watchdog fails stages whose job never reached the broker or never reported back, and
+re-advances running scans left without an in-flight stage. Optional stages
 (`"optional": true`) that fail are marked *skipped*; required stage failures make the scan
 *partial*. `ASM_SENSOR_MODE=inline` runs the same orchestrator synchronously (tests/dev).
 
+A suspended tenant (or inactive organization) runs nothing further: suspending through the
+API cancels its queued and running scans (and revokes in-flight jobs); a queued scan that is
+dispatched later is cancelled instead of started, and a running scan stops at its next stage.
+
 Authorization happens in `prepare_next_stage`: each target is checked by
 `app.scope.checker.ScopeChecker` (exclusions win; active mode requires
-`allow_active_scanning`; derived IPs must resolve from an in-scope name) and every decision is
-written to `scope_decisions`.
+`allow_active_scanning`, a *verified* entry when verification is required, and a publicly
+routable destination — explicit or DNS-derived — unless `ASM_ALLOW_NON_PUBLIC_SCOPE`; derived
+IPs must resolve from an in-scope name) and every decision is written to `scope_decisions`.
+Active sensors re-check destinations just before connecting: every address a target resolves
+to must be public and outside the scope's excluded ranges (`runner.egress_filter`).
 
 ## 5. Data model (PostgreSQL)
 

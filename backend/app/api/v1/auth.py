@@ -38,6 +38,7 @@ from app.schemas.auth import (
     MeResponse,
     MfaCodeRequest,
     MfaDisableRequest,
+    MfaSetupRequest,
     MfaSetupResponse,
     MfaVerifyRequest,
     ResetPasswordRequest,
@@ -181,8 +182,20 @@ def reset_password(body: ResetPasswordRequest, db: Session = Depends(get_system_
     return Message(message="Password updated. Please sign in.")
 
 
+def interactive_principal(principal: Principal = Depends(get_principal)) -> Principal:
+    """Account-security changes need the user's own signed-in session, never an API token.
+
+    An API token is a narrowly scoped automation credential; it must not be able to
+    change how its owner authenticates (password, MFA) or manage the owner's tokens.
+    """
+    if principal.api_token_id is not None or principal.session_id is None:
+        raise Forbidden("This action requires an interactive sign-in; API tokens cannot change account security")
+    return principal
+
+
 @router.post("/password/change", response_model=Message)
-def change_password(body: ChangePasswordRequest, response: Response, principal: Principal = Depends(get_principal),
+def change_password(body: ChangePasswordRequest, response: Response,
+                    principal: Principal = Depends(interactive_principal),
                     db: Session = Depends(get_system_db)) -> Message:
     auth.change_password(db, principal.user_id, body.current_password, body.new_password)
     _clear_cookies(response)
@@ -190,20 +203,22 @@ def change_password(body: ChangePasswordRequest, response: Response, principal: 
 
 
 @router.post("/mfa/setup", response_model=MfaSetupResponse)
-def mfa_setup(principal: Principal = Depends(get_principal), db: Session = Depends(get_system_db)) -> MfaSetupResponse:
-    secret, uri = auth.mfa_begin_setup(db, principal.user_id)
+def mfa_setup(body: MfaSetupRequest, principal: Principal = Depends(interactive_principal),
+              db: Session = Depends(get_system_db)) -> MfaSetupResponse:
+    _limit(f"mfa-setup:user:{principal.user_id}", get_settings().login_rate_limit_per_minute)
+    secret, uri = auth.mfa_begin_setup(db, principal.user_id, body.password)
     return MfaSetupResponse(secret=secret, otpauth_uri=uri)
 
 
 @router.post("/mfa/enable", response_model=Message)
-def mfa_enable(body: MfaCodeRequest, principal: Principal = Depends(get_principal),
+def mfa_enable(body: MfaCodeRequest, principal: Principal = Depends(interactive_principal),
                db: Session = Depends(get_system_db)) -> Message:
     auth.mfa_enable(db, principal.user_id, body.code)
     return Message(message="Two-factor authentication enabled")
 
 
 @router.post("/mfa/disable", response_model=Message)
-def mfa_disable(body: MfaDisableRequest, principal: Principal = Depends(get_principal),
+def mfa_disable(body: MfaDisableRequest, principal: Principal = Depends(interactive_principal),
                 db: Session = Depends(get_system_db)) -> Message:
     auth.mfa_disable(db, principal.user_id, body.password, body.code)
     return Message(message="Two-factor authentication disabled")
@@ -221,7 +236,7 @@ def list_api_tokens(principal: Principal = Depends(get_principal), db: Session =
 def create_api_token(body: ApiTokenCreate, principal: Principal = Depends(require(Permission.ASSETS_READ)),
                      db: Session = Depends(get_system_db)) -> ApiTokenCreated:
     tid = principal.require_tenant()
-    if principal.api_token_id:
+    if principal.api_token_id or principal.session_id is None:
         raise Forbidden("API tokens cannot create API tokens")
     if not can_assign(principal.role if principal.role != Role.PLATFORM_ADMIN else Role.TENANT_ADMIN, body.role):
         raise Forbidden("You cannot create a token with a role above your own")
@@ -234,7 +249,7 @@ def create_api_token(body: ApiTokenCreate, principal: Principal = Depends(requir
 
 
 @router.delete("/api-tokens/{token_id}", response_model=Message)
-def revoke_api_token(token_id: uuid.UUID, principal: Principal = Depends(get_principal),
+def revoke_api_token(token_id: uuid.UUID, principal: Principal = Depends(interactive_principal),
                      db: Session = Depends(get_system_db)) -> Message:
     token = db.get(ApiToken, token_id)
     if token is None or token.user_id != principal.user_id or token.tenant_id != principal.tenant_id:

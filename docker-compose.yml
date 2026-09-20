@@ -5,8 +5,8 @@
 #
 # Network isolation:
 #   edge     – reverse-proxy <-> asm-web / asm-api                  (only the proxy publishes a port)
-#   data     – asm-api / asm-worker / asm-scheduler / asm-migrate <-> postgres, redis   (internal)
-#   sensors  – asm-scanner <-> redis                                  (internal; no database access)
+#   data     – asm-api / asm-worker / asm-ingest / asm-scheduler / asm-migrate <-> postgres, redis   (internal)
+#   sensors  – asm-scanner <-> redis   (internal; no database access; per-pool broker ACL user)
 #   egress   – asm-scanner's route to the internet (scanning), and asm-worker's (feeds, webhooks)
 #
 # Optional profiles:  --profile osint (SpiderFoot)  --profile dast (OWASP ZAP)
@@ -102,6 +102,18 @@ services:
       resources:
         limits: { cpus: "2", memory: 2g }
 
+  # Sensor result consumer: the only platform process reading results.<pool> queues
+  # (which sensor workers can write). Runs result submission and nothing else.
+  asm-ingest:
+    <<: *platform
+    command: ["ingest"]
+    networks: [data]
+    depends_on:
+      asm-migrate: { condition: service_completed_successfully }
+    deploy:
+      resources:
+        limits: { cpus: "2", memory: 2g }
+
   asm-scheduler:
     <<: *platform
     command: ["scheduler"]
@@ -121,10 +133,16 @@ services:
         INSTALL_BBOT: ${ASM_INSTALL_BBOT:-false}
     command: ["worker"]
     environment:
-      # Deliberately no database credentials: sensors only talk to the broker.
-      ASM_CELERY_BROKER_URL: redis://:${ASM_REDIS_PASSWORD:?set ASM_REDIS_PASSWORD}@redis:6379/0
-      ASM_SCANNER_TRANSPORT_KEY: ${ASM_SCANNER_TRANSPORT_KEY:?set ASM_SCANNER_TRANSPORT_KEY}
-      ASM_SENSOR_QUEUES: ${ASM_SENSOR_QUEUES:-scanners.default}
+      # Deliberately no database credentials and no platform broker credentials: the
+      # worker uses its pool's restricted broker user and holds only its pool's key
+      # (derived from the platform's ASM_SCANNER_TRANSPORT_KEY; `python -m app.cli
+      # scanner-pool-key <pool>` prints it).
+      ASM_SENSOR_POOL: default
+      ASM_CELERY_BROKER_URL: redis://scanner-default:${ASM_SCANNER_REDIS_PASSWORD:?set ASM_SCANNER_REDIS_PASSWORD}@redis:6379/0
+      ASM_SCANNER_TRANSPORT_KEY: ${ASM_SCANNER_POOL_KEY:?set ASM_SCANNER_POOL_KEY (python scripts/generate_env.py, or python -m app.cli scanner-pool-key default)}
+      ASM_BROKER_VISIBILITY_TIMEOUT: ${ASM_BROKER_VISIBILITY_TIMEOUT:-21600}
+      # Lab only: lets active sensors connect to private/reserved addresses (follows the platform setting).
+      ASM_SCANNER_ALLOW_NON_PUBLIC: ${ASM_ALLOW_NON_PUBLIC_SCOPE:-false}
       ASM_SENSOR_CONCURRENCY: ${ASM_SENSOR_CONCURRENCY:-2}
       ASM_SCANNER_MAX_RATE: ${ASM_SCANNER_MAX_RATE:-2000}
       ASM_NUCLEI_AUTO_UPDATE: ${ASM_NUCLEI_AUTO_UPDATE:-true}
@@ -174,10 +192,29 @@ services:
 
   # Valkey (BSD-3-Clause), a drop-in Redis-compatible broker. Redis 7.4+ is RSALv2/SSPL
   # licensed, which matters for a future SaaS offering — see THIRD_PARTY_LICENSES.md.
+  #
+  # Broker ACLs are the trust boundary between the platform and sensor workers. The
+  # default user (ASM_REDIS_PASSWORD) is the platform's. Each worker pool has its own
+  # user that can only: consume its job queue, submit to its result queue, keep its own
+  # unacknowledged-message bookkeeping, use its own coordination keys (asm.pool.<pool>.*)
+  # and its own remote-control channel. It cannot read other pools' jobs or results,
+  # write the platform's `core` queue, or run administrative commands. A new pool needs
+  # a copy of the `--user scanner-default ...` block with every "default" replaced by
+  # the pool name (and its own password); see docs/DEPLOYMENT.md.
   redis:
     image: valkey/valkey:8-alpine
     command: ["valkey-server", "--requirepass", "${ASM_REDIS_PASSWORD:?set ASM_REDIS_PASSWORD}", "--appendonly", "yes",
-              "--maxmemory-policy", "noeviction"]
+              "--maxmemory-policy", "noeviction",
+              "--user", "scanner-default", "on", ">${ASM_SCANNER_REDIS_PASSWORD:?set ASM_SCANNER_REDIS_PASSWORD}",
+              "resetkeys", "resetchannels",
+              "~scanners.default", "~_kombu.binding.scanners.default",
+              "~unacked.scanners.default", "~unacked_index.scanners.default", "~unacked_mutex.scanners.default",
+              "~results.default", "~_kombu.binding.results.default",
+              "~asm.pool.default.*",
+              "~*.asm-default.pidbox", "~_kombu.binding.asm-default.pidbox", "&/0.asm-default.pidbox",
+              "-@all", "+@connection", "+@read", "+@write", "+@list", "+@set", "+@sortedset", "+@hash",
+              "+@string", "+@transaction", "+@pubsub", "+@scripting",
+              "-@dangerous", "-@admin", "-scan", "-randomkey", "-script|flush", "-script|kill", "-function"]
     volumes:
       - redis-data:/data
     networks: [data, sensors]

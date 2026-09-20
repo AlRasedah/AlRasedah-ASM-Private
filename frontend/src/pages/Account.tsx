@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { KeyRound, ShieldCheck, Trash2 } from "lucide-react";
 import { api } from "@/api/client";
 import { useAuth } from "@/auth/AuthContext";
-import { Card, Confirm, Empty, ErrorBox, Field, PageHead } from "@/components/ui";
+import { Card, Confirm, Empty, ErrorBox, Field, Loading, PageHead } from "@/components/ui";
 import { fmtDate, label, timeAgo } from "@/lib/format";
 
 interface Token { id: string; name: string; token_prefix: string; role: string; expires_at: string | null; last_used_at: string | null; revoked_at: string | null; created_at: string }
@@ -16,6 +16,7 @@ export default function Account() {
       <div className="grid cols-2">
         <PasswordCard />
         <MfaCard enabled={!!me?.user.mfa_enabled} onChange={reload} />
+        <div className="span-2"><AlertsCard /></div>
         <div className="span-2"><TokensCard /></div>
       </div>
     </>
@@ -46,7 +47,8 @@ function MfaCard({ enabled, onChange }: { enabled: boolean; onChange: () => Prom
   const [setup, setSetup] = useState<{ secret: string; otpauth_uri: string } | null>(null);
   const [code, setCode] = useState("");
   const [password, setPassword] = useState("");
-  const begin = useMutation({ mutationFn: () => api<{ secret: string; otpauth_uri: string }>("/auth/mfa/setup", { method: "POST" }), onSuccess: setSetup });
+  const begin = useMutation({ mutationFn: () => api<{ secret: string; otpauth_uri: string }>("/auth/mfa/setup", { method: "POST", body: { password } }),
+    onSuccess: (r) => { setSetup(r); setPassword(""); } });
   const enable = useMutation({ mutationFn: () => api("/auth/mfa/enable", { method: "POST", body: { code } }),
     onSuccess: async () => { setSetup(null); setCode(""); await onChange(); } });
   const disable = useMutation({ mutationFn: () => api("/auth/mfa/disable", { method: "POST", body: { password, code } }),
@@ -57,7 +59,8 @@ function MfaCard({ enabled, onChange }: { enabled: boolean; onChange: () => Prom
         <ErrorBox error={begin.error ?? enable.error ?? disable.error} />
         {!enabled && !setup && <>
           <div className="muted">Protect your account with a time-based one-time code (TOTP) from an authenticator app.</div>
-          <button className="btn primary" onClick={() => begin.mutate()}>Set up authenticator</button>
+          <Field label="Confirm your password"><input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} /></Field>
+          <button className="btn primary" disabled={!password} onClick={() => begin.mutate()}>Set up authenticator</button>
         </>}
         {!enabled && setup && <>
           <div>Add this key to your authenticator app, then enter the 6-digit code it shows:</div>
@@ -71,6 +74,49 @@ function MfaCard({ enabled, onChange }: { enabled: boolean; onChange: () => Prom
           <Field label="Current code"><input inputMode="numeric" value={code} onChange={(e) => setCode(e.target.value.trim())} /></Field>
           <button className="btn danger" disabled={!password || code.length < 6} onClick={() => disable.mutate()}>Disable two-factor</button>
         </>}
+      </div>
+    </Card>
+  );
+}
+
+interface MyAlerts {
+  enabled: boolean; min_severity: string; event_types: string[]; organization_ids: string[];
+  include_baseline: boolean; email: string; email_configured: boolean; is_default: boolean;
+}
+
+/** Alerts to the signed-in user's own login address — no mail server access needed. */
+function AlertsCard() {
+  const qc = useQueryClient();
+  const q = useQuery({ queryKey: ["my-alerts"], queryFn: () => api<MyAlerts>("/settings/my-alerts") });
+  const [draft, setDraft] = useState<MyAlerts | null>(null);
+  const prefs = draft ?? q.data;
+  const save = useMutation({
+    mutationFn: (body: Partial<MyAlerts>) => api<MyAlerts>("/settings/my-alerts", { method: "PUT", body: {
+      enabled: body.enabled, min_severity: body.min_severity, include_baseline: body.include_baseline,
+      event_types: [], organization_ids: [] } }),
+    onSuccess: (r) => { setDraft(r); qc.invalidateQueries({ queryKey: ["my-alerts"] }); },
+  });
+  if (q.isLoading || !prefs) return <Card title="Email alerts"><Loading /></Card>;
+  const update = (patch: Partial<MyAlerts>) => { const next = { ...prefs, ...patch }; setDraft(next); save.mutate(next); };
+  return (
+    <Card title="Email alerts" hint={`sent to ${prefs.email}`}>
+      <div className="form">
+        <ErrorBox error={save.error} />
+        {!prefs.email_configured &&
+          <div className="info-box">Email delivery is not set up yet — ask a platform administrator to configure the
+            mail server in Settings → Email delivery. Your choice here is saved and used as soon as it is.</div>}
+        <label className="check"><input type="checkbox" checked={prefs.enabled}
+          onChange={(e) => update({ enabled: e.target.checked })} /> Email me when my attack surface changes</label>
+        <Field label="Only at this severity or above">
+          <select value={prefs.min_severity} disabled={!prefs.enabled}
+                  onChange={(e) => update({ min_severity: e.target.value })}>
+            {["critical", "high", "medium", "low", "info"].map((s) => <option key={s} value={s}>{label(s)}</option>)}
+          </select>
+        </Field>
+        <label className="check"><input type="checkbox" checked={prefs.include_baseline} disabled={!prefs.enabled}
+          onChange={(e) => update({ include_baseline: e.target.checked })} /> Include the first (baseline) scan of an organization</label>
+        <div className="small muted">Alerts cover the organizations of the tenant you are signed in to, and always go
+          to your login address.</div>
       </div>
     </Card>
   );

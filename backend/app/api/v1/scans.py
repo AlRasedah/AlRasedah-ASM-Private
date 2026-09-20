@@ -74,7 +74,8 @@ def create_scan(body: ScanCreate, principal: Principal = Depends(require(Permiss
     scan = orchestrator.create_scan(db, tenant_id=principal.require_tenant(), organization_id=body.organization_id,
                                     profile_id=body.profile_id,
                                     trigger=ScanTrigger.API if principal.api_token_id else ScanTrigger.MANUAL,
-                                    requested_by=principal.user_id, target_override=body.targets)
+                                    requested_by=principal.user_id, target_override=body.targets,
+                                    auth_secret=body.auth_secret, auth_header_name=body.auth_header_name)
     db.commit()
     dispatch.start_scan(scan.tenant_id, scan.id)
     db.refresh(scan)

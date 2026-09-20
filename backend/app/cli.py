@@ -2,6 +2,7 @@
 
     python -m app.cli bootstrap                 # plans, built-in profiles, first admin (idempotent)
     python -m app.cli generate-keys             # print fresh secrets for .env
+    python -m app.cli scanner-pool-key <pool>   # the key a worker pool's sensor containers receive
     python -m app.cli create-admin --email ... --tenant "Acme"
     python -m app.cli intel-import --kev kev.json --epss epss_scores-current.csv.gz
     python -m app.cli intel-refresh
@@ -26,6 +27,15 @@ def cmd_generate_keys(_: argparse.Namespace) -> None:
     print(f"ASM_SECRET_KEY={secrets.token_urlsafe(48)}")
     print(f"ASM_ENCRYPTION_KEYS=k1:{generate_key()}")
     print(f"ASM_SCANNER_TRANSPORT_KEY={generate_key()}")
+
+
+def cmd_scanner_pool_key(a: argparse.Namespace) -> None:
+    """Print a worker pool's key (the only key that pool's sensor workers receive)."""
+    from asm_sensors.jobs import encode_key
+
+    from app.core.crypto import pool_transport_key
+
+    print(f"ASM_SCANNER_TRANSPORT_KEY={encode_key(pool_transport_key(a.pool))}   # for the '{a.pool}' sensor workers")
 
 
 def cmd_bootstrap(_: argparse.Namespace) -> None:
@@ -112,6 +122,9 @@ def main(argv: list[str] | None = None) -> None:
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("generate-keys").set_defaults(fn=cmd_generate_keys)
     sub.add_parser("bootstrap").set_defaults(fn=cmd_bootstrap)
+    k = sub.add_parser("scanner-pool-key")
+    k.add_argument("pool", nargs="?", default="default")
+    k.set_defaults(fn=cmd_scanner_pool_key)
     c = sub.add_parser("create-admin")
     c.add_argument("--email", required=True)
     c.add_argument("--tenant", default="Default")

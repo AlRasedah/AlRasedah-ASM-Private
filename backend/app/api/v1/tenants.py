@@ -16,10 +16,12 @@ from app.core.errors import NotFound, ValidationFailed
 from app.core.security import hash_token, new_token
 from app.models import PasswordResetToken, Plan, Tenant, TenantMembership, User
 from app.models.enums import Role, TenantStatus
+from app.scans.orchestrator import cancel_tenant_scans
 from app.schemas.core import PlanOut, TenantCreate, TenantCreated, TenantOut, TenantUpdate
 from app.services import audit
 from app.services.audit import Action
 from app.tenants.service import create_tenant
+from app.workers import dispatch
 
 router = APIRouter(prefix="/tenants", tags=["platform"])
 
@@ -78,16 +80,20 @@ def update(tenant_id: uuid.UUID, body: TenantUpdate, principal: Principal = Depe
         if plan is None:
             raise ValidationFailed("Unknown plan")
         tenant.plan_id = plan.id
+    to_revoke: list[tuple[str, str]] = []
     if body.status and body.status != tenant.status:
         tenant.status = body.status
         if body.status == TenantStatus.SUSPENDED:
             for (uid,) in db.execute(select(TenantMembership.user_id).where(TenantMembership.tenant_id == tenant.id)):
                 revoke_user_sessions(db, uid, "tenant_suspended", tenant_id=tenant.id)
+            # Suspension stops scanning: queued and running scans are cancelled now.
+            to_revoke = cancel_tenant_scans(db, tenant.id, "Cancelled: the tenant was suspended")
     after = {"name": tenant.name, "status": tenant.status.value, "plan_id": str(tenant.plan_id),
              "worker_pool": tenant.worker_pool}
     prev, new = audit.diff(before, after)
     audit.record(db, Action.TENANT_UPDATED, tenant_id=tenant.id, object_type="tenant", object_id=tenant.id,
                  previous=prev, new=new)
     db.commit()
+    dispatch.revoke(to_revoke)
     db.refresh(tenant)
     return tenant

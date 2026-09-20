@@ -35,6 +35,8 @@ class FindingOut(ORM):
     location: str | None
     source: str  # detection engine (internal id); source_label is the display name
     source_label: str | None = None
+    # Reported by a third-party database, never tested (see findings/service.upsert_observation).
+    unverified: bool = False
     asset: AssetRef | None = None
 
 

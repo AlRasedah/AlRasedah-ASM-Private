@@ -17,11 +17,11 @@ from collections import Counter
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from asm_sensors.jobs import SensorJob, seal_credentials
+from asm_sensors.jobs import ResultEnvelope, SensorJob, seal_credentials
 from asm_sensors.observations import SensorResult
 from asm_sensors.registry import get_adapter
 from asm_sensors.targets import Target, TargetKind
-from sqlalchemy import insert, select
+from sqlalchemy import func, insert, select
 from sqlalchemy.orm import Session
 
 from app.assets.ingest import IngestContext, Ingestor
@@ -37,9 +37,11 @@ from app.models.enums import (
     EventType,
     ScanStatus,
     ScanTrigger,
+    ScopeEntryType,
     Severity,
     StageStatus,
     StageType,
+    TenantStatus,
 )
 from app.risk.service import recompute_organization
 from app.scans.targets import build_targets
@@ -61,9 +63,13 @@ def _now() -> datetime:
 
 
 # ------------------------------------------------------------------ creation
+AUTH_PROVIDER = "zap_auth"  # the credential slot the web application scanner reads
+
+
 def create_scan(db: Session, *, tenant_id: uuid.UUID, organization_id: uuid.UUID, profile_id: uuid.UUID,
                 trigger: ScanTrigger = ScanTrigger.MANUAL, requested_by: uuid.UUID | None = None,
-                schedule_id: uuid.UUID | None = None, target_override: list[str] | None = None) -> Scan:
+                schedule_id: uuid.UUID | None = None, target_override: list[str] | None = None,
+                auth_secret: str | None = None, auth_header_name: str = "Cookie") -> Scan:
     org = db.get(Organization, organization_id)
     if org is None or not org.is_active:
         raise NotFound("Organization not found")
@@ -112,43 +118,105 @@ def create_scan(db: Session, *, tenant_id: uuid.UUID, organization_id: uuid.UUID
                 target_override=override, stats={}, is_baseline=org.baseline_completed_at is None)
     db.add(scan)
     db.flush()
+    if auth_secret:
+        if any(c in auth_secret for c in "\r\n"):
+            raise ValidationFailed("The sign-in value must be a single line")
+        if not any(AUTH_PROVIDER in get_adapter(s["engine"]).credential_providers for s in stages):
+            raise ValidationFailed("This profile has no web application scanning stage, so a sign-in value would "
+                                   "not be used. Choose a profile with web crawling or web vulnerability scanning.")
+        # Bound to this scan: the ciphertext is useless on any other row.
+        scan.auth_secret_encrypted = crypto.encrypt(auth_secret.encode(), f"scan:{scan.id}:auth")
+        scan.auth_header_name = auth_header_name
     for i, s in enumerate(stages):
         db.add(ScanStage(tenant_id=tenant_id, scan_id=scan.id, position=i, stage_type=StageType(s["stage"]),
                          engine=s["engine"], config={**(s.get("config") or {}), "_optional": bool(s.get("optional"))},
                          is_active=bool(s.get("active")), status=StageStatus.PENDING, stats={}))
     audit.record(db, Action.SCAN_CREATED, tenant_id=tenant_id, object_type="scan", object_id=scan.id,
                  new={"organization_id": str(organization_id), "profile": profile.name, "trigger": trigger.value,
-                      "targets": override})
+                      "targets": override,
+                      # Records *that* a sign-in value was supplied, never the value itself.
+                      "authenticated": bool(auth_secret)})
     tenants.record_usage(db, tenant_id, "scans", 1, scan.id, profile=profile.slug)
     db.flush()
     db.refresh(scan)
     return scan
 
 
-def cancel_scan(db: Session, scan_id: uuid.UUID) -> tuple[Scan, list[str]]:
-    scan = db.get(Scan, scan_id)
-    if scan is None:
-        raise NotFound("Scan not found")
-    if scan.status not in ACTIVE_SCAN_STATES:
-        raise Conflict(f"Scan is already {scan.status.value}")
-    task_ids = []
+RunningTask = tuple[str, str]  # (sensor task id, worker pool) — what a revocation needs
+
+
+def _cancel(db: Session, scan: Scan, reason: str | None = None) -> list[RunningTask]:
+    tasks: list[RunningTask] = []
     for st in scan.stages:
         if st.status == StageStatus.RUNNING and st.task_id:
-            task_ids.append(st.task_id)
+            tasks.append((st.task_id, st.worker_pool or "default"))
         if st.status in (StageStatus.PENDING, StageStatus.RUNNING):
             st.status = StageStatus.CANCELLED
             st.finished_at = _now()
     scan.status = ScanStatus.CANCELLED
     scan.finished_at = _now()
-    audit.record(db, Action.SCAN_CANCELLED, tenant_id=scan.tenant_id, object_type="scan", object_id=scan.id)
+    scan.auth_secret_encrypted = None  # the sign-in value lives only while the scan runs
+    if reason:
+        scan.error = reason
+    audit.record(db, Action.SCAN_CANCELLED, tenant_id=scan.tenant_id, object_type="scan", object_id=scan.id,
+                 new={"reason": reason} if reason else None)
     db.flush()
-    return scan, task_ids
+    return tasks
+
+
+def cancel_scan(db: Session, scan_id: uuid.UUID) -> tuple[Scan, list[RunningTask]]:
+    scan = db.get(Scan, scan_id, with_for_update=True)
+    if scan is None:
+        raise NotFound("Scan not found")
+    if scan.status not in ACTIVE_SCAN_STATES:
+        raise Conflict(f"Scan is already {scan.status.value}")
+    return scan, _cancel(db, scan)
+
+
+def cancel_tenant_scans(db: Session, tenant_id: uuid.UUID, reason: str) -> list[RunningTask]:
+    """Cancel every queued or running scan of a tenant (suspension). Returns tasks to revoke."""
+    tasks: list[RunningTask] = []
+    for scan in db.execute(select(Scan).where(Scan.tenant_id == tenant_id, Scan.status.in_(ACTIVE_SCAN_STATES))
+                           .with_for_update()).scalars():
+        tasks += _cancel(db, scan, reason)
+    return tasks
+
+
+def _inactive_reason(db: Session, scan: Scan) -> str | None:
+    """Why the scan's tenant/organization may no longer scan, if so.
+
+    Policy: a suspended tenant (or deactivated organization) runs nothing further.
+    Queued scans are cancelled when they would start, running scans at their next
+    stage boundary; suspending a tenant through the API cancels them immediately.
+    """
+    tenant = db.get(Tenant, scan.tenant_id)
+    if tenant is None or tenant.status != TenantStatus.ACTIVE:
+        return "Cancelled: the tenant is suspended"
+    org = db.get(Organization, scan.organization_id)
+    if org is None or not org.is_active:
+        return "Cancelled: the organization is inactive"
+    return None
 
 
 # ------------------------------------------------------------------ running
+# Advisory lock serializing scan-slot reservation platform-wide ("ASMSTART").
+_START_LOCK = 0x41534D5354415254
+
+
 def try_start(db: Session, scan: Scan) -> bool:
-    """Move a pending/queued scan to running if concurrency limits allow."""
+    """Move a pending/queued scan to running if concurrency limits allow.
+
+    Reservations are serialized with a transaction-level advisory lock held until
+    the caller commits, so two workers can never both see (and take) the last free
+    slot, and a redelivered start of the same scan finds it already running.
+    """
+    db.execute(select(func.pg_advisory_xact_lock(_START_LOCK)))
+    db.refresh(scan)  # re-read under the lock
     if scan.status not in (ScanStatus.PENDING, ScanStatus.QUEUED):
+        return False
+    reason = _inactive_reason(db, scan)
+    if reason:
+        _cancel(db, scan, reason)
         return False
     s = get_settings()
     # The platform-wide count must span tenants; `db` is tenant-scoped (RLS would hide
@@ -178,8 +246,14 @@ def prepare_next_stage(db: Session, scan: Scan) -> tuple[ScanStage, SensorJob] |
     remains (the caller then finalizes the scan)."""
     if scan.status != ScanStatus.RUNNING:
         return None
+    reason = _inactive_reason(db, scan)
+    if reason:
+        _cancel(db, scan, reason)
+        return None
     org = db.get(Organization, scan.organization_id)
-    assert org is not None
+    tenant = db.get(Tenant, scan.tenant_id)
+    assert org is not None and tenant is not None
+    pool = tenant.worker_pool or "default"
     s = get_settings()
     for stage in sorted(scan.stages, key=lambda st: st.position):
         if stage.status != StageStatus.PENDING:
@@ -214,18 +288,46 @@ def prepare_next_stage(db: Session, scan: Scan) -> tuple[ScanStage, SensorJob] |
             db.flush()
             continue
         creds = scanner_credentials(db, scan.tenant_id, adapter.credential_providers)
+        if scan.auth_secret_encrypted and AUTH_PROVIDER in adapter.credential_providers:
+            # A sign-in value given for this scan wins over the tenant's stored one.
+            creds[AUTH_PROVIDER] = [crypto.decrypt(scan.auth_secret_encrypted, f"scan:{scan.id}:auth").decode()]
+            if scan.auth_header_name and "auth_header_name" in adapter.config_model.model_fields:
+                cfg["auth_header_name"] = scan.auth_header_name
         job_id = uuid.uuid4().hex
         job = SensorJob(
             job_id=job_id, tenant_id=str(scan.tenant_id), scan_id=str(scan.id), stage_id=str(stage.id),
             adapter=stage.engine, targets=allowed, config=cfg,
-            sealed_credentials=seal_credentials(creds, job_id, crypto.transport_key()) if creds else None,
+            # Sealed with the pool's key: only the pool the job is sent to can open it.
+            sealed_credentials=seal_credentials(creds, job_id, crypto.pool_transport_key(pool)) if creds else None,
             timeout_seconds=s.stage_timeout_seconds,
             retain_raw_output=bool(scan.profile_snapshot.get("retain_raw_output")),
+            excluded_networks=[r.value for r in checker.rules if r.is_exclusion
+                               and r.entry_type in (ScopeEntryType.IP, ScopeEntryType.CIDR)],
         )
         stage.status = StageStatus.RUNNING
         stage.started_at = _now()
+        # The binding a submitted result must match (see result_binding_error).
+        stage.task_id = job_id
+        stage.worker_pool = pool
+        stage.dispatched_at = None
         db.flush()
         return stage, job
+    return None
+
+
+def result_binding_error(scan: Scan | None, stage: ScanStage | None, env: ResultEnvelope,
+                         result: SensorResult) -> str | None:
+    """Why a submitted result does not answer the job dispatched for this stage (None = it does)."""
+    if scan is None or stage is None or stage.scan_id != scan.id or str(scan.tenant_id) != env.tenant_id:
+        return "no such stage for this tenant and scan"
+    if not stage.task_id or stage.task_id != env.job_id:
+        return "job id does not match the job dispatched for the stage"
+    if (stage.worker_pool or "default") != env.pool:
+        return f"submitted by pool {env.pool!r}, but the job was dispatched to {stage.worker_pool!r}"
+    if result.adapter != stage.engine:
+        return f"result is from engine {result.adapter!r}, the stage runs {stage.engine!r}"
+    if stage.status != StageStatus.RUNNING or scan.status != ScanStatus.RUNNING:
+        return f"stage is {stage.status.value} (scan {scan.status.value}); result is stale"
     return None
 
 
@@ -271,11 +373,16 @@ def complete_stage(db: Session, scan: Scan, stage: ScanStage, result: SensorResu
         stage.stats = {"errors": result.errors[:20]}
         db.flush()
         return
+    if result.status != "completed" and result.coverage:
+        # Only a run that proved it finished may vouch for absence (port closed,
+        # host gone, finding resolved). Enforced here too, not just in the sensor.
+        result = result.model_copy(update={"coverage": []})
 
     checker = load_checker(db, org)
     ingest = Ingestor(db, IngestContext(
         tenant_id=scan.tenant_id, organization=org, source=result.adapter, checker=checker, now=now, settings=ts,
         discovery_method=stage.stage_type.value, scan_id=scan.id, stage_id=stage.id, baseline=scan.is_baseline,
+        historical=result.historical,
     )).ingest(result)
     rules_result = rules.evaluate(db, ingest.touched, ts["detection_rules"])
     if rules_result.coverage:
@@ -324,6 +431,7 @@ def finalize_scan(db: Session, scan: Scan) -> None:
     else:
         scan.status = ScanStatus.COMPLETED
     scan.finished_at = now
+    scan.auth_secret_encrypted = None  # erased as soon as the scan is over
 
     if succeeded:
         risk = recompute_organization(db, org, scan_id=scan.id, baseline=scan.is_baseline)
@@ -360,13 +468,17 @@ def run_inline(db: Session, scan_id: uuid.UUID, settings: dict[str, Any] | None 
         db.commit()
         return scan
     db.commit()
+    sensor_settings = {"allow_non_public_targets": get_settings().allow_non_public_scope, **(settings or {})}
     while True:
         nxt = prepare_next_stage(db, scan)
+        if nxt is not None:
+            nxt[0].dispatched_at = _now()
         db.commit()
         if nxt is None:
             break
         stage, job = nxt
-        result = asyncio.run(execute_job(job, settings=settings, transport_key=crypto.transport_key()))
+        key = crypto.pool_transport_key(stage.worker_pool or "default")
+        result = asyncio.run(execute_job(job, settings=sensor_settings, transport_key=key))
         complete_stage(db, scan, stage, result)
         db.commit()
     finalize_scan(db, scan)

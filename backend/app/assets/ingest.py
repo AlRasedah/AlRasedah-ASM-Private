@@ -89,6 +89,10 @@ class IngestContext:
     scan_id: uuid.UUID | None = None
     stage_id: uuid.UUID | None = None
     baseline: bool = False
+    # The source reports what it last saw (e.g. Shodan), not a live check: new
+    # knowledge is recorded, but liveness (last_seen, reactivation, miss counters)
+    # is never refreshed from it, and its findings are kept unverified.
+    historical: bool = False
 
 
 @dataclass
@@ -296,25 +300,31 @@ class Ingestor:
                     merged = dict(old_meta)
                     merged.update(attrs)
                     asset.meta = merged
-                asset.last_seen = now
-                asset.missed_count = 0
                 if self.ctx.source not in (asset.sources or []):
                     asset.sources = [*(asset.sources or []), self.ctx.source][-20:]
-                asset.confidence = max(asset.confidence, confidence)
-                if asset.status == AssetStatus.INACTIVE:
-                    asset.status = AssetStatus.ACTIVE
-                    asset.inactive_since = None
-                    self.result.stats["reactivated"] += 1
-                    self._event(asset, detector.reappeared(t, v))
-                else:
+                if self.ctx.historical:
+                    # Third-party sighting of unknown age: enrich, but never claim
+                    # the asset is alive now or bring an inactive one back.
                     self.result.stats["updated_assets"] += 1
+                else:
+                    asset.last_seen = now
+                    asset.missed_count = 0
+                    asset.confidence = max(asset.confidence, confidence)
+                    if asset.status == AssetStatus.INACTIVE:
+                        asset.status = AssetStatus.ACTIVE
+                        asset.inactive_since = None
+                        self.result.stats["reactivated"] += 1
+                        self._event(asset, detector.reappeared(t, v))
+                    else:
+                        self.result.stats["updated_assets"] += 1
             if t in HOSTNAME_ASSET_TYPES or t == AssetType.IP_ADDRESS:
                 if asset.scope_status != status and not (t == AssetType.IP_ADDRESS and status == ScopeStatus.OUT_OF_SCOPE
                                                          and asset.scope_status == ScopeStatus.DERIVED):
                     asset.scope_status = status
             elif _RANK[status] > _RANK[asset.scope_status]:
                 asset.scope_status = status
-        asset.last_scanned_at = now
+        if not self.ctx.historical:
+            asset.last_scanned_at = now
         self.result.touched.add(asset.id)
         if observed:
             self.observed.add(key)
@@ -364,8 +374,9 @@ class Ingestor:
                     if rel == RelationType.USES_TECHNOLOGY:
                         self._event(src, detector.technology_added(src.value, dst.meta.get("name") or dst.value,
                                                                    attrs.get("version")))
-                r.last_seen = now
-                r.missed_count = 0
+                if not self.ctx.historical:  # see IngestContext.historical
+                    r.last_seen = now
+                    r.missed_count = 0
                 if attrs:
                     r.attributes = {**(r.attributes or {}), **attrs}
                 continue
@@ -637,7 +648,8 @@ class Ingestor:
                 continue
             ch = findings_service.upsert_observation(
                 self.db, tenant_id=self.ctx.tenant_id, organization_id=self.ctx.organization.id, asset=asset,
-                obs=fo, source=self.ctx.source, now=self.ctx.now, scan_id=self.ctx.scan_id)
+                obs=fo, source=self.ctx.source, now=self.ctx.now, scan_id=self.ctx.scan_id,
+                unverified=self.ctx.historical or "unverified" in fo.tags)
             observed_findings.setdefault(asset.id, set()).add(ch.finding.id)
             self.result.stats["findings"] += 1
             if ch.event:

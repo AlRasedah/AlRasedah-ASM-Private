@@ -47,10 +47,13 @@ def finding_query(
     tag: str | None = Query(None, max_length=64),
     q: str | None = Query(None, max_length=255),
     first_seen_after: datetime | None = None,
+    # Third-party reports nobody tested (e.g. Shodan CVE matches) live in their own
+    # view: excluded by default, shown on their own with unverified=true.
+    unverified: bool = False,
     sort: str = Query("risk", pattern="^(risk|severity|first_seen|last_seen|title|status|detection|asset)$"),
     order: str = Query("desc", pattern="^(asc|desc)$"),
 ) -> Select:
-    conds = []
+    conds = [Finding.unverified.is_(bool(unverified))]
     if organization_id:
         conds.append(Finding.organization_id == organization_id)
     if status:
@@ -111,7 +114,9 @@ def list_findings(stmt: Select = Depends(finding_query), paging: Paging = Depend
 @router.get("/stats", response_model=FindingStats)
 def stats(organization_id: uuid.UUID | None = None, _: Principal = Depends(require(Permission.FINDINGS_READ)),
           db: Session = Depends(get_db)) -> FindingStats:
-    base = [Finding.organization_id == organization_id] if organization_id else []
+    base = [Finding.unverified.is_(False)]  # unverified third-party reports are counted separately
+    if organization_id:
+        base.append(Finding.organization_id == organization_id)
     open_ = [Finding.status.in_([s.value for s in OPEN_FINDING_STATES])]
 
     def grouped(col, *extra):  # type: ignore[no-untyped-def]

@@ -9,6 +9,7 @@ from .events import AssetEvent
 from .findings import Finding, FindingActivity
 from .integrations import Integration, NotificationDelivery, NotificationPolicy
 from .intel import IntelFeedState, VulnIntel
+from .platform import PlatformSetting, UserAlertPreference
 from .reports import Report
 from .scans import Scan, ScanArtifact, ScanProfile, ScanSchedule, ScanStage, ScopeDecision
 from .scope import ScopeEntry, Secret
@@ -17,7 +18,8 @@ from .tenancy import MetricSnapshot, Organization, Plan, Tenant, UsageRecord
 __all__ = [
     "Base", "Asset", "AssetObservation", "AssetRelationship", "AuditLog", "ApiToken", "PasswordResetToken",
     "TenantMembership", "User", "UserSession", "AssetEvent", "Finding", "FindingActivity", "Integration",
-    "NotificationDelivery", "NotificationPolicy", "IntelFeedState", "VulnIntel", "Report", "Scan",
+    "NotificationDelivery", "NotificationPolicy", "IntelFeedState", "VulnIntel", "PlatformSetting",
+    "UserAlertPreference", "Report", "Scan",
     "ScanArtifact", "ScanProfile", "ScanSchedule", "ScanStage", "ScopeDecision", "ScopeEntry", "Secret",
     "MetricSnapshot", "Organization", "Plan", "Tenant", "UsageRecord",
 ]

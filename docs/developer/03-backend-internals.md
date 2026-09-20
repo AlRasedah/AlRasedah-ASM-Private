@@ -193,8 +193,10 @@ migration needed.
 - `services/secrets.put_secret` stores tenant secrets with AAD `secret:<tenant>:<name>` so
   a ciphertext copied to another row/tenant fails authentication.
 - Scanner credentials are decrypted just before dispatch and **sealed** into the
-  `SensorJob` with `ASM_SCANNER_TRANSPORT_KEY` (AES-GCM, AAD = job id) so they never sit in
-  the broker in clear text.
+  `SensorJob` with the tenant's worker-pool key (`crypto.pool_transport_key(pool)`, HKDF from
+  `ASM_SCANNER_TRANSPORT_KEY`; AES-GCM, AAD = job id) so they never sit in the broker in clear
+  text and only that pool's workers can open them. The same pool key authenticates the
+  pool's result envelopes.
 - The API never returns secret values (only `last_four`, `has_secret`).
 
 ## 3.9 Background work from the API
@@ -206,7 +208,7 @@ dispatch.start_scan(tenant_id, scan_id)   # Celery: send_task("asm.core.start_sc
 dispatch.recompute_risk(tenant_id, org_id)
 dispatch.generate_report(tenant_id, report_id)
 dispatch.dispatch_notifications()
-dispatch.revoke(task_ids)
+dispatch.revoke([(task_id, pool), ...])   # on each pool's own control channel (asm-<pool>)
 ```
 
 In `ASM_SENSOR_MODE=inline` these run synchronously in the request (tests and development);

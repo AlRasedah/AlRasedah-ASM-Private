@@ -77,6 +77,7 @@ def load_checker(db: Session, organization: Organization) -> ScopeChecker:
         rules=[ScopeRule.from_entry(e) for e in entries],
         require_verification=bool(ts["scanning"].get("require_scope_verification")),
         derived_ip_scanning=bool(os_.get("derived_ip_scanning", True)),
+        allow_non_public=get_settings().allow_non_public_scope,
     )
 
 
@@ -106,7 +107,7 @@ def add_entry(db: Session, *, tenant_id: uuid.UUID, organization_id: uuid.UUID, 
         is_exclusion=is_exclusion, allow_active_scanning=allow_active_scanning and not is_exclusion, notes=notes,
         created_by=user_id,
         verification_status=(VerificationStatus.UNVERIFIED if require_verification and not is_exclusion
-                             and entry_type == ScopeEntryType.DOMAIN else VerificationStatus.NOT_REQUIRED),
+                             else VerificationStatus.NOT_REQUIRED),
         verification_token=secrets.token_urlsafe(24) if entry_type == ScopeEntryType.DOMAIN else None,
     )
     db.add(entry)
@@ -213,6 +214,43 @@ def rescope_assets(db: Session, org: Organization) -> int:
 
 
 # ------------------------------------------------------------ verification
+def apply_verification_policy(db: Session, tenant_id: uuid.UUID) -> int:
+    """Re-classify inclusion entries after verification became mandatory.
+
+    Entries recorded as ``not_required`` while verification was off were never
+    proven; they become ``unverified`` so the UI asks for proof. (The checker
+    already treats only ``verified`` as proof; this keeps the displayed state
+    honest.) Returns the number of entries changed.
+    """
+    tenant = db.get(Tenant, tenant_id)
+    if not tenant_settings(tenant)["scanning"].get("require_scope_verification"):
+        return 0
+    rows = db.execute(select(ScopeEntry).where(
+        ScopeEntry.tenant_id == tenant_id, ScopeEntry.is_exclusion.is_(False),
+        ScopeEntry.verification_status == VerificationStatus.NOT_REQUIRED)).scalars().all()
+    for e in rows:
+        e.verification_status = VerificationStatus.UNVERIFIED
+    db.flush()
+    return len(rows)
+
+
+def approve_entry(db: Session, entry_id: uuid.UUID) -> ScopeEntry:
+    """Platform-administrator approval of an IP/CIDR inclusion (they have no DNS proof)."""
+    entry = db.get(ScopeEntry, entry_id)
+    if entry is None:
+        raise NotFound("Scope entry not found")
+    if entry.entry_type == ScopeEntryType.DOMAIN:
+        raise ValidationFailed("Domains are verified with a DNS TXT record, not by approval")
+    if entry.is_exclusion:
+        raise ValidationFailed("Exclusions do not need approval")
+    entry.verification_status = VerificationStatus.VERIFIED
+    entry.verified_at = datetime.now(UTC)
+    audit.record(db, Action.SCOPE_VERIFIED, tenant_id=entry.tenant_id, object_type="scope_entry", object_id=entry.id,
+                 new={"value": entry.value, "method": "platform_admin_approval"})
+    db.flush()
+    return entry
+
+
 def verification_instructions(entry: ScopeEntry) -> dict[str, str]:
     return {"record_type": "TXT", "name": f"{VERIFY_PREFIX}.{entry.value}",
             "value": f"{VERIFY_VALUE}{entry.verification_token}"}

@@ -248,6 +248,10 @@ class SensorResult(_Model):
     adapter_version: str | None = None
     tool_version: str | None = None
     status: Literal["completed", "failed", "partial"] = "completed"
+    # True when the observations describe what a third-party database last saw
+    # rather than a live check: the platform adds new assets from them but never
+    # refreshes "last seen", revives inactive assets or closes anything.
+    historical: bool = False
     started_at: datetime
     finished_at: datetime
     target_count: int = 0

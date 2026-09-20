@@ -12,7 +12,7 @@ from typing import Any, Literal
 
 from pydantic import Field
 
-from ...base import AdapterConfig, ExecutionContext, RawOutput, ScannerAdapter, StageType, iter_json_lines
+from ...base import AdapterConfig, ExecutionContext, RawOutput, ScannerAdapter, StageType, iter_json_lines, tool_output
 from ...execution import minimal_env, resolve_binary, run_process
 from ...observations import (
     FindingCategory,
@@ -58,9 +58,8 @@ class BbotAdapter(ScannerAdapter):
         proc = await run_process(argv, timeout=min(ctx.timeout_seconds, config.timeout_minutes * 60),
                                  cwd=str(ctx.workdir), env=minimal_env(home=str(ctx.workdir)),
                                  max_output_bytes=ctx.max_output_bytes)
-        out = outdir / "asm" / "output.json"
-        data = out.read_bytes()[: ctx.max_output_bytes] if out.exists() else proc.stdout
-        return RawOutput(process=proc, files={"output.json": data})
+        data, truncated = tool_output(outdir / "asm" / "output.json", proc, ctx.max_output_bytes)
+        return RawOutput(process=proc, files={"output.json": data}, truncated=truncated)
 
     async def parse_results(self, raw: RawOutput) -> list[dict[str, Any]]:
         return list(iter_json_lines(raw.primary))

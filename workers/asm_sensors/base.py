@@ -20,6 +20,7 @@ import gzip
 import hashlib
 import json
 import logging
+import secrets
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
@@ -30,6 +31,7 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from .coordination import Coordinator, local_coordinator
 from .execution import ExecutionError, ProcessResult, resolve_binary
 from .observations import NormalizedOutput, RawArtifact, SensorResult
 from .targets import Target, TargetKind
@@ -75,6 +77,10 @@ class ExecutionContext:
     max_rate: int = 2000
     # Deployment-level settings (never user supplied), e.g. service URLs.
     settings: dict[str, Any] = field(default_factory=dict)
+    # Pool-wide leases for shared resources (e.g. a ZAP daemon); see coordination.py.
+    coordinator: Coordinator = field(default_factory=local_coordinator)
+    # Identifies this job in shared resources (context names, rule names).
+    job_id: str = field(default_factory=lambda: secrets.token_hex(8))
 
 
 @dataclass
@@ -83,7 +89,12 @@ class RawOutput:
     files: dict[str, bytes] = field(default_factory=dict)
     # Pure-python adapters (API based) put decoded records here.
     records: list[Any] = field(default_factory=list)
+    # Anything in ``errors`` means the run did not finish everything it set out to
+    # do (a failed API call, a deadline, a result limit), so it is reported as
+    # partial and cannot vouch for the absence of anything.
     errors: list[str] = field(default_factory=list)
+    # Output was clipped at the capture limit: records past the cut were lost.
+    truncated: bool = False
     tool_version: str | None = None
 
     @property
@@ -104,6 +115,9 @@ class ScannerAdapter(ABC):
     # Active sensors send traffic to the target itself and therefore require an
     # explicit active-scanning authorization in the organization's scope.
     active: ClassVar[bool] = False
+    # Reports what a third party last saw, not what is live now (e.g. Shodan). The
+    # platform then adds new knowledge but never refreshes liveness from it.
+    historical: ClassVar[bool] = False
     binaries: ClassVar[tuple[str, ...]] = ()
     credential_providers: ClassVar[tuple[str, ...]] = ()
     config_model: ClassVar[type[AdapterConfig]]
@@ -170,10 +184,15 @@ class ScannerAdapter(ABC):
 
         raw = await self.execute(targets, config, ctx)
         errors.extend(raw.errors)
-        status = "completed"
+        # Completeness must be proven: any error, a failed/timed-out process or
+        # clipped output makes the run partial (and therefore coverage-free).
+        status = "partial" if raw.errors else "completed"
         if raw.process is not None and not raw.process.ok:
             detail = "timed out" if raw.process.timed_out else f"exit code {raw.process.returncode}"
             errors.append(f"{self.name} {detail}: {_tail(raw.process.stderr)}")
+            status = "partial"
+        if raw.truncated or (raw.process is not None and raw.process.stdout_truncated and not raw.files):
+            errors.append(f"{self.name}: output exceeded the capture limit and was truncated")
             status = "partial"
 
         parsed = await self.parse_results(raw)
@@ -194,6 +213,7 @@ class ScannerAdapter(ABC):
             adapter_version=self.adapter_version,
             tool_version=raw.tool_version,
             status=status,  # type: ignore[arg-type]
+            historical=self.historical,
             started_at=started,
             finished_at=datetime.now(UTC),
             target_count=len(targets),
@@ -220,11 +240,25 @@ def write_targets_file(workdir: Path, targets: Iterable[Target], name: str = "ta
     return path
 
 
-def read_output_file(path: Path, limit: int) -> bytes:
+def read_output_file(path: Path, limit: int) -> tuple[bytes, bool]:
+    """Read at most ``limit`` bytes; the flag is True when the file was longer."""
     if not path.exists():
-        return b""
+        return b"", False
     with path.open("rb") as fh:
-        return fh.read(limit)
+        data = fh.read(limit)
+        return data, bool(fh.read(1))
+
+
+def tool_output(path: Path, proc: ProcessResult, limit: int) -> tuple[bytes, bool]:
+    """A tool's results from its ``-o`` file, falling back to captured stdout.
+
+    Returns ``(data, truncated)``; callers must propagate ``truncated`` into
+    :attr:`RawOutput.truncated` so a clipped run never claims coverage.
+    """
+    data, truncated = read_output_file(path, limit)
+    if data:
+        return data, truncated
+    return proc.stdout, proc.stdout_truncated
 
 
 def iter_json_lines(data: bytes) -> Iterator[dict[str, Any]]:

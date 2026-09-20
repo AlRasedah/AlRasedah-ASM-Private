@@ -24,7 +24,7 @@ from ...base import (
     RawOutput,
     ScannerAdapter,
     StageType,
-    read_output_file,
+    tool_output,
     write_targets_file,
 )
 from ...execution import minimal_env, resolve_binary, run_process
@@ -121,8 +121,8 @@ class AmassAdapter(ScannerAdapter):
         timeout = min(ctx.timeout_seconds, config.timeout_minutes * 60 + 300)
         proc = await run_process(argv, timeout=timeout, cwd=str(ctx.workdir),
                                  env=minimal_env(home=str(ctx.workdir)), max_output_bytes=ctx.max_output_bytes)
-        data = read_output_file(out, ctx.max_output_bytes) or proc.stdout
-        return RawOutput(process=proc, files={"amass.txt": data})
+        data, truncated = tool_output(out, proc, ctx.max_output_bytes)
+        return RawOutput(process=proc, files={"amass.txt": data}, truncated=truncated)
 
     async def parse_results(self, raw: RawOutput) -> list[dict[str, Any]]:
         return parse_amass_output(raw.primary)

@@ -1,11 +1,64 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Save } from "lucide-react";
+import { Mail, Save, Send } from "lucide-react";
 import { api } from "@/api/client";
+import { useAuth } from "@/auth/AuthContext";
 import { Card, ErrorBox, Field, Loading, PageHead } from "@/components/ui";
 import { label } from "@/lib/format";
 
 type Settings = Record<string, any>;
+
+interface EmailSettings {
+  configured: boolean; source: string; host: string | null; port: number; username: string | null;
+  sender: string; starttls: boolean; ssl: boolean; has_password: boolean;
+}
+
+/** Mail server for password resets, invitations and alerts (platform administrators). */
+function EmailDeliveryCard() {
+  const { can } = useAuth();
+  const qc = useQueryClient();
+  const enabled = can("tenants:admin");
+  const q = useQuery({ queryKey: ["email-settings"], queryFn: () => api<EmailSettings>("/settings/email"), enabled });
+  const [form, setForm] = useState<Record<string, any>>({});
+  useEffect(() => { if (q.data) setForm({ host: q.data.host ?? "", port: q.data.port ?? 587, username: q.data.username ?? "",
+    sender: q.data.sender ?? "", starttls: q.data.starttls, ssl: q.data.ssl, password: "" }); }, [q.data]);
+  const save = useMutation({
+    // An empty password keeps the stored one; clearing the field on purpose is a separate action.
+    mutationFn: () => api("/settings/email", { method: "PUT", body: { ...form, password: form.password || undefined } }),
+    onSuccess: () => { setForm({ ...form, password: "" }); qc.invalidateQueries({ queryKey: ["email-settings"] }); },
+  });
+  const test = useMutation({ mutationFn: () => api<{ message: string }>("/settings/email/test", { method: "POST" }) });
+  if (!enabled) return null;
+  if (q.isLoading) return <Card title="Email delivery"><Loading /></Card>;
+  const set = (k: string, v: unknown) => setForm({ ...form, [k]: v });
+  return (
+    <Card title="Email delivery" hint="used for password resets, invitations and alerts — no server access needed">
+      <div className="form">
+        <ErrorBox error={save.error ?? test.error} />
+        {q.data?.source === "environment" &&
+          <div className="info-box">Currently using the mail server from the deployment's environment. Saving here overrides it.</div>}
+        {!q.data?.configured && <div className="info-box">No mail server configured yet — password resets and alert emails cannot be sent.</div>}
+        <div className="form-row">
+          <Field label="Server (SMTP host)"><input value={form.host ?? ""} onChange={(e) => set("host", e.target.value)} placeholder="smtp.example.com" /></Field>
+          <Field label="Port"><input type="number" value={form.port ?? 587} onChange={(e) => set("port", Number(e.target.value))} /></Field>
+        </div>
+        <div className="form-row">
+          <Field label="Username"><input value={form.username ?? ""} onChange={(e) => set("username", e.target.value)} autoComplete="off" /></Field>
+          <Field label={q.data?.has_password ? "Password (leave blank to keep)" : "Password"}>
+            <input type="password" value={form.password ?? ""} onChange={(e) => set("password", e.target.value)} autoComplete="new-password" /></Field>
+        </div>
+        <Field label="Send from"><input value={form.sender ?? ""} onChange={(e) => set("sender", e.target.value)} placeholder="Exteriq ASM <asm@example.com>" /></Field>
+        <label className="check"><input type="checkbox" checked={!!form.starttls} onChange={(e) => set("starttls", e.target.checked)} /> Use STARTTLS (recommended)</label>
+        <label className="check"><input type="checkbox" checked={!!form.ssl} onChange={(e) => set("ssl", e.target.checked)} /> Connect over TLS directly (port 465)</label>
+        {test.isSuccess && <div className="info-box">{test.data.message}</div>}
+        <div className="filters">
+          <button className="btn primary" disabled={!form.host || save.isPending} onClick={() => save.mutate()}><Mail /> Save mail server</button>
+          <button className="btn" disabled={!q.data?.configured || test.isPending} onClick={() => test.mutate()}><Send /> Send test email</button>
+        </div>
+      </div>
+    </Card>
+  );
+}
 
 export default function SettingsPage() {
   const qc = useQueryClient();
@@ -71,6 +124,7 @@ export default function SettingsPage() {
             ))}
           </div>
         </Card>
+        <EmailDeliveryCard />
         <div className="stack">
           <Card title="Built-in detection rules">
             <div className="form">

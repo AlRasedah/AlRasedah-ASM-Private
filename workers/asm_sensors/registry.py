@@ -22,6 +22,7 @@ BUILTIN_MODULES = (
     "asm_sensors.adapters.crtsh",
     "asm_sensors.adapters.dnsx",
     "asm_sensors.adapters.asnlookup",
+    "asm_sensors.adapters.shodan",
     "asm_sensors.adapters.naabu",
     "asm_sensors.adapters.httpx",
     "asm_sensors.adapters.nuclei",

@@ -40,6 +40,13 @@ STAGE_LABELS = {
     StageType.VULNERABILITY_DETECTION: "Exposure & vulnerability detection",
 }
 
+_IP_ENRICHMENT = [
+    {"stage": "ip_enrichment", "engine": "asnlookup", "config": {}, "optional": True},
+    # Internet-exposure intelligence. Passive (queries Shodan, not the target) and
+    # skipped automatically when the tenant has no Shodan key.
+    {"stage": "ip_enrichment", "engine": "shodan", "config": {}, "optional": True},
+]
+
 _DISCOVERY = [
     {"stage": "subdomain_discovery", "engine": "subfinder", "config": {}},
     {"stage": "subdomain_discovery", "engine": "crtsh", "config": {}, "optional": True},
@@ -56,7 +63,7 @@ BUILTIN_PROFILES: list[dict[str, Any]] = [
         "stages": [
             *_DISCOVERY,
             {"stage": "dns_resolution", "engine": "dnsx", "config": {}},
-            {"stage": "ip_enrichment", "engine": "asnlookup", "config": {}, "optional": True},
+            *_IP_ENRICHMENT,
         ],
     },
     {
@@ -67,7 +74,7 @@ BUILTIN_PROFILES: list[dict[str, Any]] = [
         "stages": [
             *_DISCOVERY,
             {"stage": "dns_resolution", "engine": "dnsx", "config": {}},
-            {"stage": "ip_enrichment", "engine": "asnlookup", "config": {}, "optional": True},
+            *_IP_ENRICHMENT,
             {"stage": "port_discovery", "engine": "naabu", "config": {"port_set": "common", "rate": 500}},
             {"stage": "http_discovery", "engine": "httpx", "config": {}},
             {"stage": "vulnerability_detection", "engine": "nuclei",
@@ -87,7 +94,7 @@ BUILTIN_PROFILES: list[dict[str, Any]] = [
             {"stage": "osint_enrichment", "engine": "spiderfoot", "config": {"use_case": "passive"}, "optional": True},
             {"stage": "dns_resolution", "engine": "dnsx",
              "config": {"record_types": ["a", "aaaa", "cname", "mx", "ns", "txt", "caa"]}},
-            {"stage": "ip_enrichment", "engine": "asnlookup", "config": {}, "optional": True},
+            *_IP_ENRICHMENT,
             {"stage": "port_discovery", "engine": "naabu", "config": {"port_set": "extended", "rate": 800}},
             {"stage": "http_discovery", "engine": "httpx", "config": {
                 "ports": "80,81,443,591,2082,2083,2087,3000,4443,5000,7001,7443,8000,8008,8080,8081,8088,8443,"

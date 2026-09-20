@@ -64,11 +64,17 @@ function NewScan({ onClose }: { onClose: () => void }) {
   const [org, setOrg] = useState(orgId ?? orgs[0]?.id ?? "");
   const [profile, setProfile] = useState("");
   const [targets, setTargets] = useState("");
+  const [authSecret, setAuthSecret] = useState("");
+  const [authHeader, setAuthHeader] = useState<"Cookie" | "Authorization">("Cookie");
   const selected = profiles.data?.find((p) => p.id === (profile || profiles.data?.[0]?.id));
+  // Only the web application scanner can use a sign-in value, so only offer it then.
+  const webAppStage = selected?.stages.some((s) => s.enabled && (s.engine === "zap_spider" || s.engine === "zap_active"));
   const m = useMutation({
     mutationFn: () => api<Scan>("/scans", { method: "POST", body: {
       organization_id: org, profile_id: selected?.id,
-      targets: targets.trim() ? targets.split(/[\s,]+/).filter(Boolean) : undefined } }),
+      targets: targets.trim() ? targets.split(/[\s,]+/).filter(Boolean) : undefined,
+      auth_secret: webAppStage && authSecret.trim() ? authSecret.trim() : undefined,
+      auth_header_name: authHeader } }),
     onSuccess: (s) => { qc.invalidateQueries({ queryKey: ["scans"] }); nav(`/scans/${s.id}`); },
   });
   return (
@@ -102,6 +108,25 @@ function NewScan({ onClose }: { onClose: () => void }) {
         <Field label="Limit to specific targets (optional)">
           <textarea placeholder="api.example.com, 203.0.113.10" value={targets} onChange={(e) => setTargets(e.target.value)} />
         </Field>
+        {webAppStage && (
+          <>
+            <Field label={`Sign in with a ${authHeader === "Cookie" ? "session cookie" : "token"} (optional)`}>
+              <div className="filters" style={{ padding: 0 }}>
+                <select value={authHeader} onChange={(e) => setAuthHeader(e.target.value as "Cookie" | "Authorization")}
+                        aria-label="Send the value as this header">
+                  <option value="Cookie">Cookie</option>
+                  <option value="Authorization">Authorization</option>
+                </select>
+                <input type="password" autoComplete="off" style={{ flex: 1, minWidth: 260 }}
+                       placeholder={authHeader === "Cookie" ? "PHPSESSID=abc123; security=low" : "Bearer eyJhbGci…"}
+                       value={authSecret} onChange={(e) => setAuthSecret(e.target.value)} />
+              </div>
+            </Field>
+            <div className="small muted">Paste a logged-in session from your browser and the web application scanner
+              tests the pages behind the login. It is sent only to the authorized origin, stored encrypted, used for
+              this scan only, and erased when the scan ends. Sessions expire, so start the scan soon after copying it.</div>
+          </>
+        )}
       </div>
     </Modal>
   );

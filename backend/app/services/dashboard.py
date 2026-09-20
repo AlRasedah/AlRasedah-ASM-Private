@@ -7,7 +7,7 @@ from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session, aliased
 
 from app.models import Asset, AssetEvent, AssetRelationship, Finding, MetricSnapshot, Organization
@@ -48,7 +48,7 @@ def summary(db: Session, org_id: uuid.UUID | None = None) -> dict[str, Any]:
     def count(*conds) -> int:  # type: ignore[no-untyped-def]
         return db.scalar(_org(select(func.count()).select_from(Asset).where(*in_scope, *conds), org_id)) or 0
 
-    open_f = Finding.status.in_([s.value for s in OPEN_FINDING_STATES])
+    open_f = and_(Finding.status.in_([s.value for s in OPEN_FINDING_STATES]), Finding.unverified.is_(False))
     sev = {getattr(k, "value", k): v for k, v in db.execute(
         _org(select(Finding.severity, func.count()).where(open_f).group_by(Finding.severity), org_id,
              Finding.organization_id)).all()}
@@ -159,7 +159,8 @@ def web_apps(db: Session, org_id: uuid.UUID | None = None, page: int = 1, page_s
         lambda: {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0, "total": 0, "dast": 0})
     if ids:
         fq = select(Finding.asset_id, Finding.severity, Finding.source).where(
-            Finding.asset_id.in_(ids), Finding.status.in_([s.value for s in OPEN_FINDING_STATES]))
+            Finding.asset_id.in_(ids), Finding.status.in_([s.value for s in OPEN_FINDING_STATES]),
+            Finding.unverified.is_(False))
         for aid, sev, src in db.execute(fq).all():
             a = agg[aid]
             key = getattr(sev, "value", sev)

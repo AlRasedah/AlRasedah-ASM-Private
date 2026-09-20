@@ -170,6 +170,8 @@ export interface Finding {
   location: string | null;
   source: string;
   source_label: string | null;
+  /** Reported by an external database (e.g. Shodan) and not verified against the live service. */
+  unverified: boolean;
   asset: AssetRef | null;
 }
 

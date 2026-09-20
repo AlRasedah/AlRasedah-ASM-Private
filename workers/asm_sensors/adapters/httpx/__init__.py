@@ -20,7 +20,7 @@ from ...base import (
     ScannerAdapter,
     StageType,
     iter_json_lines,
-    read_output_file,
+    tool_output,
     write_targets_file,
 )
 from ...execution import minimal_env, resolve_binary, run_process
@@ -131,7 +131,9 @@ class HttpxAdapter(ScannerAdapter):
                                      timeout=ctx.timeout_seconds, cwd=str(ctx.workdir),
                                      env=minimal_env(home=str(ctx.workdir)), max_output_bytes=ctx.max_output_bytes)
             raw.process = proc if raw.process is None or not proc.ok else raw.process
-            chunks.append(read_output_file(gout, ctx.max_output_bytes) or proc.stdout)
+            data, truncated = tool_output(gout, proc, ctx.max_output_bytes)
+            raw.truncated = raw.truncated or truncated
+            chunks.append(data)
         raw.files[out.name] = b"\n".join(chunks)
         return raw
 

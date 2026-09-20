@@ -17,11 +17,15 @@ update_templates() {
 case "$role" in
   worker)
     update_templates
+    # One container serves exactly one worker pool (ASM_SENSOR_POOL): its broker
+    # user, queue and key are all per pool. Gossip/mingle/heartbeats are off because
+    # a pool's broker user may only use its own pool's control channel.
     exec celery -A asm_sensors.worker worker \
-      -Q "${ASM_SENSOR_QUEUES:-scanners.default}" \
+      -Q "scanners.${ASM_SENSOR_POOL:-default}" \
       --concurrency "${ASM_SENSOR_CONCURRENCY:-2}" \
       --loglevel "${ASM_LOG_LEVEL:-INFO}" \
-      --hostname "sensor@%h" "$@"
+      --without-gossip --without-mingle --without-heartbeat \
+      --hostname "sensor-${ASM_SENSOR_POOL:-default}@%h" "$@"
     ;;
   update-templates)
     update_templates

@@ -73,6 +73,11 @@ class ChangePasswordRequest(Input):
     new_password: str = Field(min_length=1, max_length=256)
 
 
+class MfaSetupRequest(Input):
+    # Re-authentication: enrolling an authenticator requires the current password.
+    password: str = Field(max_length=256)
+
+
 class MfaSetupResponse(BaseModel):
     secret: str
     otpauth_uri: str
