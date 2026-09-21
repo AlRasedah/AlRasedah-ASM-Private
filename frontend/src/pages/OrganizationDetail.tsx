@@ -134,8 +134,10 @@ function AddScope({ orgId, exclusion, onClose, onDone }: { orgId: string; exclus
       <div className="form">
         <ErrorBox error={m.error} />
         <Field label="Domains, IP addresses or CIDR ranges (one per line)">
-          <textarea style={{ minHeight: 160 }} placeholder={"example.com\nexample.com.sa\n203.0.113.0/24"} value={text} onChange={(e) => setText(e.target.value)} />
+          <textarea style={{ minHeight: 160 }} placeholder={"example.com\n*.example.com\n203.0.113.0/24"} value={text} onChange={(e) => setText(e.target.value)} />
         </Field>
+        <div className="small muted">Wildcards are accepted: <code>*.example.com</code> is stored as
+          <code> example.com</code> with subdomains included, so it covers the domain and everything under it.</div>
         {!exclusion && <label className="check"><input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} />
           Permit active scanning (port discovery, web fingerprinting, vulnerability detection)</label>}
         <div className="info-box small"><ShieldCheck size={14} /> Only add assets your organization owns or is explicitly authorized to test.
@@ -177,7 +179,7 @@ function ScopeCheck({ orgId }: { orgId: string }) {
   return (
     <Card title="Scope checker">
       <div className="form">
-        <div className="row"><input style={{ flex: 1 }} placeholder="host, IP, CIDR or URL" value={target} onChange={(e) => setTarget(e.target.value)} />
+        <div className="row"><input style={{ flex: 1 }} placeholder="host, IP, CIDR, URL or *.example.com" value={target} onChange={(e) => setTarget(e.target.value)} />
           <button className="btn" disabled={!target} onClick={() => m.mutate()}>Check</button></div>
         <ErrorBox error={m.error} />
         {m.data && <div className={m.data.allowed ? "info-box" : "error-box"}>

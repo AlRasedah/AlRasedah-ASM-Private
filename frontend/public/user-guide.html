@@ -292,11 +292,17 @@
         <li>Under <b>Authorized scope</b>, choose <b>Add</b> and enter your root domains, IP addresses or CIDR ranges — one per line.</li>
         <li>Decide whether to <b>permit active scanning</b> for these entries (port discovery, web fingerprinting, crawling and vulnerability testing). Leave it off for passive-only monitoring.</li>
       </ol>
+      <p><b>Wildcards.</b> Authorizations are usually written as <code>*.example.com</code>, so that form is accepted:
+      it is stored as <code>example.com</code> with <em>subdomains included</em>, covering the domain and everything
+      under it. <code>*.dev.example.com</code> works the same way for a branch of the tree, and wildcards can be used
+      for exclusions too. Pasting both <code>example.com</code> and <code>*.example.com</code> is fine — the second line
+      widens the first entry instead of being rejected as a duplicate. The wildcard can only replace the first label,
+      so <code>a.*.example.com</code> and <code>*example.com</code> are refused rather than guessed at.</p>
       <div class="warn-box"><b>Only add assets your organization owns or is explicitly authorized to test.</b> Every addition is recorded in the audit log.</div>
 
       <h3>Per-entry options</h3>
       <ul>
-        <li><b>Subdomains</b> — for a domain entry, choose whether subdomains are included.</li>
+        <li><b>Subdomains</b> — for a domain entry, choose whether subdomains are included (a <code>*.</code> entry sets this for you).</li>
         <li><b>Active scanning</b> — toggle whether that entry may be contacted actively.</li>
         <li><b>Ownership</b> — verify you control a domain by publishing a DNS TXT record (below).</li>
       </ul>

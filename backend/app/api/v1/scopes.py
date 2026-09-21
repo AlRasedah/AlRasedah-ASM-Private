@@ -57,7 +57,7 @@ def _guess_type(value: str) -> ScopeEntryType:
         ipaddress.ip_address(v)
         return ScopeEntryType.IP
     except ValueError:
-        return ScopeEntryType.DOMAIN
+        return ScopeEntryType.DOMAIN  # includes wildcards such as *.example.com
 
 
 @router.post("/bulk", response_model=list[ScopeEntryOut], status_code=201)
@@ -117,6 +117,10 @@ def check_target(body: ScopeCheckRequest, _: Principal = Depends(require(Permiss
     if org is None:
         raise NotFound("Organization not found")
     raw = body.target.strip()
+    if raw.startswith("*."):
+        # Answer the question behind "is *.example.com in scope?" — scanners are
+        # never pointed at a wildcard, so test the domain it stands for.
+        raw = scope.parse_domain(raw)[0]
     kind = TargetKind.URL if "://" in raw else TargetKind.CIDR if "/" in raw else (
         TargetKind.IP if _guess_type(raw) == ScopeEntryType.IP else TargetKind.HOSTNAME)
     try:

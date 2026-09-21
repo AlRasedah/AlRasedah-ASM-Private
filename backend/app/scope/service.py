@@ -39,10 +39,35 @@ MAX_IPV4_PREFIX = 16
 MAX_IPV6_PREFIX = 48
 
 
+WILDCARD = "*."
+
+
+def parse_domain(value: str) -> tuple[str, bool]:
+    """Split a domain entry into ``(hostname, wildcard)``.
+
+    ``*.example.com`` is the way scope is usually written down (bug-bounty
+    programmes, penetration-test authorizations), so it is accepted as a first
+    class input and means "this domain and everything under it":
+    ``("example.com", True)``. The wildcard must be the whole first label —
+    ``a.*.example.com`` and ``*example.com`` are refused rather than guessed at.
+    """
+    v = value.strip().lower().rstrip(".")
+    if "*" not in v:
+        return v, False
+    if not v.startswith(WILDCARD) or "*" in v[len(WILDCARD):]:
+        raise ValidationFailed(f"'{value}' is not a valid wildcard. Write it as *.example.com — the wildcard can "
+                               "only replace the first label.")
+    host = v[len(WILDCARD):]
+    if not host:
+        raise ValidationFailed("Enter a domain after the wildcard, for example *.example.com")
+    return host, True
+
+
 def normalize_entry(entry_type: ScopeEntryType, value: str) -> str:
     v = value.strip()
     if entry_type == ScopeEntryType.DOMAIN:
-        host = normalize_hostname(v.removeprefix("*."))
+        candidate, _wildcard = parse_domain(v)
+        host = normalize_hostname(candidate)
         if not host:
             raise ValidationFailed(f"'{value}' is not a valid domain name")
         if registrable_domain(host) is None:
@@ -93,11 +118,24 @@ def add_entry(db: Session, *, tenant_id: uuid.UUID, organization_id: uuid.UUID, 
     org = db.get(Organization, organization_id)
     if org is None:
         raise NotFound("Organization not found")
+    if entry_type == ScopeEntryType.DOMAIN and parse_domain(value)[1]:
+        include_subdomains = True  # "*.example.com" says so explicitly
     norm = normalize_entry(entry_type, value)
     dup = db.execute(select(ScopeEntry).where(
         ScopeEntry.organization_id == organization_id, ScopeEntry.entry_type == entry_type,
         ScopeEntry.value == norm, ScopeEntry.is_exclusion == is_exclusion)).scalar_one_or_none()
     if dup:
+        # Pasting "example.com" and "*.example.com" together is a normal way to write
+        # scope: widen the existing entry instead of refusing the second line.
+        if include_subdomains and not dup.include_subdomains and entry_type == ScopeEntryType.DOMAIN:
+            before = _entry_snapshot(dup)
+            dup.include_subdomains = True
+            db.flush()
+            prev, new = audit.diff(before, _entry_snapshot(dup))
+            audit.record(db, Action.SCOPE_UPDATED, tenant_id=tenant_id, object_type="scope_entry", object_id=dup.id,
+                         previous=prev, new=new)
+            sync_scope_assets(db, org)
+            return dup
         raise Conflict(f"{norm} is already in scope")
     tenant = db.get(Tenant, tenant_id)
     require_verification = bool(tenant_settings(tenant)["scanning"].get("require_scope_verification"))
