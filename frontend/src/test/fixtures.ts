@@ -13,6 +13,7 @@ export const me = {
     "users:write", "settings:write", "audit:read", "tenants:admin", "intel:admin",
   ],
   memberships: [{ tenant: { id: "t1", name: "Acme", slug: "acme" }, role: "tenant_admin" }],
+  session_idle_minutes: 30,
 };
 
 export const org = {

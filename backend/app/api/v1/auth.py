@@ -145,7 +145,9 @@ def me(principal: Principal = Depends(get_principal), db: Session = Depends(get_
     tenant = db.get(Tenant, principal.tenant_id) if principal.tenant_id else None
     return MeResponse(user=UserOut.model_validate(user), tenant=TenantRef.model_validate(tenant) if tenant else None,
                       role=principal.role, permissions=sorted(p.value for p in principal.permissions),
-                      memberships=memberships)
+                      memberships=memberships,
+                      # API tokens are not interactive sessions, so they never time out on idleness.
+                      session_idle_minutes=get_settings().session_idle_ttl_minutes if principal.session_id else 0)
 
 
 @router.post("/switch-tenant", response_model=TokenResponse)

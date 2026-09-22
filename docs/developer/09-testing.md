@@ -1,12 +1,12 @@
 # 9. Testing
 
 ```bash
-pytest -q                                   # 274 backend + sensor tests, ~75 s
-cd frontend && npm test && npm run typecheck  # 33 UI tests, ~8 s
+pytest -q                                   # 279 backend + sensor tests, ~78 s
+cd frontend && npm test && npm run typecheck  # 35 UI tests, ~9 s
 cd backend && ruff check app ../workers/asm_sensors
 ```
 
-Two of the 274 are the broker-isolation integration tests; they skip unless a Valkey/Redis
+Two of the 279 are the broker-isolation integration tests; they skip unless a Valkey/Redis
 is reachable (§9.6). `ASM_TEST_ADMIN_URL` is a **psycopg** DSN
 (`postgresql://postgres:postgres@127.0.0.1:55432/postgres`), not a SQLAlchemy URL — a
 `postgresql+psycopg://` value fails to connect and every database test silently *skips*
@@ -58,7 +58,7 @@ is also reused by `scripts/seed_demo.py`.
 | `test_tenant_isolation.py` | DB | forced RLS on every tenant table, reads/writes/updates/deletes across tenants, no-context session sees nothing, user visibility, audit immutability, hash chain |
 | `test_change_detection.py` | DB | baseline + scope, IP change and retirement of old IP, port open/close/re-open, uncovered ports untouched, failed runs never close, host disappear/reappear, endpoint cascade, finding dedup/resolve/reopen/filters, service/technology/certificate changes, cloud resources, hosting change |
 | `test_pipeline.py` | DB | full Standard ASM scan inline (scope enforcement at sensor level, inventory, scanner + rule findings, risk, baseline), second scan diff, scope/duplicate guards, optional vs required stage failures, passive profile never runs active sensors, global concurrency across tenants |
-| `test_api_auth.py` | API | login/me/refresh/logout, refresh-token reuse, lockout + generic errors, login rate limit, RBAC, cross-tenant 404s, MFA, password reset, internal-domain emails, API tokens, security headers |
+| `test_api_auth.py` | API | login/me/refresh/logout, refresh-token reuse, lockout + generic errors, login rate limit, RBAC, cross-tenant 404s, MFA, password reset, internal-domain emails, API tokens, security headers, **idle timeout** (refused and revoked after the window, renewed while in use, `0` disables, the window reaches the browser, API tokens exempt) |
 | `test_api_workflows.py` | API | scope check endpoint, the full analyst workflow, all report types, notifications (baseline suppressed, signed webhook, Wazuh file), syslog format, write-only credentials |
 | `test_review_fixes.py` | DB/API | the manual-test-report fixes of chapter 11.6 (audit chain seq, suspend guards, confirmations, sorting, …) |
 | `frontend/src/test/pages.test.tsx` | UI | every page renders with realistic data; asset tabs; authorization log |

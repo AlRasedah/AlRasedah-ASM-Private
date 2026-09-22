@@ -243,6 +243,14 @@ def refresh(db: Session, raw_refresh: str) -> SessionTokens:
         raise Unauthorized("Session expired")
     if session.revoked_at or session.expires_at <= now or session.absolute_expires_at <= now:
         raise Unauthorized("Session expired")
+    # Idle timeout. The browser signs itself out on real inactivity; this is the backstop
+    # for a client that does not, and for a stolen refresh cookie replayed later.
+    if s.session_idle_ttl_minutes and session.last_used_at \
+            and now - session.last_used_at > timedelta(minutes=s.session_idle_ttl_minutes):
+        session.revoked_at = now
+        session.revoked_reason = "idle"
+        db.commit()
+        raise Unauthorized("Session expired")
     user = db.get(User, session.user_id)
     if not user or not user.is_active:
         raise Unauthorized("Session expired")

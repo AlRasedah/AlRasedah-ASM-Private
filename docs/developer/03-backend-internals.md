@@ -115,6 +115,16 @@ may have none) → if MFA enabled return a 5-minute MFA challenge JWT, otherwise
   session is revoked and `auth.refresh_token_reuse` is audited.
 - Sessions have a sliding expiry (`ASM_REFRESH_TOKEN_TTL_DAYS`) capped by an absolute
   lifetime (`ASM_SESSION_ABSOLUTE_TTL_DAYS`).
+- **Idle timeout** (`ASM_SESSION_IDLE_TTL_MINUTES`, default 30, `0` disables). Enforced in
+  two places because neither is sufficient alone:
+  - `refresh()` revokes a session whose `last_used_at` is older than the window
+    (`revoked_reason = "idle"`). This is the authoritative check — a client that ignores
+    the policy, or a refresh cookie replayed days later, still fails here.
+  - The SPA signs itself out on **real interaction** (pointer, keyboard, wheel, touch, tab
+    focus — `AuthContext`), because several pages poll on a timer: an open tab would keep
+    calling `/auth/refresh` and `last_used_at` would never go stale. `/auth/me` returns
+    `session_idle_minutes` so the browser uses the deployment's number rather than its own.
+    API tokens get `0`: an unattended integration has no one to be idle.
 - `get_principal` checks the session row on **every request**, so logout, password change,
   role change and deactivation take effect immediately (not after token expiry).
 

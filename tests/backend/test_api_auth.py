@@ -190,6 +190,94 @@ def test_api_tokens(client, factory):
     assert client.get("/api/v1/organizations", headers=th).status_code == 401
 
 
+class TestIdleTimeout:
+    """A session must not last forever just because nobody signed out.
+
+    The browser signs itself out on real inactivity, but an open tab polls on its own,
+    so the server enforces the same window on `last_used_at`: a refresh presented after
+    the idle period is refused and the session is revoked, not renewed.
+    """
+
+    @staticmethod
+    def _age_session(email: str, minutes: int) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        from sqlalchemy import select, update
+
+        from app.db.session import system_session
+        from app.models import User, UserSession
+
+        with system_session() as db:
+            uid = db.scalar(select(User.id).where(User.email == email))
+            db.execute(update(UserSession).where(UserSession.user_id == uid)
+                       .values(last_used_at=datetime.now(UTC) - timedelta(minutes=minutes)))
+            db.commit()
+
+    def test_a_refresh_after_the_idle_window_is_refused(self, client, factory, monkeypatch):
+        from app.core.config import get_settings
+
+        monkeypatch.setattr(get_settings(), "session_idle_ttl_minutes", 30)
+        t = factory.tenant()
+        u = factory.user(t.id)
+        login(client, u.email)
+        self._age_session(u.email, 31)
+
+        assert client.post("/api/v1/auth/refresh", headers=csrf(client)).status_code == 401
+        # and the session is gone, so the same cookie cannot be tried again
+        assert client.post("/api/v1/auth/refresh", headers=csrf(client)).status_code == 401
+
+        from sqlalchemy import select
+
+        from app.db.session import system_session
+        from app.models import User, UserSession
+
+        with system_session() as db:
+            uid = db.scalar(select(User.id).where(User.email == u.email))
+            session = db.execute(select(UserSession).where(UserSession.user_id == uid)).scalar_one()
+            assert session.revoked_at is not None and session.revoked_reason == "idle"
+
+    def test_a_session_still_in_use_is_renewed(self, client, factory, monkeypatch):
+        from app.core.config import get_settings
+
+        monkeypatch.setattr(get_settings(), "session_idle_ttl_minutes", 30)
+        t = factory.tenant()
+        u = factory.user(t.id)
+        login(client, u.email)
+        self._age_session(u.email, 29)
+        assert client.post("/api/v1/auth/refresh", headers=csrf(client)).status_code == 200
+
+    def test_the_timeout_can_be_switched_off(self, client, factory, monkeypatch):
+        from app.core.config import get_settings
+
+        monkeypatch.setattr(get_settings(), "session_idle_ttl_minutes", 0)
+        t = factory.tenant()
+        u = factory.user(t.id)
+        login(client, u.email)
+        self._age_session(u.email, 60 * 24)
+        assert client.post("/api/v1/auth/refresh", headers=csrf(client)).status_code == 200
+
+    def test_the_browser_is_told_the_window(self, client, factory, monkeypatch):
+        from app.core.config import get_settings
+
+        monkeypatch.setattr(get_settings(), "session_idle_ttl_minutes", 30)
+        t = factory.tenant()
+        u = factory.user(t.id)
+        r = login(client, u.email)
+        assert client.get("/api/v1/auth/me", headers=bearer(r)).json()["session_idle_minutes"] == 30
+
+    def test_api_tokens_never_idle_out(self, client, factory, monkeypatch):
+        from app.core.config import get_settings
+
+        monkeypatch.setattr(get_settings(), "session_idle_ttl_minutes", 30)
+        t = factory.tenant()
+        u = factory.user(t.id)
+        h = bearer(login(client, u.email))
+        raw = client.post("/api/v1/auth/api-tokens", headers=h,
+                          json={"name": "siem", "role": "viewer"}).json()["token"]
+        me = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {raw}"}).json()
+        assert me["session_idle_minutes"] == 0, "an unattended integration has no one to be idle"
+
+
 def test_security_headers_and_errors(client):
     r = client.get("/api/v1/health")
     assert r.status_code == 200

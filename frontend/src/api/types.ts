@@ -22,6 +22,8 @@ export interface Me {
   role: string;
   permissions: string[];
   memberships: { tenant: TenantRef; role: string }[];
+  /** Idle minutes before the session signs itself out; 0 = no idle timeout. */
+  session_idle_minutes: number;
 }
 
 export interface Organization {

@@ -77,7 +77,7 @@ delivery endpoints — nothing below marked "not verified" has been exercised by
 | Area | How it was verified | Not verified |
 |---|---|---|
 | Sensor parsing/normalization | recorded output of each engine (fixtures written to match documented output formats) | real binaries at the pinned versions; exact CLI flags for Amass v4 (`-o`, `-dir`, `-nocolor`), BBOT 2.x output path, SpiderFoot 4 export endpoint, ZAP 2.15 API paths, a live Shodan key against a paid plan |
-| Pipeline, change detection, findings, risk | 274 automated tests on PostgreSQL 18 | behaviour at 50k+ assets (performance) |
+| Pipeline, change detection, findings, risk | 279 automated tests on PostgreSQL 18 | behaviour at 50k+ assets (performance) |
 | Tenant isolation | RLS tests for every tenant table and API cross-tenant tests | separate BYPASSRLS role hardening (documented, not implemented) |
 | Broker trust boundary (A01) | real Celery workers against a real Valkey 9 using the compose ACL (`tests/integration`) | the ACL under a multi-pool deployment (only `default` is exercised) |
 | Audit remediation (A01–A11) | a regression test per finding; the auditor's reproductions re-run | a re-audit by the reviewer |
@@ -272,7 +272,33 @@ The second cause of this symptom — an account keeping the tenant it already si
 in to — is ADR-021-adjacent behaviour that stays as it is; it is now visible instead
 of silent.
 
-## 11.12 Recommended next steps
+## 11.12 Idle session timeout (22 September 2026)
+
+Reported as "the app doesn't have a timeout", and correctly: access tokens lasted 15
+minutes, refresh tokens slid for 7 days under a 30-day cap, and `user_sessions.last_used_at`
+was written on every refresh but **never read**. A signed-in browser stayed signed in.
+
+The subtlety is that the obvious server-side check does not work on its own. Several screens
+poll (the dashboard every 60 s, a running scan every 5 s, the unacknowledged-changes badge),
+so an abandoned tab keeps calling the API, keeps refreshing, and keeps `last_used_at` fresh
+indefinitely. "Idle" has to mean *no user*, which only the browser can observe.
+
+- `ASM_SESSION_IDLE_TTL_MINUTES` (default 30, `0` disables). `auth.refresh()` revokes a
+  session idle longer than that (`revoked_reason = "idle"`) — the authoritative check, and
+  the one that stops a refresh cookie replayed days later.
+- `AuthContext` watches pointer, keyboard, wheel, touch and tab focus, and signs out on the
+  same window. `/auth/me` carries `session_idle_minutes` so the policy lives in the
+  deployment, not in the client; API tokens get `0`.
+- The login screen says why the session ended, rather than appearing for no reason.
+
+Regressions: five in `test_api_auth.py` (idle refresh refused and revoked, a session still in
+use renewed, `0` disables, the window reaches the browser, API tokens exempt) and two in
+`pages.test.tsx` on fake timers (signs out after 31 minutes; six 20-minute stretches with a
+keypress between them do not). The UI test needed a bounded wait after advancing the clock —
+the sign-out and its re-render land asynchronously, and asserting immediately passed alone
+but failed in the full file.
+
+## 11.13 Recommended next steps
 
 1. Work through the manual pass in [chapter 9.8](09-testing.md#98-the-manual-pass) on a
    deployed stack — that is the only verification left that matters, and §11.4 says exactly

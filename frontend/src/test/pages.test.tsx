@@ -138,6 +138,42 @@ describe("fixes from the 2026-09-18 test reports", () => {
   });
 });
 
+describe("sessions do not last forever", () => {
+  // An open tab polls by itself, so "idle" has to mean no *user* activity.
+  afterEach(() => vi.useRealTimers());
+
+  /** Renders the dashboard and waits for the session to be live, on fake timers. */
+  async function signedIn() {
+    vi.useFakeTimers();
+    renderAt("/");
+    for (let i = 0; i < 20 && !screen.queryByText("Attack surface overview"); i++) {
+      await vi.advanceTimersByTimeAsync(50);
+    }
+    expect(screen.getByText("Attack surface overview")).toBeTruthy();
+  }
+
+  it("signs itself out after the idle window and says why", async () => {
+    await signedIn();
+    await vi.advanceTimersByTimeAsync(31 * 60_000);
+    // The sign-out and the re-render after it are asynchronous; let them land.
+    for (let i = 0; i < 20 && !screen.queryByText(/signed out after/); i++) {
+      await vi.advanceTimersByTimeAsync(1_000);
+    }
+    expect(screen.getByText(/signed out after 30 minutes without activity/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Sign in" })).toBeTruthy();
+  });
+
+  it("interaction keeps the session, however long the tab stays open", async () => {
+    await signedIn();
+    for (let i = 0; i < 6; i++) {
+      await vi.advanceTimersByTimeAsync(20 * 60_000);
+      fireEvent.keyDown(window, { key: "a" });
+    }
+    expect(screen.getByText("Attack surface overview")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Sign in" })).toBeNull();
+  });
+});
+
 describe("a tenant with no data says so", () => {
   // Signed in to a tenant that holds nothing — the state a second administrator lands in
   // when their account was created in a tenant of its own. Pages used to render empty.

@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     access_token_ttl_minutes: int = 15
     refresh_token_ttl_days: int = 7
     session_absolute_ttl_days: int = 30
+    # Sign a session out after this long without the user doing anything. The browser
+    # enforces it on real interaction (pointer, keyboard, tab focus) because an open tab
+    # polls by itself; the server enforces it on `last_used_at` so a client that does not
+    # cooperate cannot keep a session alive. 0 disables it.
+    session_idle_ttl_minutes: int = 30
     mfa_challenge_ttl_minutes: int = 5
     password_reset_ttl_minutes: int = 30
     password_min_length: int = 12

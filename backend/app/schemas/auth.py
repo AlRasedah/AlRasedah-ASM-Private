@@ -53,6 +53,9 @@ class MeResponse(BaseModel):
     role: Role
     permissions: list[str]
     memberships: list[Membership]
+    # How long the browser may sit idle before signing itself out; 0 means no idle
+    # timeout. The deployment sets it, so the client never invents its own policy.
+    session_idle_minutes: int = 0
 
 
 class SwitchTenantRequest(Input):
