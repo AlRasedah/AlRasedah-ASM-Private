@@ -1,13 +1,16 @@
 # 9. Testing
 
 ```bash
-pytest -q                                   # 267 backend + sensor tests, ~60 s
-cd frontend && npm test && npm run typecheck  # 27 UI tests, ~3 s
+pytest -q                                   # 274 backend + sensor tests, ~75 s
+cd frontend && npm test && npm run typecheck  # 33 UI tests, ~8 s
 cd backend && ruff check app ../workers/asm_sensors
 ```
 
-Two of the 267 are the broker-isolation integration tests; they skip unless a Valkey/Redis
-is reachable (§9.6).
+Two of the 274 are the broker-isolation integration tests; they skip unless a Valkey/Redis
+is reachable (§9.6). `ASM_TEST_ADMIN_URL` is a **psycopg** DSN
+(`postgresql://postgres:postgres@127.0.0.1:55432/postgres`), not a SQLAlchemy URL — a
+`postgresql+psycopg://` value fails to connect and every database test silently *skips*
+rather than failing, so check the skip count before trusting a green run.
 
 ## 9.1 Principles
 
@@ -75,6 +78,7 @@ each of these is the regression test for a defect that reached a real environmen
 | `tests/backend/test_scope_wildcards.py` | unit/API | `*.example.com` expands to the domain with subdomains, widens an existing entry instead of colliding, and `a.*.example.com` / `*example.com` / a wildcard on a public suffix are refused |
 | `tests/backend/test_engine_disclosure.py` | API | **no engine or upstream project name in any response** (scans, profiles, capabilities, findings, assets, observations), opaque tokens round-trip through the profile editor, and every mapped error message is advice without a tool name |
 | `tests/sensors/test_identity.py` | unit | no product header unless `ASM_SCANNER_IDENTITY` is set, neutral user agent, CRLF refused in either |
+| `tests/backend/test_cli_admin.py` | DB | `create-admin` refuses a tenant name that does not exist (and suggests the near match) instead of silently creating an empty tenant; first-run bootstrap still works; an existing account keeps the tenant it signs in to and the operator is told (chapter 11.11) |
 
 ## 9.4 Writing tests
 

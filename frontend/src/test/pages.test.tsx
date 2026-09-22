@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { mockApi } from "./fixtures";
+import { me, mockApi } from "./fixtures";
 import { api } from "@/api/client";
 
 vi.mock("@/api/client", async () => {
@@ -135,5 +135,52 @@ describe("fixes from the 2026-09-18 test reports", () => {
     expect(names).toEqual(expect.arrayContaining(["Asset", "Status", "Owner", "Risk"]));
     expect(names).not.toContain("IP");
     expect(names).not.toContain("Tags");
+  });
+});
+
+describe("a tenant with no data says so", () => {
+  // Signed in to a tenant that holds nothing — the state a second administrator lands in
+  // when their account was created in a tenant of its own. Pages used to render empty.
+  function signedInToAnEmptyTenant(memberships = me.memberships) {
+    vi.mocked(api).mockImplementation(async (path: string) => {
+      if (path === "/organizations") return [] as never;
+      if (path === "/auth/me") return { ...me, memberships } as never;
+      const body = mockApi(path) as unknown;
+      // RLS returns nothing for every list in a tenant that holds nothing.
+      if (body && typeof body === "object" && "items" in body) {
+        return { items: [], total: 0, page: 1, page_size: 25 } as never;
+      }
+      return body as never;
+    });
+  }
+
+  afterEach(() => {
+    vi.mocked(api).mockImplementation(async (path: string) => mockApi(path) as never);
+  });
+
+  it.each([["/scans", "Scans"], ["/inventory", "Asset inventory"], ["/findings", "Findings"],
+           ["/changes", "Attack surface changes"]])(
+    "%s names the tenant instead of showing an empty table", async (route, heading) => {
+      signedInToAnEmptyTenant();
+      renderAt(route);
+      await screen.findAllByText(heading);
+      expect(await screen.findByText(/this tenant has no organizations/)).toBeTruthy();
+      expect((await screen.findAllByText("Acme")).length).toBeGreaterThan(0);
+    });
+
+  it("points at the other tenants the account belongs to", async () => {
+    signedInToAnEmptyTenant([...me.memberships,
+                             { tenant: { id: "t2", name: "Beta Holding", slug: "beta" }, role: "tenant_admin" }]);
+    renderAt("/scans");
+    expect(await screen.findByText(/switch tenant in the top bar/)).toBeTruthy();
+    expect((await screen.findAllByText(/Beta Holding/)).length).toBeGreaterThan(0);
+  });
+
+  it("the dashboard stops claiming this is a new deployment", async () => {
+    signedInToAnEmptyTenant([...me.memberships,
+                             { tenant: { id: "t2", name: "Beta Holding", slug: "beta" }, role: "tenant_admin" }]);
+    renderAt("/");
+    expect(await screen.findByText("Acme has no data yet")).toBeTruthy();
+    expect((await screen.findAllByText(/Beta Holding/)).length).toBeGreaterThan(0);
   });
 });

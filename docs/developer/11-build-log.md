@@ -77,7 +77,7 @@ delivery endpoints — nothing below marked "not verified" has been exercised by
 | Area | How it was verified | Not verified |
 |---|---|---|
 | Sensor parsing/normalization | recorded output of each engine (fixtures written to match documented output formats) | real binaries at the pinned versions; exact CLI flags for Amass v4 (`-o`, `-dir`, `-nocolor`), BBOT 2.x output path, SpiderFoot 4 export endpoint, ZAP 2.15 API paths, a live Shodan key against a paid plan |
-| Pipeline, change detection, findings, risk | 267 automated tests on PostgreSQL 18 | behaviour at 50k+ assets (performance) |
+| Pipeline, change detection, findings, risk | 274 automated tests on PostgreSQL 18 | behaviour at 50k+ assets (performance) |
 | Tenant isolation | RLS tests for every tenant table and API cross-tenant tests | separate BYPASSRLS role hardening (documented, not implemented) |
 | Broker trust boundary (A01) | real Celery workers against a real Valkey 9 using the compose ACL (`tests/integration`) | the ACL under a multi-pool deployment (only `default` is exercised) |
 | Audit remediation (A01–A11) | a regression test per finding; the auditor's reproductions re-run | a re-audit by the reviewer |
@@ -243,7 +243,36 @@ Verified against a Deep Assessment on the dev stack: eleven distinctly-named sta
 new messages in place of the raw ones. Note that **stages stored by older scans keep their
 original error text** — only new scans are sanitized.
 
-## 11.11 Recommended next steps
+## 11.11 "I added an admin and they can't see my scans" (22 September 2026)
+
+Reported from the same real environment. Not a permissions bug and not RLS
+misbehaving — RLS was doing exactly its job, confining every query to the tenant of
+the session, and the second administrator was in a different tenant.
+
+They got there through `create-admin --tenant`, which looked the tenant up by exact
+name and **created it when the name did not match**. `"Acme"` for *"Acme Corp"*, a
+stray capital or a trailing space produced a second, empty tenant with the new
+account as its administrator. Nothing in the product contradicted them: the sidebar
+was complete (a tenant admin has every permission), the tenant selector was hidden
+(it needs more than one membership), and each page rendered an empty table.
+
+- `cli._resolve_tenant` refuses a name that does not exist, lists the tenants that
+  do, suggests the near match, and creates one only on `--create-tenant` — or on a
+  deployment that has no tenants at all, so first-run bootstrap is unaffected.
+- `create-admin` now also prints where an **existing** account will actually sign
+  in, when that differs from the tenant just granted. Their default is deliberately
+  not repointed; the note says to use the tenant selector.
+- `components/TenantEmpty.tsx` gives Scans, Inventory, Findings and Changes a real
+  answer in place of a bare empty table — the tenant by name, the other tenants the
+  account belongs to, and where to switch. The dashboard stops greeting a populated
+  deployment as a brand-new one.
+
+Regressions: `tests/backend/test_cli_admin.py` (7) and a `pages.test.tsx` block (6).
+The second cause of this symptom — an account keeping the tenant it already signed
+in to — is ADR-021-adjacent behaviour that stays as it is; it is now visible instead
+of silent.
+
+## 11.12 Recommended next steps
 
 1. Work through the manual pass in [chapter 9.8](09-testing.md#98-the-manual-pass) on a
    deployed stack — that is the only verification left that matters, and §11.4 says exactly

@@ -19,8 +19,14 @@ import os
 import secrets
 import sys
 import uuid
+from typing import TYPE_CHECKING
 
 from app.core.crypto import generate_key
+
+if TYPE_CHECKING:  # imports stay lazy at runtime: the CLI must start without loading the ORM
+    from sqlalchemy.orm import Session
+
+    from app.models import Tenant
 
 
 def cmd_generate_keys(_: argparse.Namespace) -> None:
@@ -47,6 +53,36 @@ def cmd_bootstrap(_: argparse.Namespace) -> None:
     print("bootstrap complete")
 
 
+def _resolve_tenant(db: Session, name: str, create: bool) -> Tenant:
+    """The tenant named `name`, or a clear refusal.
+
+    `--tenant` used to be a get-or-create, so a name that did not match exactly
+    ("Acme" for "Acme Corp", a stray capital, a trailing space) silently built a
+    second, empty tenant and put the new admin in it. They could then sign in,
+    see every menu, and find no scans, no assets and nothing explaining why.
+    An unknown name is now an error unless it is the first tenant of a fresh
+    deployment or the caller asked for one with --create-tenant.
+    """
+    from sqlalchemy import func, select
+
+    from app.models import Tenant
+    from app.tenants.service import create_tenant
+
+    tenant = db.execute(select(Tenant).where(Tenant.name == name)).scalar_one_or_none()
+    if tenant is not None:
+        return tenant
+    existing = list(db.execute(select(Tenant.name).order_by(Tenant.name)).scalars().all())
+    if create or not existing:
+        return create_tenant(db, name)
+    near = db.execute(select(Tenant.name).where(func.lower(func.trim(Tenant.name)) == name.strip().lower())).scalars().first()
+    hint = f"\nDid you mean --tenant {near!r}?" if near else ""
+    raise SystemExit(
+        f"No tenant is named {name!r}.{hint}\n"
+        f"Existing tenants: {', '.join(repr(n) for n in existing)}\n"
+        "Use one of those names, or pass --create-tenant to start a new (empty) tenant."
+    )
+
+
 def cmd_create_admin(a: argparse.Namespace) -> None:
     from sqlalchemy import select
 
@@ -54,12 +90,10 @@ def cmd_create_admin(a: argparse.Namespace) -> None:
     from app.db.session import system_session
     from app.models import Tenant, TenantMembership, User
     from app.models.enums import Role
-    from app.tenants.service import create_tenant
 
     password = a.password or os.environ.get("ASM_ADMIN_PASSWORD") or getpass.getpass("Password: ")
     with system_session() as db:
-        tenant = db.execute(select(Tenant).where(Tenant.name == a.tenant)).scalar_one_or_none() \
-            or create_tenant(db, a.tenant)
+        tenant = _resolve_tenant(db, a.tenant, a.create_tenant)
         email = normalize_email(a.email)
         user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
         if user is None:
@@ -70,7 +104,14 @@ def cmd_create_admin(a: argparse.Namespace) -> None:
         if not db.execute(select(TenantMembership).where(TenantMembership.tenant_id == tenant.id,
                                                          TenantMembership.user_id == user.id)).scalar_one_or_none():
             db.add(TenantMembership(tenant_id=tenant.id, user_id=user.id, role=Role.TENANT_ADMIN))
+        # An existing account keeps the tenant it already defaults to, so say where this
+        # sign-in will actually land — the other half of "the new admin sees nothing".
+        elsewhere = user.default_tenant_id and user.default_tenant_id != tenant.id
         db.commit()
+        if elsewhere:
+            other = db.get(Tenant, user.default_tenant_id)
+            print(f"note: {email} already signs in to tenant '{other.name if other else user.default_tenant_id}'. "
+                  f"They can switch to '{tenant.name}' from the tenant selector in the top bar.")
     print(f"admin {email} ready in tenant '{a.tenant}'")
 
 
@@ -128,6 +169,8 @@ def main(argv: list[str] | None = None) -> None:
     c = sub.add_parser("create-admin")
     c.add_argument("--email", required=True)
     c.add_argument("--tenant", default="Default")
+    c.add_argument("--create-tenant", action="store_true",
+                   help="start a new, empty tenant when --tenant names one that does not exist")
     c.add_argument("--name", default="Administrator")
     c.add_argument("--password")
     c.add_argument("--platform-admin", action="store_true")

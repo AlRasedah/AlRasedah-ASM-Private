@@ -131,10 +131,13 @@ The first admin is created by `bootstrap` from `.env`:
 grep -E '^ASM_BOOTSTRAP_ADMIN_EMAIL|^ASM_BOOTSTRAP_ADMIN_PASSWORD' .env
 ```
 `generate_env.py` also prints them when it generates the password. To create
-another admin:
+another admin, pass the **exact** name of the tenant they should work in:
 ```bash
 docker compose run --rm asm-api cli create-admin --email you@example.com --tenant "Your Org" --platform-admin
 ```
+The name must match exactly. If it does not, the command refuses and lists the
+tenants that exist — `--create-tenant` starts a new, empty one on purpose. (It
+used to create one silently, which produced issue 15 below.)
 
 ### 10. The login page shows old branding / a port I didn't configure
 That is almost always a **separate, older instance** running outside this stack
@@ -191,7 +194,37 @@ mapping back, for operators:
 
 Errors stored by scans that ran **before** this change keep their original raw text.
 
-### 15. Certificate/KEV/EPSS intel not updating (air-gapped)
+### 15. A user I added sees none of my data
+
+Visibility is tenant-wide: there is no per-user or per-organization restriction,
+so a member of your tenant sees every asset, finding and scan in it. Empty pages
+mean the **session is in a different tenant**, and every page now says so
+("<Tenant> has no data yet") instead of rendering an empty table. Two causes:
+
+- **They were created in a tenant of their own.** `create-admin --tenant` used to
+  create the tenant when the name did not match exactly, so `"Acme"` for
+  *"Acme Corp"* silently made a second, empty tenant with that admin in it. The
+  command now refuses unknown names; existing strays are still out there.
+- **Their account already existed.** Adding an existing email to a tenant does not
+  repoint the tenant they sign in to, by design. They land in their old one and
+  pick yours from the tenant selector in the top bar (it appears once an account
+  belongs to more than one). `create-admin` now prints a note when this applies.
+
+What is actually where:
+```bash
+docker compose exec postgres psql -U postgres -d asm -c "SELECT t.name AS tenant, t.id, count(DISTINCT s.id) AS scans, string_agg(DISTINCT u.email, ', ') AS members FROM tenants t LEFT JOIN scans s ON s.tenant_id=t.id LEFT JOIN tenant_memberships m ON m.tenant_id=t.id LEFT JOIN users u ON u.id=m.user_id GROUP BY t.id, t.name ORDER BY t.name;"
+```
+
+Fix without SQL: as an admin of the tenant that holds the data, **Users → Add
+user** with the same email. That adds the missing membership; they then pick the
+right tenant from the selector. Delete the stray tenant from Platform → Tenants.
+
+To move them outright, with the ids from the query above:
+```bash
+docker compose exec postgres psql -U postgres -d asm -c "UPDATE tenant_memberships SET tenant_id='<real>' WHERE user_id=(SELECT id FROM users WHERE email='them@example.com'); UPDATE users SET default_tenant_id='<real>' WHERE email='them@example.com';"
+```
+
+### 16. Certificate/KEV/EPSS intel not updating (air-gapped)
 Point the feeds at mirrors (`ASM_INTEL_*_URL`) or disable auto-refresh
 (`ASM_INTEL_REFRESH_ENABLED=false`) and import offline — see DEPLOYMENT.md §6.
 

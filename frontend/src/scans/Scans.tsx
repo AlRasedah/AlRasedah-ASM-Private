@@ -7,11 +7,13 @@ import type { Page, Scan, ScanProfile } from "@/api/types";
 import { useAuth } from "@/auth/AuthContext";
 import { useOrg } from "@/auth/OrgContext";
 import { Card, Empty, ErrorBox, Field, Loading, Modal, PageHead, Pagination, StatusBadge } from "@/components/ui";
+import { useTenantEmpty } from "@/components/TenantEmpty";
 import { fmtDate, label } from "@/lib/format";
 
 export default function Scans() {
   const { orgId, orgName } = useOrg();
   const { can } = useAuth();
+  const tenantEmpty = useTenantEmpty();
   const [page, setPage] = useState(1);
   const [open, setOpen] = useState(false);
   const q = useQuery({
@@ -25,7 +27,7 @@ export default function Scans() {
       <PageHead title="Scans" sub="Discovery and exposure scans. Every target is checked against the authorized scope before it is contacted."
                 actions={can("scans:run") && <button className="btn primary" onClick={() => setOpen(true)}><Play /> New scan</button>} />
       <Card flush>
-        {q.isLoading ? <Loading /> : !q.data?.items.length ? <Empty>No scans yet.</Empty> : (
+        {q.isLoading ? <Loading /> : !q.data?.items.length ? (tenantEmpty ?? <Empty>No scans yet.</Empty>) : (
           <>
             <table className="data">
               <thead><tr><th>Started</th><th>Organization</th><th>Profile</th><th>Status</th><th>Trigger</th>

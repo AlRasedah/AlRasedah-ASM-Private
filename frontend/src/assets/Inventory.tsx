@@ -9,6 +9,7 @@ import { useOrg } from "@/auth/OrgContext";
 import {
   Card, Empty, ErrorBox, Field, Loading, Modal, PageHead, Pagination, RiskScore, SortTh, StatusBadge, Tags, useDebounced,
 } from "@/components/ui";
+import { useTenantEmpty } from "@/components/TenantEmpty";
 import { APPROVAL_STATES, ASSET_TYPE_LABELS, PRIMARY_TYPES, SEVERITIES, fmtDay, timeAgo } from "@/lib/format";
 import { useFilters } from "@/lib/useFilters";
 
@@ -20,6 +21,7 @@ export default function Inventory() {
   const f = useFilters<Key>(MULTI);
   const { orgId } = useOrg();
   const { can } = useAuth();
+  const tenantEmpty = useTenantEmpty();
   const nav = useNavigate();
   const qc = useQueryClient();
   const [search, setSearch] = useState(f.get("q") ?? "");
@@ -109,7 +111,7 @@ export default function Inventory() {
           <button className="btn ghost sm" onClick={() => { f.clear(); setSearch(""); }}><FilterX /> Reset</button>
         </div>
         {assets.isLoading ? <Loading /> : assets.error ? <div className="card-body"><ErrorBox error={assets.error} /></div> : (
-          assets.data!.items.length === 0 ? <Empty>No assets match these filters.</Empty> : (
+          assets.data!.items.length === 0 ? (tenantEmpty ?? <Empty>No assets match these filters.</Empty>) : (
             <>
               <div className="table-wrap">
                 <table className="data">

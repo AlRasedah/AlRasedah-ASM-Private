@@ -6,6 +6,7 @@ import { api, download } from "@/api/client";
 import type { Finding, Page } from "@/api/types";
 import { useOrg } from "@/auth/OrgContext";
 import { Card, Empty, ErrorBox, Loading, PageHead, Pagination, RiskScore, SeverityBadge, SortTh, StatusBadge, useDebounced } from "@/components/ui";
+import { useTenantEmpty } from "@/components/TenantEmpty";
 import { FINDING_STATES, SEVERITIES, fmtDay, label, timeAgo } from "@/lib/format";
 import { useFilters } from "@/lib/useFilters";
 
@@ -17,6 +18,7 @@ const CATEGORIES = ["vulnerability", "exposure", "misconfiguration", "certificat
 export default function Findings() {
   const f = useFilters<Key>(MULTI);
   const { orgId } = useOrg();
+  const tenantEmpty = useTenantEmpty();
   const nav = useNavigate();
   const [search, setSearch] = useState(f.get("q") ?? "");
   const debounced = useDebounced(search, 350);
@@ -88,7 +90,7 @@ export default function Findings() {
           <button className="btn ghost sm" onClick={() => { f.clear(); setSearch(""); }}><FilterX /> Reset</button>
         </div>
         {findings.isLoading ? <Loading /> : findings.error ? <div className="card-body"><ErrorBox error={findings.error} /></div> :
-          !findings.data!.items.length ? <Empty>No findings match these filters.</Empty> : (
+          !findings.data!.items.length ? (tenantEmpty ?? <Empty>No findings match these filters.</Empty>) : (
             <>
               <div className="table-wrap">
                 <table className="data">

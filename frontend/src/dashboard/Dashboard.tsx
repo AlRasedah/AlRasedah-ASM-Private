@@ -11,7 +11,7 @@ import { ASSET_TYPE_LABELS, EVENT_LABELS, SEV_COLOR, timeAgo } from "@/lib/forma
 
 export default function Dashboard() {
   const { orgId, orgs } = useOrg();
-  const { can } = useAuth();
+  const { can, me } = useAuth();
   const summary = useQuery({
     queryKey: ["dashboard", orgId],
     queryFn: () => api<DashboardSummary>("/dashboard/summary", { query: { organization_id: orgId } }),
@@ -29,15 +29,28 @@ export default function Dashboard() {
   const trend = trends.data ?? [];
 
   if (!orgs.length) {
+    // An empty tenant and the wrong tenant look identical here, so name the tenant and
+    // the others this account belongs to rather than assuming a fresh deployment.
+    const others = me?.memberships.filter((m) => m.tenant.id !== me.tenant?.id) ?? [];
     return (
       <>
-        <PageHead title="Welcome to Exteriq ASM" sub="Continuous external attack surface management" />
+        <PageHead title={me?.tenant ? `${me.tenant.name} has no data yet` : "Welcome to Exteriq ASM"}
+                  sub="Continuous external attack surface management" />
         <Card>
           <div className="stack">
+            {others.length > 0 && (
+              <p>You are signed in to <strong>{me!.tenant!.name}</strong>, which has no organizations. Your other
+                tenants — {others.map((m) => m.tenant.name).join(", ")} — are in the tenant selector at the top of
+                the page.</p>
+            )}
+            {!me?.tenant && (
+              <p>You are not signed in to a tenant, so no data is visible.
+                {can("tenants:admin") && <> Open one from <Link to="/platform">Platform → Tenants</Link>.</>}</p>
+            )}
             <p>Start by creating an organization and defining its <strong>authorized scope</strong> — the root domains,
               IP addresses and networks you are permitted to monitor. Active scanning is only ever performed against
               targets inside that scope.</p>
-            {can("orgs:write") && <div><Link className="btn primary" to="/organizations">Create an organization</Link></div>}
+            {can("orgs:write") && me?.tenant && <div><Link className="btn primary" to="/organizations">Create an organization</Link></div>}
           </div>
         </Card>
       </>

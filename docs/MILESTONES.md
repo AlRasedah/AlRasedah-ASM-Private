@@ -54,9 +54,9 @@ demo data replay, CI pipeline.
 | tests/backend (database) | 60 | RLS isolation, audit immutability & hash chain, change detection scenarios, full pipeline runs, scan concurrency under contention, historical/unverified ingestion, per-scan DAST secrets, platform email |
 | tests/backend (API) | 60 | auth flows (refresh rotation & reuse detection, lockout, rate limit, MFA, reset, API tokens), RBAC, cross-tenant access, scope → scan → inventory → findings workflow, reports, notifications incl. Wazuh, engine non-disclosure |
 | tests/integration | 2 | broker trust boundary against a real Valkey with the compose ACL (skipped without one) |
-| frontend/src/test | 27 | every page renders with API data; asset tabs; authorization log |
+| frontend/src/test | 33 | every page renders with API data; asset tabs; authorization log |
 
-267 Python tests in total. The counts per group are approximate — several files span
+274 Python tests in total. The counts per group are approximate — several files span
 categories — but the total and the integration count are exact.
 
 ## Known gaps / next steps
