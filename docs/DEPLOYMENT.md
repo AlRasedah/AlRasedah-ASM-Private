@@ -193,7 +193,19 @@ the storage volume, start the stack.
 git pull && docker compose build && docker compose up -d   # asm-migrate applies migrations first
 ```
 
+Your data is in Docker **volumes** (`pg-data`, `asm-storage`, …), not in the checkout, so
+pulling, rebuilding and restarting never touches it. `docker compose down` is safe;
+**`docker compose down -v` deletes every volume** and is the one command that loses data.
+Take the §7 backup before any upgrade anyway, and let running scans finish first.
+
 Read release notes for tool version changes (new detection behaviour can change findings).
+
+**Upgrading within the current release line** (capability naming, idle sessions): nothing to
+do beyond the three commands. No migration was added, and every new setting has a default —
+`ASM_SESSION_IDLE_TTL_MINUTES` (30), `ASM_SCANNER_IDENTITY` (empty), `ASM_SCANNER_USER_AGENT`.
+Expect two visible changes: anyone idle longer than the timeout is signed out once, and
+stages recorded by *older* scans keep their original error text (only new scans are
+sanitized).
 
 **Upgrading to the sensor trust-boundary release (migration 0003).** Run
 `python scripts/generate_env.py` first: it adds `ASM_SCANNER_POOL_KEY` (derived from your
