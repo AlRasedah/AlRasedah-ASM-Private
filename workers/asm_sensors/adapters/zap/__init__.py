@@ -96,6 +96,12 @@ _TLS_PORTS = {443, 4443, 8443, 9443, 10443}
 # value or an authorization header value). It is stored per tenant, encrypted at
 # rest, and delivered to the sensor in a sealed envelope like any other credential.
 AUTH_PROVIDER = "zap_auth"
+# Injecting the sign-in header needs the daemon's request-replacer component, which some
+# distributions omit. Without it an "authenticated" scan silently crawls the login page,
+# so the scan is failed instead: no coverage is better than coverage that is not real.
+AUTH_UNAVAILABLE = ("The web application scanner cannot sign in to the application: this deployment's scanner is "
+                    "missing the request-replacer component, so an authenticated scan is not possible. Install it, "
+                    "or start the scan without a sign-in value to test only what is reachable logged out.")
 _HEADER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,63}$")
 
 
@@ -409,9 +415,10 @@ class ZapSpiderAdapter(ScannerAdapter):
                 rule = f"asm-auth-{ctx_name}"
                 try:
                     await zap.add_auth_header(rule, config.auth_header_name, auth, origin)
-                except httpx.HTTPError:
-                    rule = None
-                    raw.errors.append(f"zap_spider: could not apply authentication for {url}; scanning unauthenticated")
+                except httpx.HTTPError as exc:
+                    # Never crawl logged-out while reporting an authenticated scan: the result
+                    # would be a login page and a false sense of coverage.
+                    raise ConfigurationError(AUTH_UNAVAILABLE) from exc
             # Seed without following redirects: a redirect must never put another host on the request path.
             await zap.call("core", "action", "accessUrl", {"url": url, "followRedirects": "false"})
 
@@ -604,9 +611,8 @@ class ZapActiveAdapter(ScannerAdapter):
                 rule = f"asm-auth-{ctx_name}"
                 try:
                     await zap.add_auth_header(rule, config.auth_header_name, auth, origin)
-                except httpx.HTTPError:
-                    rule = None
-                    raw.errors.append(f"zap_active: could not apply authentication for {url}; scanning unauthenticated")
+                except httpx.HTTPError as exc:
+                    raise ConfigurationError(AUTH_UNAVAILABLE) from exc
             # Seed the sites tree so the active scanner has something to attack — without
             # following redirects, so no other host ever enters the request path.
             await zap.call("core", "action", "accessUrl", {"url": url, "followRedirects": "false"})

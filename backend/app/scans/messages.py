@@ -45,6 +45,10 @@ _KNOWN: list[tuple[re.Pattern[str], str]] = [
      "This stage produced more output than the deployment's limit allows, so its results are incomplete."),
     (re.compile(r"stayed busy with another job", re.I),
      "The web application scanner was busy with another scan and could not run here."),
+    (re.compile(r"cannot sign in to the application|missing the request-replacer", re.I),
+     "The scanner could not sign in to the application, so the pages behind the login were not tested. The web "
+     "application scanner in this deployment is missing the component that injects the sign-in header — install it, "
+     "or run the scan without a sign-in value."),
     (re.compile(r"credential envelope|failed authentication", re.I),
      "The scanner could not open this job's credentials. Check that the platform and scanner keys match."),
     (re.compile(r"egress policy", re.I),
