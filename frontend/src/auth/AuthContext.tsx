@@ -43,7 +43,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setMe(null);
       // The server ends a session on its own for idleness, expiry, a revoked membership
       // or a reused refresh token. Say that it ended rather than showing a bare login page.
-      setEndedReason("Your session has ended. Please sign in again.");
+      // Keep a reason we already have: signing out for idleness leaves in-flight polls that
+      // 401 a moment later, and the specific message is the useful one.
+      setEndedReason((prev) => prev ?? "Your session has ended. Please sign in again.");
       qc.clear();
     });
     // Restore a session from the refresh cookie after a page reload.
@@ -103,7 +105,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // enforces the same limit on its side, so this is the part that makes it visible —
   // and the part that matters for an open tab, whose polling would otherwise keep the
   // session alive for as long as the browser is running.
-  const idleMinutes = me?.session_idle_minutes ?? 0;
+  // `?? 30` rather than `?? 0`: a deployment that wants no timeout sends 0, but an API
+  // older than this feature sends nothing at all — and failing open there would disable
+  // the timeout silently on a half-upgraded stack, which is the case that matters.
+  const idleMinutes = me?.session_idle_minutes ?? 30;
   const lastActivity = useRef(Date.now());
   useEffect(() => {
     if (!me || idleMinutes <= 0) return;

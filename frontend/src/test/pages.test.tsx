@@ -163,6 +163,27 @@ describe("sessions do not last forever", () => {
     expect(screen.getByRole("button", { name: "Sign in" })).toBeTruthy();
   });
 
+  it("an API too old to state a window still times out", async () => {
+    // A half-upgraded stack (new web image, old API) must not fail open.
+    vi.mocked(api).mockImplementation(async (path: string) => {
+      if (path === "/auth/me") {
+        const { session_idle_minutes: _omitted, ...withoutTheField } = me;
+        return withoutTheField as never;
+      }
+      return mockApi(path) as never;
+    });
+    try {
+      await signedIn();
+      await vi.advanceTimersByTimeAsync(31 * 60_000);
+      for (let i = 0; i < 20 && !screen.queryByText(/signed out after/); i++) {
+        await vi.advanceTimersByTimeAsync(1_000);
+      }
+      expect(screen.getByRole("button", { name: "Sign in" })).toBeTruthy();
+    } finally {
+      vi.mocked(api).mockImplementation(async (path: string) => mockApi(path) as never);
+    }
+  });
+
   it("interaction keeps the session, however long the tab stays open", async () => {
     await signedIn();
     for (let i = 0; i < 6; i++) {
