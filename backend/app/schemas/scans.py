@@ -16,8 +16,9 @@ class StageOut(ORM):
     id: uuid.UUID
     position: int
     stage_type: StageType
+    # The capability this stage performs. The engine that implements it is an
+    # implementation detail and is deliberately not part of the response.
     label: str = ""
-    engine: str
     status: StageStatus
     is_active: bool
     target_count: int
@@ -99,12 +100,16 @@ class ArtifactOut(ORM):
 
 class ProfileStage(BaseModel):
     stage: StageType
+    # Opaque, deployment-specific capability token (see app/scans/engines.py). The
+    # profile editor round-trips it; the API also accepts plain engine names.
     engine: str
     config: dict[str, Any] = {}
     enabled: bool = True
     optional: bool = False
     active: bool = False
     label: str | None = None
+    # This stage can use a sign-in cookie/token supplied when starting a scan.
+    accepts_login: bool = False
 
 
 class ProfileOut(ORM):
@@ -134,9 +139,12 @@ class ProfileUpdate(Input):
 
 
 class EngineOut(BaseModel):
-    name: str
+    """A capability a profile can use. ``id`` is an opaque token, not the engine's name."""
+
+    id: str
     display_name: str
     stage_types: list[str]
+    target_kinds: list[str] = []
     active: bool
     credential_providers: list[str]
     config_schema: dict[str, Any]

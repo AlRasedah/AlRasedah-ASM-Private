@@ -38,6 +38,9 @@ def deployment_settings() -> dict[str, Any]:
             "crtsh_url": os.environ.get("ASM_CRTSH_URL"),
             "zap_url": os.environ.get("ASM_ZAP_URL"),
             "zap_api_key": os.environ.get("ASM_ZAP_API_KEY"),
+            # How scans look on the wire (see asm_sensors/identity.py).
+            "scanner_identity": os.environ.get("ASM_SCANNER_IDENTITY"),
+            "scanner_user_agent": os.environ.get("ASM_SCANNER_USER_AGENT"),
             # Lab/testing only: permit active scanning of private/reserved addresses.
             "allow_non_public_targets": os.environ.get("ASM_SCANNER_ALLOW_NON_PUBLIC", "").lower() in ("1", "true", "yes"),
         }.items()

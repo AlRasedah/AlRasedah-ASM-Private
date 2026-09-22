@@ -81,7 +81,7 @@ async def test_reported_cves_are_unverified_findings(tmp_path):
     assert fortinet.evidence["verified"] is False
     # Shodan may close only its own reports, never another sensor's findings.
     coverage = [c for c in result.coverage if isinstance(c, FindingCoverage)]
-    assert len(coverage) == 1 and coverage[0].include_tags == ["shodan"]
+    assert len(coverage) == 1 and coverage[0].include_tags == ["exposure-intelligence"]
     assert {a.value for a in coverage[0].assets} >= {"198.51.100.7", "198.51.100.7:443/tcp"}
     # Nothing that could close ports or hosts.
     assert all(isinstance(c, FindingCoverage) for c in result.coverage)

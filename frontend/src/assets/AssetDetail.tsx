@@ -265,7 +265,7 @@ function RawObservations({ assetId }: { assetId: string }) {
   return (
     <div className="stack">
       {q.data.items.map((o) => (
-        <Card key={o.id} title={o.source_label ?? o.source} hint={fmtDate(o.observed_at)}
+        <Card key={o.id} title={o.source_label ?? "Scan"} hint={fmtDate(o.observed_at)}
               right={o.scan_id && <Link to={`/scans/${o.scan_id}`} className="small">scan</Link>}>
           {Object.keys(o.data).length ? <JsonView value={o.data} /> : <span className="muted">Seen (no attributes)</span>}
         </Card>

@@ -92,13 +92,9 @@ export const EVENT_LABELS: Record<string, string> = {
   scan_completed: "Scan completed",
 };
 
-// Findings dynamically confirmed by active web scanning (OWASP ZAP active scanner) —
-// as opposed to passively observed or template-matched. Worth flagging to analysts.
-export const DAST_SOURCES = new Set(["zap_active"]);
-
-export function isDast(source: string | null | undefined): boolean {
-  return !!source && DAST_SOURCES.has(source);
-}
+// Whether a finding was dynamically confirmed against the running application is
+// decided by the API (findings carry `dast`), so the interface never needs to know
+// which engine produced it.
 
 export const SEV_COLOR: Record<string, string> = {
   critical: "var(--sev-critical)",

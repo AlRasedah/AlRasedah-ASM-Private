@@ -64,11 +64,12 @@ def test_shodan_cves_are_kept_out_of_the_main_findings_list(client, factory, mon
     r = client.post("/api/v1/auth/login", json={"email": user.email, "password": PW})
     h = {"Authorization": f"Bearer {r.json()['access_token']}"}
     listed = client.get("/api/v1/findings", headers=h, params={"page_size": 200}).json()
-    assert not any(f["source"] == "shodan" for f in listed["items"])
     assert all(f["unverified"] is False for f in listed["items"])
     own_view = client.get("/api/v1/findings", headers=h, params={"unverified": True}).json()
-    assert [(f["source"], f["cve"]) for f in own_view["items"]] == [("shodan", ["CVE-2018-13379"])]
-    assert own_view["items"][0]["source_label"] == "Internet exposure intelligence"
+    assert [(f["source_label"], f["cve"]) for f in own_view["items"]] == \
+        [("Internet exposure intelligence", ["CVE-2018-13379"])]
+    # The engine behind a capability is never disclosed to the browser.
+    assert "shodan" not in listed.__str__().lower() and "shodan" not in own_view.__str__().lower()
     # Statistics and alerts ignore it too.
     stats = client.get("/api/v1/findings/stats", headers=h).json()
     assert sum(stats["by_severity"].values()) == listed["total"]

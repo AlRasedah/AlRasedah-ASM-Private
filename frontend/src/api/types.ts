@@ -141,7 +141,6 @@ export interface AssetEvent {
 export interface Observation {
   id: number;
   scan_id: string | null;
-  source: string;
   source_label: string | null;
   observed_at: string;
   data: Record<string, unknown>;
@@ -168,9 +167,10 @@ export interface Finding {
   tags: string[];
   false_positive: boolean;
   location: string | null;
-  source: string;
   source_label: string | null;
-  /** Reported by an external database (e.g. Shodan) and not verified against the live service. */
+  /** Confirmed by active web application testing. */
+  dast: boolean;
+  /** Reported by an external database and not verified against the live service. */
   unverified: boolean;
   asset: AssetRef | null;
 }
@@ -230,8 +230,8 @@ export interface Stage {
   id: string;
   position: number;
   stage_type: string;
+  /** Capability label; the engine behind it is not exposed by the API. */
   label: string;
-  engine: string;
   status: string;
   is_active: boolean;
   target_count: number;
@@ -273,12 +273,15 @@ export interface ScopeDecision {
 
 export interface ProfileStage {
   stage: string;
+  /** Opaque capability token (deployment-specific), round-tripped when editing a profile. */
   engine: string;
   config: Record<string, unknown>;
   enabled: boolean;
   optional: boolean;
   active: boolean;
   label: string | null;
+  /** This stage can use a sign-in cookie/token supplied when starting a scan. */
+  accepts_login?: boolean;
 }
 
 export interface ScanProfile {

@@ -56,17 +56,17 @@ const finding = {
   severity: "critical", status: "new", cve: ["CVE-2018-13379"], cvss_score: 9.8, epss_score: 0.97, kev: true,
   risk_score: 95, risk_level: "critical", first_seen: earlier, last_seen: now, resolved_at: null, assigned_to: null,
   tags: ["cve"], false_positive: false, location: "https://vpn.example.com:10443/remote/x",
-  source: "nuclei", source_label: "Vulnerability detection",
+  source_label: "Vulnerability detection", dast: false, unverified: false,
   asset: ref("a3", "http_endpoint", "https://vpn.example.com:10443"),
 };
 
-// A dynamically-confirmed web vulnerability from the OWASP ZAP active scanner (DAST).
+// A web vulnerability confirmed dynamically against the running application (DAST).
 const dastFinding = {
   id: "f2", organization_id: "o1", asset_id: "a3", title: "SQL Injection", category: "vulnerability",
   severity: "high", status: "new", cve: [], cvss_score: null, epss_score: null, kev: false,
   risk_score: 72, risk_level: "high", first_seen: earlier, last_seen: now, resolved_at: null, assigned_to: null,
   tags: ["zap"], false_positive: false, location: "https://vpn.example.com:10443/search [q]",
-  source: "zap_active", source_label: "Active web scanning",
+  source_label: "Active web scanning", dast: true, unverified: false,
   asset: ref("a3", "http_endpoint", "https://vpn.example.com:10443"),
 };
 
@@ -74,7 +74,7 @@ const scan = {
   id: "s1", organization_id: "o1", profile_id: "p1", profile_name: "Standard ASM", status: "completed", trigger: "manual",
   is_baseline: false, target_override: null, started_at: earlier, finished_at: now, created_at: earlier,
   stats: { new_assets: 2, events: 5, new_findings: 1 }, error: null,
-  stages: [{ id: "st1", position: 0, stage_type: "dns_resolution", label: "DNS resolution", engine: "dnsx", status: "completed",
+  stages: [{ id: "st1", position: 0, stage_type: "dns_resolution", label: "DNS resolution", status: "completed",
     is_active: false, target_count: 6, rejected_count: 1, observation_count: 18, started_at: earlier, finished_at: now,
     error: null, stats: { duration_seconds: 3.2 } }],
 };
@@ -82,7 +82,8 @@ const scan = {
 const profile = {
   id: "p1", slug: "standard-asm", name: "Standard ASM", description: "Recommended", is_builtin: true,
   is_active_scanning: true, retain_raw_output: false, tenant_id: null,
-  stages: [{ stage: "dns_resolution", engine: "dnsx", config: {}, enabled: true, optional: false, active: false, label: "DNS resolution" }],
+  stages: [{ stage: "dns_resolution", engine: "eng_0123456789abcdef", config: {}, enabled: true, optional: false,
+    active: false, label: "DNS resolution", accepts_login: false }],
 };
 
 const page = <T,>(items: T[]) => ({ items, total: items.length, page: 1, page_size: 50 });
@@ -113,7 +114,7 @@ export function mockApi(path: string): unknown {
     [/^\/assets\/facets$/, { asset_types: [], statuses: [], approval: [], technologies: [{ value: "nginx", count: 1 }], asns: [], owners: [], business_units: [], tags: [] }],
     [/^\/assets$/, page([asset])],
     [/^\/assets\/[^/]+\/timeline$/, page([event])],
-    [/^\/assets\/[^/]+\/observations$/, page([{ id: 1, scan_id: "s1", source: "dnsx", source_label: "DNS resolution", observed_at: now, data: { resolves: true } }])],
+    [/^\/assets\/[^/]+\/observations$/, page([{ id: 1, scan_id: "s1", source_label: "DNS resolution", observed_at: now, data: { resolves: true } }])],
     [/^\/assets\/[^/]+$/, assetDetail],
     [/^\/findings$/, page([finding, dastFinding])],
     [/^\/dashboard\/web-apps$/, page([{ id: "a3", url: "https://vpn.example.com:10443", host: "vpn.example.com",

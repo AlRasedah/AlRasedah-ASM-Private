@@ -67,8 +67,9 @@ from typing import Annotated, Any, Literal
 import httpx
 from pydantic import AfterValidator, Field
 
-from ...base import AdapterConfig, ExecutionContext, RawOutput, ScannerAdapter, StageType
+from ...base import AdapterConfig, ConfigurationError, ExecutionContext, RawOutput, ScannerAdapter, StageType
 from ...coordination import LeaseUnavailable
+from ...identity import DEFAULT_USER_AGENT, user_agent
 from ...observations import (
     AssetRef,
     FindingCategory,
@@ -207,7 +208,8 @@ def alert_to_finding(alert: dict[str, Any], source: str) -> tuple[AssetRef, Find
         references=_refs(alert.get("reference")),
         remediation=alert.get("solution"),
         evidence={k: v for k, v in evidence.items() if v not in (None, "")},
-        tags=sorted({"zap", *(str(k).lower() for k in (alert.get("tags") or {}))})[:50],
+        # Content tags from the scanner, plus a neutral marker — never the engine's name.
+        tags=sorted({"web-application", *(str(k).lower() for k in (alert.get("tags") or {}))})[:50],
         location=(f"{url} [{param}]" if param else url)[:1024] or None,
         confidence=_CONFIDENCE.get(str(alert.get("confidence") or "").strip().lower(), 60),
     )
@@ -222,8 +224,8 @@ class _ZapClient:
     ever talks to the configured ZAP daemon.
     """
 
-    def __init__(self, base_url: str, api_key: str | None, timeout: float) -> None:
-        headers = {"Accept": "application/json", "User-Agent": "Exteriq-ASM"}
+    def __init__(self, base_url: str, api_key: str | None, timeout: float, agent: str | None = None) -> None:
+        headers = {"Accept": "application/json", "User-Agent": agent or DEFAULT_USER_AGENT}
         if api_key:
             headers["X-ZAP-API-Key"] = api_key
         self._c = httpx.AsyncClient(base_url=base_url.rstrip("/"), timeout=timeout,
@@ -301,8 +303,10 @@ def _include_regex(url: str) -> str:
 
 
 def _require_zap(ctx: ExecutionContext) -> None:
+    # ConfigurationError (not RuntimeError): the platform reports its message to the
+    # user, so "not enabled" reads as advice instead of "unexpected sensor error".
     if not ctx.settings.get("zap_url"):
-        raise RuntimeError("ZAP integration is not enabled in this deployment (zap_url unset)")
+        raise ConfigurationError("The web application scanner is not enabled in this deployment")
 
 
 def _lease_name(ctx: ExecutionContext) -> str:
@@ -367,7 +371,8 @@ class ZapSpiderAdapter(ScannerAdapter):
         # Per-request timeout is short; the long waits are bounded by explicit deadlines below.
         auth = auth_secret(ctx)
         try:
-            async with _ZapClient(base_url, api_key, timeout=60) as zap, _exclusive_daemon(zap, ctx):
+            async with _ZapClient(base_url, api_key, 60, user_agent(ctx.settings)) as zap, \
+                    _exclusive_daemon(zap, ctx):
                 await self._set_options(zap, config, raw)
                 for i, t in enumerate(targets):
                     url = target_url(t)
@@ -561,7 +566,8 @@ class ZapActiveAdapter(ScannerAdapter):
         api_key = (ctx.settings.get("zap_api_key") or None)
         auth = auth_secret(ctx)
         try:
-            async with _ZapClient(base_url, api_key, timeout=60) as zap, _exclusive_daemon(zap, ctx):
+            async with _ZapClient(base_url, api_key, 60, user_agent(ctx.settings)) as zap, \
+                    _exclusive_daemon(zap, ctx):
                 await self._set_options(zap, config, raw)
                 for i, t in enumerate(targets):
                     url = target_url(t)

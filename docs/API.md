@@ -33,7 +33,7 @@ complete with `POST /auth/mfa/verify`.
 | `/assets` | list (filters: type, status, scope, approval, unknown, owner, business_unit, criticality, tag, technology, asn, severity, risk range, first/last seen, q, sort), facets, export.csv, get, update, bulk-update, `{id}/timeline`, `{id}/observations` |
 | `/findings` | list (filters: status/open_only, severity, risk level, category, asset, assignee, cve, kev, tag, q, `unverified` — third-party reports are excluded unless `unverified=true`), stats, export.csv, get, update (workflow), `{id}/activity`, `{id}/comments` |
 | `/scans` | list, create (optional `auth_secret` + `auth_header_name` — a sign-in cookie/token for this scan's web application stages: stored encrypted, never returned, erased when the scan ends; `authenticated` reports whether one was given), get (with stages), cancel, `{id}/decisions` (authorization log), `{id}/artifacts`, artifact download |
-| `/scan-profiles` | list, engines (adapter schemas), get, create, update, delete |
+| `/scan-profiles` | list, engines (capabilities: opaque `id` token, display name, scrubbed config schema), get, create, update, delete. Stages identify their engine by that token, which the API accepts back; plain engine names are still accepted for scripts and the CLI. Scan stages and findings expose capability **labels** only |
 | `/schedules` | list, create, update, delete |
 | `/events` | list (filters: type, min_severity, asset, scan, acknowledged, include_baseline, since/until), acknowledge (bulk), `{id}/acknowledge` |
 | `/dashboard` | summary, trends |

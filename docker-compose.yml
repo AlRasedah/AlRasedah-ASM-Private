@@ -143,6 +143,9 @@ services:
       ASM_BROKER_VISIBILITY_TIMEOUT: ${ASM_BROKER_VISIBILITY_TIMEOUT:-21600}
       # Lab only: lets active sensors connect to private/reserved addresses (follows the platform setting).
       ASM_SCANNER_ALLOW_NON_PUBLIC: ${ASM_ALLOW_NON_PUBLIC_SCOPE:-false}
+      # How scans look on the wire. Empty identity = no identifying header (default).
+      ASM_SCANNER_IDENTITY: ${ASM_SCANNER_IDENTITY:-}
+      ASM_SCANNER_USER_AGENT: ${ASM_SCANNER_USER_AGENT:-}
       ASM_SENSOR_CONCURRENCY: ${ASM_SENSOR_CONCURRENCY:-2}
       ASM_SCANNER_MAX_RATE: ${ASM_SCANNER_MAX_RATE:-2000}
       ASM_NUCLEI_AUTO_UPDATE: ${ASM_NUCLEI_AUTO_UPDATE:-true}

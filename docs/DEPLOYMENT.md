@@ -139,9 +139,12 @@ Users switch on alerts to their own login address under **Your account → Email
   `PHPSESSID=…; security=low`) or a bearer token (set the stage's `auth_header_name` to
   `Authorization`). ZAP then crawls and attacks as that user; the secret is injected only on
   the authorized origin.
-- **Egress identification**: the web and vulnerability sensors send
-  `X-ASM-Scanner: Exteriq-ASM` by default (`identify_scanner` in profiles) so customers can
-  recognise authorized scanning in their logs.
+- **Egress identification**: scans send **no identifying header by default**, and the
+  platform's own API calls use a neutral user agent, so traffic does not advertise the
+  product or the engines behind it. Set `ASM_SCANNER_IDENTITY` when a customer's SOC should
+  recognise authorized scanning — a value (`acme-pentest` → `X-Scanner: acme-pentest`) or a
+  complete header line (`X-Audit: ticket-4711`). `ASM_SCANNER_USER_AGENT` overrides the user
+  agent. Profiles can still switch the header off per stage (`identify_scanner`).
 
 ## 6. In-Kingdom / air-gapped operation
 

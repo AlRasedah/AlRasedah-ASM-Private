@@ -6,7 +6,7 @@ import { api, download } from "@/api/client";
 import type { Finding, Page } from "@/api/types";
 import { useOrg } from "@/auth/OrgContext";
 import { Card, Empty, ErrorBox, Loading, PageHead, Pagination, RiskScore, SeverityBadge, SortTh, StatusBadge, useDebounced } from "@/components/ui";
-import { FINDING_STATES, SEVERITIES, fmtDay, isDast, label, timeAgo } from "@/lib/format";
+import { FINDING_STATES, SEVERITIES, fmtDay, label, timeAgo } from "@/lib/format";
 import { useFilters } from "@/lib/useFilters";
 
 const MULTI = ["status", "severity", "category"] as const;
@@ -102,7 +102,7 @@ export default function Findings() {
                         <td>
                           <div className="cell-main"><Link to={`/findings/${x.id}`} className="row-link" onClick={(e) => e.stopPropagation()}>{x.title}</Link>
                             {x.kev && <span className="badge bad" style={{ marginInlineStart: 6 }}>KEV</span>}
-                            {isDast(x.source) && <span className="badge accent" style={{ marginInlineStart: 6 }}
+                            {x.dast && <span className="badge accent" style={{ marginInlineStart: 6 }}
                               title="Dynamically confirmed by active web scanning (OWASP ZAP)">DAST</span>}
                             {x.unverified && <span className="badge warn" style={{ marginInlineStart: 6 }}
                               title="Reported by an external database, not verified against the live service">unverified</span>}</div>

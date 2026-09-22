@@ -44,6 +44,7 @@ from app.models.enums import (
     TenantStatus,
 )
 from app.risk.service import recompute_organization
+from app.scans import engines, messages
 from app.scans.targets import build_targets
 from app.scope.service import load_checker
 from app.services import audit
@@ -367,10 +368,14 @@ def complete_stage(db: Session, scan: Scan, stage: ScanStage, result: SensorResu
     stage.tool_version = result.tool_version
     stage.finished_at = now
 
+    capability = engines.label_for(stage.engine)
     if result.status == "failed":
         stage.status = StageStatus.SKIPPED if optional else StageStatus.FAILED
-        stage.error = "; ".join(result.errors)[:4000] or "sensor failed"
-        stage.stats = {"errors": result.errors[:20]}
+        # The raw tool output stays in the worker log; users get something actionable
+        # that does not name the engine (see app/scans/messages.py).
+        log.info("stage %s (%s) failed: %s", stage.id, stage.engine, "; ".join(result.errors)[:1000])
+        stage.error = messages.friendly(result.errors, capability) or f"{capability} did not finish successfully."
+        stage.stats = {}
         db.flush()
         return
     if result.status != "completed" and result.coverage:
@@ -398,7 +403,8 @@ def complete_stage(db: Session, scan: Scan, stage: ScanStage, result: SensorResu
     stage.stats = {**dict(ingest.stats), "sensor": result.stats, "duration_seconds":
                    round((result.finished_at - result.started_at).total_seconds(), 1)}
     if result.errors:
-        stage.error = "; ".join(result.errors)[:4000]
+        log.info("stage %s (%s) reported: %s", stage.id, stage.engine, "; ".join(result.errors)[:1000])
+        stage.error = messages.friendly(result.errors, capability)
     _merge_stats(scan, ingest.stats)
     tenants.record_usage(db, scan.tenant_id, "sensor_seconds",
                          int((result.finished_at - result.started_at).total_seconds()), scan.id, engine=stage.engine)

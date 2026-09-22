@@ -67,8 +67,8 @@ function NewScan({ onClose }: { onClose: () => void }) {
   const [authSecret, setAuthSecret] = useState("");
   const [authHeader, setAuthHeader] = useState<"Cookie" | "Authorization">("Cookie");
   const selected = profiles.data?.find((p) => p.id === (profile || profiles.data?.[0]?.id));
-  // Only the web application scanner can use a sign-in value, so only offer it then.
-  const webAppStage = selected?.stages.some((s) => s.enabled && (s.engine === "zap_spider" || s.engine === "zap_active"));
+  // Only stages that can sign in offer the field (the API says which; engines are not exposed).
+  const webAppStage = selected?.stages.some((s) => s.enabled && s.accepts_login);
   const m = useMutation({
     mutationFn: () => api<Scan>("/scans", { method: "POST", body: {
       organization_id: org, profile_id: selected?.id,

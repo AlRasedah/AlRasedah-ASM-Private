@@ -14,6 +14,7 @@ from app.core.config import get_settings
 from app.core.errors import Conflict, NotFound
 from app.models import Scan, ScanArtifact, ScanProfile, ScanSchedule, ScopeDecision
 from app.models.enums import DecisionResult, ScanStatus, ScanTrigger, StageType
+from app.scans import engines as engine_identity
 from app.scans import orchestrator
 from app.scans.profiles import STAGE_LABELS, profile_is_active, stage_time_limit, validate_stages
 from app.scans.schedules import next_run, validate_timezone
@@ -48,7 +49,9 @@ def _detail(scan: Scan) -> ScanDetail:
     stages = []
     for st in sorted(scan.stages, key=lambda s: s.position):
         o = StageOut.model_validate(st)
-        o.label = STAGE_LABELS.get(st.stage_type, st.stage_type.value)
+        # Each stage is named by the capability it performs, so two engines doing the
+        # same kind of work do not look like the same stage running twice.
+        o.label = engine_identity.label_for(st.engine, STAGE_LABELS.get(st.stage_type, st.stage_type.value))
         o.time_limit_seconds = stage_time_limit(st.engine, st.config, get_settings().stage_timeout_seconds)
         stages.append(o)
     return ScanDetail(**ScanOut.model_validate(scan).model_dump(), stages=stages)
@@ -137,7 +140,10 @@ def download_artifact(scan_id: uuid.UUID, artifact_id: uuid.UUID,
 
 # ------------------------------------------------------------------- profiles
 def _profile_out(p: ScanProfile) -> ProfileOut:
-    stages = [ProfileStage(**s, label=STAGE_LABELS.get(StageType(s["stage"]))) for s in p.stages]
+    stages = [ProfileStage(**{**s, "engine": engine_identity.token_for(s["engine"])},
+                           label=engine_identity.label_for(s["engine"], STAGE_LABELS.get(StageType(s["stage"]))),
+                           accepts_login=engine_identity.accepts_login(s["engine"]))
+              for s in p.stages]
     return ProfileOut(id=p.id, slug=p.slug, name=p.name, description=p.description, stages=stages,
                       is_builtin=p.is_builtin, is_active_scanning=p.is_active_scanning,
                       retain_raw_output=p.retain_raw_output, tenant_id=p.tenant_id)
@@ -151,7 +157,13 @@ def list_profiles(_: Principal = Depends(require(Permission.SCANS_READ)), db: Se
 
 @router.get("/scan-profiles/engines", response_model=list[EngineOut], tags=["scan-profiles"])
 def engines(_: Principal = Depends(require(Permission.SCANS_READ))) -> list:
-    return [EngineOut(**d) for d in describe_adapters()]
+    """The capabilities a profile can use. Engines are identified by an opaque,
+    deployment-specific token; the implementing tool is not disclosed."""
+    return [EngineOut(id=engine_identity.token_for(d["name"]), display_name=d["display_name"],
+                      stage_types=d["stage_types"], target_kinds=d["target_kinds"], active=d["active"],
+                      credential_providers=d["credential_providers"],
+                      config_schema=engine_identity.sanitize_schema(d["config_schema"], d["display_name"]))
+            for d in describe_adapters()]
 
 
 @router.get("/scan-profiles/{profile_id}", response_model=ProfileOut, tags=["scan-profiles"])

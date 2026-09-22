@@ -17,7 +17,7 @@ from app.findings import service as findings
 from app.models import Asset, Finding, FindingActivity, TenantMembership, User
 from app.models.enums import OPEN_FINDING_STATES, FindingCategory, FindingStatus, RiskLevel, Severity
 from app.schemas.assets import AssetRef
-from app.schemas.common import Page, paginate, source_label
+from app.schemas.common import DAST_SOURCES, Page, paginate, source_label
 from app.schemas.findings import ActivityOut, CommentCreate, FindingDetail, FindingOut, FindingStats, FindingUpdate
 from app.services import audit
 from app.services.audit import Action
@@ -98,6 +98,7 @@ def _with_assets(db: Session, rows: list[Finding]) -> list[FindingOut]:
     for f in rows:
         o = FindingOut.model_validate(f)
         o.source_label = source_label(f.source)
+        o.dast = f.source in DAST_SOURCES  # actively verified against the running application
         a = assets.get(f.asset_id)
         o.asset = AssetRef.model_validate(a) if a else None
         out.append(o)
@@ -163,7 +164,9 @@ def _detail(db: Session, f: Finding) -> FindingDetail:
                          cvss_vector=f.cvss_vector, epss_percentile=f.epss_percentile, kev_due_date=f.kev_due_date,
                          exploit_available=f.exploit_available, confidence=f.confidence,
                          occurrence_count=f.occurrence_count, notes=f.notes, accepted_until=f.accepted_until,
-                         risk_factors=f.risk_factors or [], source_finding_id=f.source_finding_id)
+                         risk_factors=f.risk_factors or [],
+                         # The detection's own id, without the engine prefix it is stored with.
+                         source_finding_id=f.source_finding_id.split(":", 1)[-1])
 
 
 @router.get("/{finding_id}", response_model=FindingDetail)

@@ -59,6 +59,10 @@ SOURCE_LABELS = {
 }
 
 
+# Detections confirmed by actively exercising the running web application.
+DAST_SOURCES = frozenset({"zap_active"})
+
+
 def source_label(source: str | None) -> str | None:
     if source is None:
         return None

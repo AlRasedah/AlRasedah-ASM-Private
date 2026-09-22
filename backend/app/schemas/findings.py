@@ -33,8 +33,10 @@ class FindingOut(ORM):
     tags: list[str]
     false_positive: bool
     location: str | None
-    source: str  # detection engine (internal id); source_label is the display name
+    # The capability that detected this, never the engine's own name.
     source_label: str | None = None
+    # Confirmed by active web application testing (was: inferred from the source id).
+    dast: bool = False
     # Reported by a third-party database, never tested (see findings/service.upsert_observation).
     unverified: bool = False
     asset: AssetRef | None = None

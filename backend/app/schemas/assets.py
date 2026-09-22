@@ -73,6 +73,7 @@ class AssetDetail(AssetOut):
     inactive_since: datetime | None
     missed_count: int
     discovery_method: str | None
+    # Capability labels ("Web fingerprinting"), not engine names — see app/scans/engines.py.
     sources: list[str]
     relationships: list[RelatedAsset] = []
 
@@ -102,7 +103,7 @@ class AssetBulkUpdate(Input):
 class ObservationOut(ORM):
     id: int
     scan_id: uuid.UUID | None
-    source: str
+    # Capability label only; the engine behind it is not disclosed.
     source_label: str | None = None
     observed_at: datetime
     data: dict[str, Any]

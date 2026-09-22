@@ -75,6 +75,8 @@
 | `scans/schedules.py` | Cron/timezone helpers. |
 | `intel/service.py` | KEV, EPSS, NVD fetch/parse/cache, offline import, re-enrichment. |
 | `integrations/channels.py` | Notification channel adapters and their config models; SSRF guard; Wazuh/syslog formatting; shared email formatting. Channels with `implemented = False` (Jira, ServiceNow) stay in the code but are **not offered by the API or UI** until they work. |
+| `scans/engines.py` | Capability labels, opaque per-deployment engine tokens and schema scrubbing — how the product avoids naming its engines in anything a browser sees. |
+| `scans/messages.py` | Sensor errors → advice a user can act on, with no tool names; raw output stays in the worker log. |
 | `integrations/providers.py` | What each data-source credential is, its group, key format and where to get it — the single source for the UI and the user guide. |
 | `services/platform_settings.py` | Deployment settings a platform admin edits in the UI (mail server; password encrypted), overriding `ASM_SMTP_*`. |
 | `integrations/notifications.py` | Policy matching, throttling, batching per channel, delivery log, retries, test sends. |

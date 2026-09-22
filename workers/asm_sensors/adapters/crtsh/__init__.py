@@ -14,6 +14,7 @@ import httpx
 from pydantic import Field
 
 from ...base import AdapterConfig, ExecutionContext, RawOutput, ScannerAdapter, StageType
+from ...identity import user_agent
 from ...observations import NormalizedOutput, ObservedType
 from ...registry import register
 from ...targets import Target, TargetKind
@@ -41,7 +42,7 @@ class CrtshAdapter(ScannerAdapter):
         base = ctx.settings.get("crtsh_url", DEFAULT_URL)
         raw = RawOutput()
         async with httpx.AsyncClient(timeout=config.request_timeout_seconds, follow_redirects=False,
-                                     headers={"User-Agent": "Exteriq-ASM"}) as client:
+                                     headers={"User-Agent": user_agent(ctx.settings)}) as client:
             for t in targets:
                 params = {"q": f"%.{t.value}", "output": "json"}
                 if config.exclude_expired:

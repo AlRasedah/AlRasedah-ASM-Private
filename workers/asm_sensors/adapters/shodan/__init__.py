@@ -37,6 +37,7 @@ import httpx
 from pydantic import Field
 
 from ...base import AdapterConfig, ConfigurationError, ExecutionContext, RawOutput, ScannerAdapter, StageType
+from ...identity import DEFAULT_USER_AGENT, user_agent
 from ...observations import (
     AssetRef,
     FindingCategory,
@@ -53,6 +54,8 @@ from .._common import ObservationSet, clean_asn, clean_hostname, clean_ip, port_
 
 PROVIDER = "shodan"
 API = "https://api.shodan.io"
+# User-visible tag for everything this engine reports (never the engine's name).
+EXPOSURE_TAG = "exposure-intelligence"
 # Shodan's API is rate limited (about one request per second on most plans).
 _MIN_INTERVAL = 1.05
 
@@ -101,11 +104,11 @@ class _ShodanClient:
     """Minimal Shodan REST client. The key travels as a query parameter (Shodan
     offers no header form), so nothing here ever puts a URL in a log or error."""
 
-    def __init__(self, key: str, timeout: float, retries: int) -> None:
+    def __init__(self, key: str, timeout: float, retries: int, user_agent: str = DEFAULT_USER_AGENT) -> None:
         self._key = key
         self._retries = retries
         self._client = httpx.AsyncClient(base_url=API, timeout=timeout, follow_redirects=False,
-                                         headers={"Accept": "application/json", "User-Agent": "Exteriq-ASM"})
+                                         headers={"Accept": "application/json", "User-Agent": user_agent})
         self._next_call = 0.0
 
     async def __aenter__(self) -> _ShodanClient:
@@ -173,7 +176,8 @@ class ShodanAdapter(ScannerAdapter):
         if len(targets) > len(lookups):
             raw.errors.append(f"shodan: only the first {config.max_lookups} of {len(targets)} addresses were looked "
                               f"up (max_lookups)")
-        async with _ShodanClient(self._key(ctx), config.timeout_seconds, config.retries) as client:
+        async with _ShodanClient(self._key(ctx), config.timeout_seconds, config.retries,
+                                 user_agent(ctx.settings)) as client:
             # Check the key first (as Nmap's shodan-api script does): a bad key must
             # be one clear error, not one per address.
             try:
@@ -232,7 +236,7 @@ class ShodanAdapter(ScannerAdapter):
         # liveness or relation coverage. It *is* authoritative for its own CVE list:
         # a Shodan finding it no longer reports may be resolved (tag-scoped, so no
         # other sensor's findings are ever closed by this).
-        coverage: list = [FindingCoverage(assets=looked_up, include_tags=["shodan"])] if looked_up else []
+        coverage: list = [FindingCoverage(assets=looked_up, include_tags=[EXPOSURE_TAG])] if looked_up else []
         return NormalizedOutput(observations=obs.all(), coverage=coverage)
 
     def _host(self, obs: ObservationSet, ip: str, rec: dict[str, Any], config: ShodanConfig,
@@ -332,19 +336,20 @@ class ShodanAdapter(ScannerAdapter):
         return FindingObservation(
             asset=asset,
             rule_id=f"shodan:{cve}",
-            title=f"{cve} reported by Shodan (unverified)",
+            title=f"{cve} reported for this service (unverified)",
             description=(str(detail.get("summary"))[:2000] if detail.get("summary") else
-                         "Shodan associates this CVE with the service version it observed. It has not been "
-                         "verified against the live service."),
+                         "An internet-exposure database associates this CVE with the service version it observed. "
+                         "It has not been verified against the live service."),
             severity=_severity(cvss),
             category=FindingCategory.VULNERABILITY,
             cve=[cve],
             cvss_score=cvss if cvss is not None and 0 <= cvss <= 10 else None,
             references=[f"https://nvd.nist.gov/vuln/detail/{cve}"],
-            evidence={k: v for k, v in {"source": "shodan", "cvss": cvss,
+            evidence={k: v for k, v in {"source": EXPOSURE_TAG, "cvss": cvss,
                                         "verified": False, "port": pv}.items() if v is not None},
-            # Version-matched, never tested: kept out of the main findings list and risk scores.
-            tags=["shodan", "unverified"],
+            # Version-matched, never tested: kept out of the main findings list and risk
+            # scores. Tags describe where it came from without naming the engine.
+            tags=[EXPOSURE_TAG, "unverified"],
             location=pv or ip,
             confidence=40,
         )

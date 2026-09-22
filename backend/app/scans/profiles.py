@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from app.core.errors import ValidationFailed
 from app.models import ScanProfile
 from app.models.enums import StageType
+from app.scans import engines
 
 STAGE_ORDER = [
     StageType.SUBDOMAIN_DISCOVERY,
@@ -50,7 +51,10 @@ _IP_ENRICHMENT = [
 _DISCOVERY = [
     {"stage": "subdomain_discovery", "engine": "subfinder", "config": {}},
     {"stage": "subdomain_discovery", "engine": "crtsh", "config": {}, "optional": True},
-    {"stage": "subdomain_discovery", "engine": "amass", "config": {"mode": "passive", "timeout_minutes": 30},
+    # Deep enumeration is the slowest source by far and mostly repeats what the fast
+    # ones already found, so it gets a tight budget: a daily scan should not spend
+    # half an hour here. Raise it in a custom profile when depth matters more.
+    {"stage": "subdomain_discovery", "engine": "amass", "config": {"mode": "passive", "timeout_minutes": 10},
      "optional": True},
 ]
 
@@ -87,9 +91,11 @@ BUILTIN_PROFILES: list[dict[str, Any]] = [
         "description": "Extended discovery (all passive sources, optional OSINT enrichment), extended port "
                        "coverage and the broader safe detection template set including informational exposures.",
         "stages": [
-            {"stage": "subdomain_discovery", "engine": "subfinder", "config": {"all_sources": True, "max_time_minutes": 30}},
+            {"stage": "subdomain_discovery", "engine": "subfinder", "config": {"all_sources": True, "max_time_minutes": 15}},
             {"stage": "subdomain_discovery", "engine": "crtsh", "config": {}, "optional": True},
-            {"stage": "subdomain_discovery", "engine": "amass", "config": {"mode": "passive", "timeout_minutes": 90},
+            # Deep assessment may dig longer than the daily profiles, but 90 minutes in one
+            # stage made whole scans look stuck; 25 is still thorough for passive enumeration.
+            {"stage": "subdomain_discovery", "engine": "amass", "config": {"mode": "passive", "timeout_minutes": 25},
              "optional": True},
             {"stage": "osint_enrichment", "engine": "spiderfoot", "config": {"use_case": "passive"}, "optional": True},
             {"stage": "dns_resolution", "engine": "dnsx",
@@ -107,9 +113,10 @@ BUILTIN_PROFILES: list[dict[str, Any]] = [
     {
         "slug": "web-app-scan",
         "name": "Web Application Scan (DAST)",
-        "description": "Dynamic application security testing with OWASP ZAP: fingerprints web services, crawls each "
+        "description": "Dynamic application security testing: fingerprints web services, crawls each "
                        "application (spider + passive scanning) and actively probes it for injection and other "
-                       "web vulnerabilities. Requires the optional ZAP engine and active-scanning authorization.",
+                       "web vulnerabilities. Requires the optional web application scanner and active-scanning "
+                       "authorization.",
         "stages": [
             {"stage": "dns_resolution", "engine": "dnsx", "config": {}},
             {"stage": "port_discovery", "engine": "naabu", "config": {"port_set": "web"}, "optional": True},
@@ -156,12 +163,13 @@ def validate_stages(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
             errors.append(f"stage {i}: unknown stage type {raw.get('stage')!r}")
             continue
         try:
-            adapter = get_adapter(str(raw.get("engine")))
+            # Accepts the opaque token the API hands out, or the engine name (CLI, scripts).
+            adapter = get_adapter(engines.engine_for(str(raw.get("engine"))))
         except KeyError:
-            errors.append(f"stage {i}: unknown engine {raw.get('engine')!r}")
+            errors.append(f"stage {i}: unknown capability {raw.get('engine')!r}")
             continue
         if stage_type not in adapter.stage_types:
-            errors.append(f"stage {i}: engine {adapter.name} cannot perform {stage_type.value}")
+            errors.append(f"stage {i}: {adapter.display_name} cannot perform {STAGE_LABELS[stage_type]}")
             continue
         try:
             cfg = adapter.parse_config(raw.get("config") or {})
