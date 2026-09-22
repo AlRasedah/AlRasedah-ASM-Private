@@ -108,7 +108,13 @@ function NewScan({ onClose }: { onClose: () => void }) {
           </div>
         )}
         <Field label="Limit to specific targets (optional)">
-          <textarea placeholder="api.example.com, 203.0.113.10" value={targets} onChange={(e) => setTargets(e.target.value)} />
+          <textarea placeholder="api.example.com, 203.0.113.10, app.example.com:8580" value={targets}
+                    onChange={(e) => setTargets(e.target.value)} />
+          <div className="small muted">
+            One per line, or comma separated. Add <code>:port</code> for an application on a non-standard port
+            (<code>app.example.com:8580</code>) — that port is then probed and scanned even if it is outside the
+            profile&rsquo;s port range, and other ports on that host are left alone. Full URLs work too.
+          </div>
         </Field>
         {webAppStage && (
           <>

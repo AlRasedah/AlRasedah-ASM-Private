@@ -358,7 +358,10 @@
       <ol class="steps">
         <li>Open <b>Scans</b> and choose <b>New scan</b> (or <b>Run a scan</b> from the dashboard).</li>
         <li>Pick the <b>organization</b> and a <b>profile</b>. The dialog lists the stages and warns if the profile sends active traffic.</li>
-        <li>Optionally <b>limit to specific targets</b> (a few hosts or IPs) instead of the whole scope.</li>
+        <li>Optionally <b>limit to specific targets</b> instead of the whole scope: hostnames, IP addresses, or
+          <code>host:port</code> for an application on a non-standard port (<code>app.example.com:8580</code>).
+          Naming a port scans exactly that port — useful when the application does not sit on 80 or 443 — and leaves
+          the host's other ports alone. Targets must still be inside your authorized scope.</li>
         <li>Choose <b>Start scan</b>. You are taken to the scan’s detail page, which refreshes live.</li>
       </ol>
       <div class="tip"><b>First scan:</b> an organization’s first successful scan is its <b>baseline</b>. It builds the initial inventory and its changes are recorded but not alerted.</div>
@@ -478,6 +481,9 @@
       <ol class="steps">
         <li>Make sure the target web applications are inside an <a href="#scope">authorized scope</a> that <b>permits active scanning</b>. Active testing is intrusive.</li>
         <li>Start a scan with the built-in <b>Web Application Scan (DAST)</b> profile (or a custom profile that includes the crawling and active-scanning stages).</li>
+        <li>If the application listens on a port other than 80 or 443, put <code>host:port</code> in
+          <b>Limit to specific targets</b> — for example <code>app.example.com:8580</code>. The profile's own port
+          sweep only covers common web ports, so without this the application may never be found.</li>
         <li>Watch progress on the scan’s <b>Pipeline</b> tab; results appear as assets (crawled endpoints) and <a href="#findings">findings</a>.</li>
       </ol>
 

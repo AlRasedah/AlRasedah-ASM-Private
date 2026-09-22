@@ -50,13 +50,13 @@ demo data replay, CI pipeline.
 | Suite | Tests | Covers |
 |---|---|---|
 | tests/sensors | 90 | parsers for every engine (recorded output), target validation, safe subprocess execution, coverage-dropping on failures, credential sealing and result signing, job claims, scanner identity on the wire, registry |
-| tests/backend (unit) | 55 | scope authorization incl. wildcards, normalization/PSL, cloud detection, change-detection rules, risk engine, user-facing error messages |
-| tests/backend (database) | 67 | RLS isolation, audit immutability & hash chain, change detection scenarios, full pipeline runs, scan concurrency under contention, historical/unverified ingestion, per-scan DAST secrets, platform email |
+| tests/backend (unit) | 66 | scope authorization incl. wildcards, normalization/PSL, cloud detection, change-detection rules, risk engine, user-facing error messages |
+| tests/backend (database) | 78 | RLS isolation, audit immutability & hash chain, change detection scenarios, full pipeline runs, scan concurrency under contention, historical/unverified ingestion, per-scan DAST secrets, platform email |
 | tests/backend (API) | 65 | auth flows (refresh rotation & reuse detection, lockout, rate limit, MFA, reset, API tokens), RBAC, cross-tenant access, scope → scan → inventory → findings workflow, reports, notifications incl. Wazuh, engine non-disclosure |
 | tests/integration | 2 | broker trust boundary against a real Valkey with the compose ACL (skipped without one) |
 | frontend/src/test | 35 | every page renders with API data; asset tabs; authorization log |
 
-279 Python tests in total. The counts per group are approximate — several files span
+301 Python tests in total. The counts per group are approximate — several files span
 categories — but the total and the integration count are exact.
 
 ## Known gaps / next steps

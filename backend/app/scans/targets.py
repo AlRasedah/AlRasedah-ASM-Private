@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlsplit
 
-from asm_sensors.targets import InvalidTarget, Target, TargetKind, format_host_port
+from asm_sensors.targets import InvalidTarget, Target, TargetKind, format_host_port, split_host_port
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session, aliased
@@ -91,9 +91,36 @@ def _open_ports(db: Session, org: Organization) -> dict[str, set[int]]:
     return ports
 
 
+def _override(scan: Scan) -> tuple[set[str], dict[str, set[int]]]:
+    """The hosts a scan was limited to, and any ports named with them.
+
+    "Limit to specific targets" takes `example.com`, `192.0.2.1`, `example.com:8580`
+    or a URL. Stages select by host, so a `host:port` entry contributes its host to
+    the filter *and* records the port, which the HTTP stages then use instead of
+    whatever the port sweep happened to find.
+    """
+    hosts: set[str] = set()
+    ports: dict[str, set[int]] = defaultdict(set)
+    for raw in scan.target_override or []:
+        if "://" in raw:
+            u = urlsplit(raw)
+            if u.hostname:
+                hosts.add(u.hostname)
+                ports[u.hostname].add(u.port or (443 if u.scheme == "https" else 80))
+            continue
+        try:
+            host, port = split_host_port(raw)
+        except InvalidTarget:
+            hosts.add(raw)
+            continue
+        hosts.add(host)
+        ports[host].add(port)
+    return hosts, dict(ports)
+
+
 def build_targets(db: Session, org: Organization, scan: Scan, stage_type: StageType, limit: int) -> StageTargets:
     out = StageTargets()
-    override = set(scan.target_override or [])
+    override, override_ports = _override(scan)
     entries = db.execute(select(ScopeEntry).where(ScopeEntry.organization_id == org.id,
                                                   ScopeEntry.is_exclusion.is_(False))).scalars().all()
     settings = org_settings(org)
@@ -144,9 +171,15 @@ def build_targets(db: Session, org: Organization, scan: Scan, stage_type: StageT
         out.derived_from = ip_to_hosts
         ports = _open_ports(db, org)
         values: set[tuple[TargetKind, str]] = set()
+        # A port the user named is probed as given: the sweep may not cover it (the DAST
+        # profile scans the "web" set only), and the host may not be in inventory yet.
+        for host, named in override_ports.items():
+            values |= {(TargetKind.HOST_PORT, format_host_port(host, p)) for p in named}
         for a in _hostnames(db, org, include_recent_inactive=False):
             host = a.normalized_value
             if override and host not in override:
+                continue
+            if host in override_ports:  # already added exactly as asked for
                 continue
             host_ports = set().union(*(ports.get(ip, set()) for ip in host_to_ips.get(host, set()))) \
                 if host_to_ips.get(host) else set()
@@ -170,7 +203,10 @@ def build_targets(db: Session, org: Organization, scan: Scan, stage_type: StageT
                 Asset.status == AssetStatus.ACTIVE, Asset.scope_status != ScopeStatus.OUT_OF_SCOPE)):
             u = urlsplit(url)
             if u.hostname and (not override or u.hostname in override):
-                values.add((TargetKind.HOST_PORT, format_host_port(u.hostname, u.port or (443 if u.scheme == "https" else 80))))
+                port = u.port or (443 if u.scheme == "https" else 80)
+                if u.hostname in override_ports and port not in override_ports[u.hostname]:
+                    continue  # the user named a port on this host; leave its other ports alone
+                values.add((TargetKind.HOST_PORT, format_host_port(u.hostname, port)))
         for kind, v in sorted(values):
             _t(kind, v, out)
 
@@ -183,8 +219,12 @@ def build_targets(db: Session, org: Organization, scan: Scan, stage_type: StageT
         for (url,) in db.execute(select(Asset.normalized_value).where(
                 Asset.organization_id == org.id, Asset.asset_type == AssetType.HTTP_ENDPOINT,
                 Asset.status == AssetStatus.ACTIVE, Asset.scope_status != ScopeStatus.OUT_OF_SCOPE)):
-            if override and urlsplit(url).hostname not in override:
+            u = urlsplit(url)
+            if override and u.hostname not in override:
                 continue
+            named = override_ports.get(u.hostname or "")
+            if named and (u.port or (443 if u.scheme == "https" else 80)) not in named:
+                continue  # crawl and attack only the port the user asked for
             _t(TargetKind.URL, url, out)
 
     if len(out.targets) > limit:

@@ -57,6 +57,9 @@ class ScanDetail(ScanOut):
 class ScanCreate(Input):
     organization_id: uuid.UUID
     profile_id: uuid.UUID
+    # Limit the scan to part of the scope: hostnames, IPs, CIDRs, `host:port` (an
+    # application on a non-standard port) or full URLs. Each is authorized against
+    # the organization's scope like any other target.
     targets: list[str] | None = Field(default=None, max_length=1000)
     # Sign-in secret for this one scan: a logged-in session cookie (default) or a
     # token. Used only by the web application scanner, only on the authorized

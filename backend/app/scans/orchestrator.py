@@ -20,7 +20,7 @@ from typing import Any
 from asm_sensors.jobs import ResultEnvelope, SensorJob, seal_credentials
 from asm_sensors.observations import SensorResult
 from asm_sensors.registry import get_adapter
-from asm_sensors.targets import Target, TargetKind
+from asm_sensors.targets import InvalidTarget, Target, TargetKind
 from sqlalchemy import func, insert, select
 from sqlalchemy.orm import Session
 
@@ -67,6 +67,27 @@ def _now() -> datetime:
 AUTH_PROVIDER = "zap_auth"  # the credential slot the web application scanner reads
 
 
+def parse_target(raw: str) -> Target:
+    """One line the user typed into "limit to specific targets" → a Target.
+
+    Order matters. An IPv6 address is full of colons, so it must be tried before
+    ``host:port``; a hostname is the fallback. Applications on a non-default port
+    are the common case here (``app.example.com:8580``) — a web application scan
+    should not depend on the port sweep happening to cover that port.
+    """
+    value = raw.strip().lower()
+    if not value:
+        raise InvalidTarget("empty target")
+    if "://" in value:
+        return Target(kind=TargetKind.URL, value=value)
+    for kind in (TargetKind.IP, TargetKind.HOST_PORT, TargetKind.CIDR, TargetKind.HOSTNAME):
+        try:
+            return Target(kind=kind, value=value)
+        except ValueError:
+            continue
+    raise InvalidTarget(f"not a hostname, IP, host:port or URL: {raw!r}")
+
+
 def create_scan(db: Session, *, tenant_id: uuid.UUID, organization_id: uuid.UUID, profile_id: uuid.UUID,
                 trigger: ScanTrigger = ScanTrigger.MANUAL, requested_by: uuid.UUID | None = None,
                 schedule_id: uuid.UUID | None = None, target_override: list[str] | None = None,
@@ -96,12 +117,13 @@ def create_scan(db: Session, *, tenant_id: uuid.UUID, organization_id: uuid.UUID
     if target_override:
         override = []
         for raw in target_override:
-            value = raw.strip().lower()
-            kind = TargetKind.IP if value.replace(".", "").isdigit() or ":" in value else TargetKind.HOSTNAME
             try:
-                t = Target(kind=kind, value=value)
+                t = parse_target(raw)
             except ValueError as exc:
-                raise ValidationFailed(f"Invalid target: {raw}") from exc
+                raise ValidationFailed(
+                    f"Invalid target: {raw}. Use a hostname, an IP address, host:port (example.com:8580) "
+                    "or a full URL."
+                ) from exc
             decision = checker.check(t, active=False)
             if not decision.allowed:
                 raise ScopeViolation(f"{raw} is outside the authorized scope: {decision.reason}")

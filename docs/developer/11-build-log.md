@@ -77,7 +77,7 @@ delivery endpoints — nothing below marked "not verified" has been exercised by
 | Area | How it was verified | Not verified |
 |---|---|---|
 | Sensor parsing/normalization | recorded output of each engine (fixtures written to match documented output formats) | real binaries at the pinned versions; exact CLI flags for Amass v4 (`-o`, `-dir`, `-nocolor`), BBOT 2.x output path, SpiderFoot 4 export endpoint, ZAP 2.15 API paths, a live Shodan key against a paid plan |
-| Pipeline, change detection, findings, risk | 279 automated tests on PostgreSQL 18 | behaviour at 50k+ assets (performance) |
+| Pipeline, change detection, findings, risk | 301 automated tests on PostgreSQL 18 | behaviour at 50k+ assets (performance) |
 | Tenant isolation | RLS tests for every tenant table and API cross-tenant tests | separate BYPASSRLS role hardening (documented, not implemented) |
 | Broker trust boundary (A01) | real Celery workers against a real Valkey 9 using the compose ACL (`tests/integration`) | the ACL under a multi-pool deployment (only `default` is exercised) |
 | Audit remediation (A01–A11) | a regression test per finding; the auditor's reproductions re-run | a re-audit by the reviewer |
@@ -298,7 +298,30 @@ keypress between them do not). The UI test needed a bounded wait after advancing
 the sign-out and its re-render land asynchronously, and asserting immediately passed alone
 but failed in the full file.
 
-## 11.13 Recommended next steps
+## 11.13 Scanning an application on a non-default port (22 September 2026)
+
+"Invalid target: hrp.example.sa:8580" when starting a Web Application Scan. Two problems
+behind one message:
+
+- `create_scan` classified any value containing a colon as an IP address, so `host:port`
+  could never be typed at all. Replaced by `orchestrator.parse_target`, which tries IP first
+  (an IPv6 address is full of colons), then `host:port`, then CIDR, then hostname, and
+  accepts a full URL. The refusal now names the forms that work.
+- Accepting it would not have been enough. Stages select by host, so a `host:port` override
+  matched nothing and every stage would have reported "no authorized targets". `build_targets`
+  now splits an override into hosts and the ports named with them: the host filters the
+  earlier stages as before, and HTTP discovery probes the named port **as given** — the DAST
+  profile sweeps the "web" port set only, so 8580 would never have been found, and the host
+  need not be in inventory yet. Crawling and active scanning then stay on that port and leave
+  the host's other endpoints alone.
+
+Scope is unchanged: the host is authorized exactly as before, so a port on an out-of-scope
+host is still refused. Verified against the running stack with the reported value —
+`hrp.ifmi.sa:8580` is accepted (201), `:99999` is refused with the accepted forms, and an
+out-of-scope host:port is refused as out of scope. 22 regressions in
+`tests/backend/test_target_ports.py`.
+
+## 11.14 Recommended next steps
 
 1. Work through the manual pass in [chapter 9.8](09-testing.md#98-the-manual-pass) on a
    deployed stack — that is the only verification left that matters, and §11.4 says exactly
