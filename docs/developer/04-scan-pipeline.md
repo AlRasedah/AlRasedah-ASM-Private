@@ -202,7 +202,9 @@ same dedup, history and auto-resolution as scanner findings for free.
 
 - `complete_stage`: failed result → stage `failed` (or `skipped` if optional); otherwise
   ingest + rules, store raw artifacts if the profile retains them, stage `completed` or
-  `partial`, merge counters into `scan.stats`, record sensor seconds.
+  `partial`, merge counters into `scan.stats`, record sensor seconds. Whatever the outcome,
+  the stage's stored `error` is the output of `messages.friendly` (§4.11), never the raw
+  sensor text — which is written to the worker log instead.
 - `fail_stage` (publish failure / watchdog): stage `failed`/`skipped`.
 - `finalize_scan`: scan `failed` if nothing succeeded, `partial` if something failed,
   otherwise `completed` → `risk.recompute_organization` (scores, roll-up, risk
@@ -233,10 +235,45 @@ once per channel via `channels.CHANNELS[type].send(config, secret, payloads)`, a
 | `recompute_all_risk` | daily 04:10 UTC | age factors change daily |
 | `snapshot_metrics` | daily 00:05 UTC | trend data |
 
-## 4.11 Where to look when…
+## 4.11 What the user is shown — `scans/engines.py`, `scans/messages.py`
+
+Everything above is written in terms of engines; nothing above the API is. Two modules sit
+between the pipeline and the interface (ADR-022):
+
+**`engines.py` — capabilities, not engines.**
+
+| Function | Used by |
+|---|---|
+| `label_for(engine)` | the adapter's `display_name` ("Certificate transparency", "Deep subdomain enumeration"). `StageOut.label`, findings, asset observations. A stage row therefore says what it *does*; two engines on the same stage type no longer read as the same line twice |
+| `token_for(engine)` / `engine_for(value)` | `eng_<16 hex>` = HMAC of the name under `secret_key`, so the identifier differs per deployment and means nothing elsewhere. Profiles and `GET /scan-profiles/engines` emit tokens; `validate_stages` accepts a token **or** a plain name, so the CLI and scripts still work |
+| `sanitize_schema(schema, display_name)` | strips pydantic class titles (`NucleiConfig` → the capability's name) from the config schema the profile editor renders |
+| `accepts_login(engine)` | whether the Start-scan modal offers the session-cookie field |
+
+There are **two** label maps and they answer different questions. `display_name` names the
+capability a *stage* exercises, and must distinguish engines that share a stage type.
+`SOURCE_LABELS` (`schemas/common.py`) names the *kind of source* a finding or observation
+came from, and is deliberately coarser — two discovery engines both labelled "Asset
+discovery" there is correct, because a finding does not care which one saw it first. Neither
+map may contain an engine or project name.
+
+**`messages.py` — errors that say what to do.** `friendly(errors, capability)` maps each
+known failure to one sentence of advice, de-duplicates, and falls back to
+"<capability> did not finish successfully." Any tool name surviving in an unmapped message
+is scrubbed. Adding a new mapping is one `(pattern, replacement)` entry in `_KNOWN`
+(most-specific first — several capabilities report "not enabled in this deployment").
+
+The corollary for adapters: when a capability is not configured, raise `ConfigurationError`
+with a product-level sentence rather than letting a `RuntimeError` escape — that is what the
+user reads. `tests/backend/test_engine_disclosure.py` asserts that no engine or upstream
+project name appears in scan, profile, findings or asset responses; `credential_providers`
+is the deliberate exception (the customer buys those keys and must know whose they are).
+
+## 4.12 Where to look when…
 
 | Symptom | Look at |
 |---|---|
+| A stage's error names a tool | a missing `_KNOWN` mapping in `messages.py`, or an adapter raising a bare exception instead of `ConfigurationError` |
+| A stage runs far longer than expected | the profile's per-stage budget (`timeout_minutes` / `max_time_minutes` / `max_duration_minutes` in `scans/profiles.py`, defaults and grace in `_ENGINE_BUDGET`), shown in the UI as "running for 40m of up to 1h" |
 | A stage is skipped with "No authorized targets" | `scope_decisions` for the scan (UI: scan → Authorization log); `build_targets`; `derived_from` |
 | A new asset produced no event | it was out of scope (`_event` skips), or it is a context type, or the scan was the baseline (events hidden by default) |
 | A port did not close | coverage constraints (`port_spec`, CDN), inactivity threshold, stage status partial/failed (coverage dropped) |

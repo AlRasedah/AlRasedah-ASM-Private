@@ -9,6 +9,7 @@
 | History over snapshots | Assets are never deleted because a scan missed them. Every sighting is recorded; disappearance is inferred from *coverage*. |
 | Tenant isolation by construction | `tenant_id` on every tenant-owned row, enforced by PostgreSQL Row-Level Security in addition to application checks. |
 | Safe by default | Every active target is authorized against the organization's scope; safe detection only; strict input validation; no shell. |
+| The product is the capability, not the engine | Stages, findings and errors are described by what they do; engine names stay inside the backend and scan traffic carries no product header. The engine set is then free to change without changing the product, and is not published to anyone with a browser's network tab. |
 | Portable | Docker Compose, PostgreSQL, a Redis-protocol broker (Valkey), S3-compatible storage — no hyperscaler lock-in; Kubernetes-ready without redesign. |
 
 ## 2. Components

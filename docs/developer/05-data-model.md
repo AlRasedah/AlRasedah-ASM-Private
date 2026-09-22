@@ -74,8 +74,12 @@ Canonical values (`assets.normalized_value`):
 | Table | Key columns |
 |---|---|
 | `scan_profiles` | `tenant_id` NULL = built-in; `slug`, `stages` (validated list), `is_active_scanning`, `retain_raw_output` |
-| `scans` | `status`, `trigger`, `profile_snapshot`, `target_override`, `is_baseline`, `stats`, timings, `error` |
-| `scan_stages` | `position`, `stage_type`, `engine`, `config` (+`_optional`), `status`, `is_active`, `target_count`, `rejected_count`, `observation_count`, `task_id`, `stats`, `error` |
+| `scans` | `status`, `trigger`, `profile_snapshot`, `target_override`, `is_baseline`, `stats`, timings, `error`; `auth_secret_encrypted` + `auth_header_name` (per-scan DAST session secret, erased when the scan ends — ADR-023) |
+| `scan_stages` | `position`, `stage_type`, `engine`, `config` (+`_optional`), `status`, `is_active`, `target_count`, `rejected_count`, `observation_count`, `task_id`, `dispatched_at`, `worker_pool`, `stats`, `error` |
+
+`scan_stages.engine` is the internal name; it is **never** sent to a browser — the API sends
+`label` (the capability) and, where the profile editor needs an identifier, an opaque
+`eng_…` token (ADR-022). `error` stores the sanitized message, not the tool's output.
 | `scope_decisions` | `target`, `decision`, `reason`, `matched_entry_id`, `active` |
 | `scan_schedules` | `cron`, `timezone`, `enabled`, `next_run_at`, `last_run_at`, `last_scan_id` |
 | `scan_artifacts` | `storage_key`, size, sha256, `truncated`, `expires_at` |
@@ -84,7 +88,7 @@ Canonical values (`assets.normalized_value`):
 
 | Table | Key columns |
 |---|---|
-| `findings` | `fingerprint` unique per tenant; `source`, `source_finding_id`, title/description/category/severity/location, CVE/CWE/CVSS/EPSS/KEV/exploit fields, evidence, remediation, references, confidence, first/last seen, `resolved_at`, `occurrence_count`, `missed_count`, workflow (`status`, `false_positive`, `accepted_until`, `assigned_to`, notes, tags), risk fields |
+| `findings` | `fingerprint` unique per tenant; `source`, `source_finding_id`, title/description/category/severity/location, CVE/CWE/CVSS/EPSS/KEV/exploit fields, evidence, remediation, references, confidence, first/last seen, `resolved_at`, `occurrence_count`, `missed_count`, `unverified` (third-party report awaiting confirmation — ADR-020), workflow (`status`, `false_positive`, `accepted_until`, `assigned_to`, notes, tags), risk fields |
 | `finding_activities` | `activity_type` (detected/resolved/reopened/status/assignment/comment/tags), previous/new, comment, user, scan |
 | `vuln_intel` | per CVE: CVSS, EPSS (+percentile, date), KEV (dates, ransomware, vendor/product), exploit flag — global cache |
 | `intel_feed_state` | per feed: last success/attempt, error, record count |
@@ -92,6 +96,8 @@ Canonical values (`assets.normalized_value`):
 | `notification_policies` | `event_types[]`, `min_severity`, `organization_ids[]`, `integration_ids[]`, `include_baseline`, `throttle_minutes` |
 | `notification_deliveries` | event × policy × integration, `status`, `attempts`, `last_error` |
 | `reports` | type, format, parameters, status, `storage_key`, size, error |
+| `platform_settings` | one row (`CHECK id = 1`): `smtp` (host/port/username/sender/starttls/ssl), `smtp_password_ciphertext`, `updated_by`. Platform admins only, system sessions only; overrides `ASM_SMTP_*` (ADR-021) |
+| `user_alert_preferences` | per `(tenant, user)`: `enabled`, `min_severity`, `event_types[]`, `organization_ids[]`, `include_baseline`, `last_sent_at`. No row = enabled for high/critical. Mail goes to the user's **login** address, never a typed one |
 
 ## 5.3 Writing a migration
 

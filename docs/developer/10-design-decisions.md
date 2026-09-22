@@ -60,31 +60,6 @@ through Redis/Valkey. State transitions are row-locked and committed before publ
 message signing for every task (heavier key management; ACLs + result MACs cover the same
 threats here), Kafka (unjustified).
 
-## ADR-016 Third-party intelligence is historical and unverified
-**Decision**: sensors that report a third-party database's view (today `shodan`) set
-`SensorResult.historical`; ingestion then adds new knowledge but never refreshes `last_seen`,
-reactivates an asset, or lets that source close anything. Their CVE reports are stored with
-`findings.unverified = true`, hidden from the findings list, risk scores, reports and alerts
-until a sensor that actually tested the service reports the same issue.
-**Consequences**: Shodan (and later similar sources) widen coverage — including for scope
-that may not be actively scanned — without weakening change detection or inflating risk.
-The UI needs a second findings view, and the API a filter, which is the honest trade.
-**Alternatives**: treating Shodan like a live scanner (dead services would look alive and
-version-matched CVEs would drive risk scores), or discarding its CVE list entirely (loses a
-useful lead).
-
-## ADR-017 Platform-managed email
-**Decision**: the mail server lives in `platform_settings` (encrypted password), editable by
-platform administrators in the UI and overriding `ASM_SMTP_*`; every user can have alerts
-sent to their own *login* address (`user_alert_preferences`, default on for high/critical).
-**Consequences**: a deployment can be operated entirely from the web interface, which is the
-product requirement; `.env` stays a bootstrap default. Tenants do not get their own mail
-server: in a multi-tenant deployment that would let a tenant admin change how everyone's
-password resets are sent. Per-user alerts never take a typed address, so they cannot be used
-to forward another tenant's events.
-**Alternatives**: SMTP only in `.env` (needs shell access for every change — rejected),
-per-tenant relays (revisit if a customer needs their own sending domain).
-
 ## ADR-008 Inline mode
 **Decision**: `ASM_SENSOR_MODE=inline` runs the same orchestrator synchronously.
 **Consequences**: tests and development need no broker; must never be used in production
@@ -126,6 +101,7 @@ server-side session check each request.
 **Consequences**: coverage is exact; results are stable across tool versions.
 
 ## ADR-016 Licensing-driven component choices
+<!-- ADR-016..019 predate the 2026-09-19 audit; 020 onwards are below, in order of decision. -->
 - Valkey instead of Redis ≥ 7.4 (RSAL/SSPL is a problem for SaaS).
 - Nmap not integrated (NPSL restricts commercial redistribution).
 - BBOT (GPL-3.0) optional, not installed by default, executed only as a program.
@@ -161,3 +137,72 @@ artifact (chapter 7.8) and `styles.css` must be kept in step.
 **Alternatives**: a UI kit (MUI/shadcn — rejected: heavier, fights the brand, not needed for
 this surface); tenant-themable accents in the UI (deferred — tenant branding applies to
 reports only).
+
+## ADR-020 Third-party intelligence is historical and unverified
+**Decision**: sensors that report a third-party database's view (today `shodan`) set
+`SensorResult.historical`; ingestion then adds new knowledge but never refreshes `last_seen`,
+reactivates an asset, or lets that source close anything. Their CVE reports are stored with
+`findings.unverified = true`, hidden from the findings list, risk scores, reports and alerts
+until a sensor that actually tested the service reports the same issue.
+**Consequences**: Shodan (and later similar sources) widen coverage — including for scope
+that may not be actively scanned — without weakening change detection or inflating risk.
+The UI needs a second findings view, and the API a filter, which is the honest trade.
+**Alternatives**: treating Shodan like a live scanner (dead services would look alive and
+version-matched CVEs would drive risk scores), or discarding its CVE list entirely (loses a
+useful lead).
+
+## ADR-021 Platform-managed email
+**Decision**: the mail server lives in `platform_settings` (encrypted password), editable by
+platform administrators in the UI and overriding `ASM_SMTP_*`; every user can have alerts
+sent to their own *login* address (`user_alert_preferences`, default on for high/critical).
+**Consequences**: a deployment can be operated entirely from the web interface, which is the
+product requirement; `.env` stays a bootstrap default. Tenants do not get their own mail
+server: in a multi-tenant deployment that would let a tenant admin change how everyone's
+password resets are sent. Per-user alerts never take a typed address, so they cannot be used
+to forward another tenant's events.
+**Alternatives**: SMTP only in `.env` (needs shell access for every change — rejected),
+per-tenant relays (revisit if a customer needs their own sending domain).
+
+## ADR-022 The product names capabilities; it never names its engines
+**Context**: a real deployment showed stage rows reading "Asset discovery" three times (three
+different discovery engines on one stage type), errors reading `nuclei exit code 1: [FTL]
+Could not run nuclei: no templates provided for scan`, engine names in every API response,
+and an `X-ASM-Scanner` header on outgoing probes. Anything the browser receives is
+inspectable, so the engine list was effectively published; and none of it helped the reader.
+**Decision**: the interface speaks in capabilities. Stages, findings and observations carry
+`display_name` labels (`scans/engines.label_for`); profiles and the capabilities endpoint
+identify an engine by `eng_<hmac>` computed under the deployment's `secret_key`, so the
+identifier is stable for the editor and meaningless anywhere else; config schemas are
+scrubbed of class titles; errors go through `scans/messages.friendly`, which maps known
+failures to advice and scrubs anything left over. Adapters raise `ConfigurationError` with a
+product-level sentence. Scan traffic sends no identifying header unless the deployment opts
+in (`ASM_SCANNER_IDENTITY`) and uses a neutral user agent.
+**Consequences**: one more indirection between the pipeline and the API, and a test
+(`test_engine_disclosure.py`) that fails whenever a name leaks — including through pydantic
+titles, tags and rule-id prefixes, which is how most leaks happened. Raw output still exists,
+in the worker log, where the operator (not the customer) reads it. Support conversations lose
+the tool name as shorthand; the capability label has to be good enough.
+**Not hidden**: `credential_providers`. The customer buys and pastes those keys, so
+Integrations names Shodan and the rest.
+**Alternatives**: renaming only the visible strings (leaks return with every new adapter);
+a per-deployment name map in config (same effect, one more thing to keep in step).
+
+## ADR-023 Per-scan session secret for authenticated DAST
+**Decision**: the cookie typed into the Start-scan modal is encrypted on the scan row
+(`scans.auth_secret_encrypted`, AAD `scan:<id>:auth`), delivered through the normal sealed
+credential channel as the `zap_auth` provider, and erased at `finalize_scan`/`_cancel`.
+**Consequences**: an authenticated crawl needs no stored credential and leaves nothing behind
+once the scan ends; a session that expires mid-scan simply yields unauthenticated results.
+The value is scoped to the authorized origin by the ZAP Replacer rule and CRLF is refused.
+**Alternatives**: only tenant-stored credentials (a session cookie is short-lived and
+per-tester — wrong lifetime), passing it in the job without encryption at rest (a scan row is
+long-lived and backed up).
+
+## ADR-024 Wildcard scope entries are input, not storage
+**Decision**: `*.example.com` is accepted wherever scope is typed and stored as the domain
+with `include_subdomains`; pasting both forms widens the existing entry instead of colliding.
+A wildcard may only replace the first label, and never covers a public suffix.
+**Context**: authorization letters are written `*.example.com`, so that is what people paste;
+it was silently rewritten to `example.com`, which looked like the tool ignoring the input.
+**Consequences**: one representation in the database, so the scope checker is unchanged.
+`a.*.example.com` is refused with the accepted form rather than guessed at.

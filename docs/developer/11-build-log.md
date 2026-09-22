@@ -69,15 +69,23 @@ what has and has not been verified.
 
 ## 11.4 Verification status
 
+**Where the project stands (22 September 2026): the automated suites are green and a first
+manual pass against a real environment has happened** (its four findings are §11.10). What
+remains is a second manual pass on a deployed stack with real binaries, real keys and real
+delivery endpoints — nothing below marked "not verified" has been exercised by anyone yet.
+
 | Area | How it was verified | Not verified |
 |---|---|---|
-| Sensor parsing/normalization | recorded output of each tool (fixtures written to match documented output formats) | real binaries at the pinned versions; exact CLI flags for Amass v4 (`-o`, `-dir`, `-nocolor`), BBOT 2.x output path, SpiderFoot 4 export endpoint |
-| Pipeline, change detection, findings, risk | 123 automated tests on PostgreSQL 18 | behaviour at 50k+ assets (performance) |
+| Sensor parsing/normalization | recorded output of each engine (fixtures written to match documented output formats) | real binaries at the pinned versions; exact CLI flags for Amass v4 (`-o`, `-dir`, `-nocolor`), BBOT 2.x output path, SpiderFoot 4 export endpoint, ZAP 2.15 API paths, a live Shodan key against a paid plan |
+| Pipeline, change detection, findings, risk | 267 automated tests on PostgreSQL 18 | behaviour at 50k+ assets (performance) |
 | Tenant isolation | RLS tests for every tenant table and API cross-tenant tests | separate BYPASSRLS role hardening (documented, not implemented) |
+| Broker trust boundary (A01) | real Celery workers against a real Valkey 9 using the compose ACL (`tests/integration`) | the ACL under a multi-pool deployment (only `default` is exercised) |
+| Audit remediation (A01–A11) | a regression test per finding; the auditor's reproductions re-run | a re-audit by the reviewer |
+| Engine non-disclosure (ADR-022) | `test_engine_disclosure.py` over scans, profiles, capabilities, findings, assets; a Deep Assessment on the dev stack read end to end | the network tab of a **deployed** stack; errors from engines that have never failed here |
 | API | TestClient suites; OpenAPI UI rendered | load/performance |
-| Web UI | type-check, production build, jsdom smoke tests, login page viewed in a browser, demo login confirmed working by the product owner | authenticated screens not visually reviewed by the builder |
-| Deployment | `docker compose config` | image builds, container start-up, healthchecks, TLS config, SpiderFoot profile — CI `deployment` job will be the first real run |
-| Notifications | webhook signing and Wazuh file output in tests; syslog line format unit-tested | delivery to a real Wazuh manager, SMTP server, Slack/Teams |
+| Web UI | type-check, production build, jsdom smoke tests, and a manual pass by the product owner against a real environment (§11.6, §11.10) | the new Settings → Email delivery, Account → alerts, Integrations → Test and the Start-scan cookie field, in a browser |
+| Deployment | `docker compose config`; CI builds the images | container start-up, healthchecks, TLS config, SpiderFoot/DAST profiles on a real host |
+| Notifications | webhook signing and Wazuh file output in tests; syslog line format unit-tested | delivery to a real Wazuh manager, SMTP server, Slack/Teams — including the new platform mail server and personal alerts |
 | PDF reports | code path only (WeasyPrint absent on the build machine) | PDF rendering inside the platform image |
 
 ## 11.5 Rebrand to the Al-Rasedah design system (18 September 2026)
@@ -180,19 +188,65 @@ Added dynamic application security testing and end-user documentation on the
   verification-status note in §11.4 / docs/SENSORS.md; first live run should confirm the
   ZAP 2.15 API paths and default scan policies.
 - **DAST badge**: findings from `zap_active` are flagged in the UI (findings list + detail).
-  The finding API now exposes the detection engine `source`; `isDast(source)` in
-  `lib/format.ts` drives the copper badge.
+  *(Superseded in §11.10: the API exposed the engine `source` to drive it, which is now a
+  boolean `dast` field — the engine name no longer leaves the backend.)*
 - **User guide**: `frontend/public/user-guide.html` — a single self-contained HTML user
   guide (chapter 7.10), opened by the sidebar **Documentation** link and also suitable for
   hosting on a public website. It is a product document with no source code, paths or
   secrets; developer-facing detail stays in this handbook.
 
-## 11.9 Recommended next steps
+## 11.9 External audit remediation (19–21 September 2026)
 
-1. Run CI (or `docker compose build`) and fix anything the first real image build reveals.
-2. `docker compose run --rm asm-scanner versions`, then Passive Discovery and Standard ASM
-   scans against a domain you own; compare observations with the fixtures and adjust
-   adapters.
-3. Point a Wazuh test manager at the syslog channel and validate decoders/rules with
-   `wazuh-logtest`.
-4. Then the roadmap in [../MILESTONES.md](../MILESTONES.md#known-gaps--next-steps).
+An external reviewer audited the code at `ba9f0a6` and reported 11 findings (6 P1, 5 P2),
+with a reproduction for each. All 11 are fixed, each with the regression test listed in
+chapter 9.3; the auditor's own reproductions now fail to reproduce.
+
+| # | Finding | Fix |
+|---|---|---|
+| A01 | The broker was not a trust boundary: sensor workers published core tasks, shared the platform's account and one key | Results travel as a signed `ResultEnvelope` on `results.<pool>`; per-pool HKDF keys; per-pool Valkey users and ACLs; sensor tasks are `shared=False` and the result consumer registers exactly one task; verified against a real Valkey in `tests/integration` |
+| A02 | Private and derived destinations were actively scanned | `egress_filter` in the runner drops targets resolving to non-public or scope-excluded addresses; the job carries the scope's excluded ranges |
+| A03 | The ZAP context regex matched look-alike hosts, and the credential could leak | Anchored origin regex; the header is scoped to the origin and removed in a `finally`; CRLF refused |
+| A04 | An incomplete run resolved findings that were never tested | Coverage is dropped for partial/failed results at both ends (`runner` and `complete_stage`) |
+| A05 | Verification was enforced only on newly added scope | Checked at scan time on every entry, so an entry that predates the requirement cannot be actively scanned |
+| A06 | Concurrency limits raced under parallel starts | `pg_advisory_xact_lock` held to commit, scan re-read under the lock; a redelivered start is a no-op |
+| A07 | A fast callback could arrive before the dispatch was committed | Stage RUNNING + job binding commit **before** publishing; `dispatched_at` afterwards |
+| A08 | A viewer's API token could enrol the owner's MFA | MFA changes require the account password; a token cannot stand in for it |
+| A09 | Suspended tenants' scans still started | Checked in `try_start` and before every stage; the scan is cancelled, not started |
+| A10 | One ZAP daemon driven by two scans at once | Exclusive lease from the pool `Coordinator` |
+| A11 | Redis visibility timeout shorter than the jobs | Raised above the longest stage budget; per-consumer unacked keys |
+
+Shipped in the same branch, from the product owner's decisions:
+
+- **Shodan works now.** It had been reachable only as one of Subfinder's subdomain sources,
+  which explains "Shodan isn't working" from a paid account — nothing recognizable ever came
+  back. It is now a real passive `ip_enrichment` engine doing host lookups (ADR-020).
+- **Everything is operable from the front end** — mail server and personal alerts in the UI
+  (ADR-021), data-source keys with a Test button, no `.env` editing for day-to-day use.
+- **Unverified findings** get their own view instead of inflating risk (ADR-020).
+- **Authenticated DAST** from the Start-scan modal, per-scan and erased afterwards (ADR-023).
+- **Wildcard scope** (`*.example.com`) accepted as typed (ADR-024).
+- Jira and ServiceNow channels are hidden from the API and UI until they work
+  (`implemented = False`), but stay in the code and in these docs.
+
+## 11.10 Capability naming, error text and scan time (22 September 2026)
+
+Four problems reported from a real environment, all visible in one Pipeline screenshot.
+
+| Reported | Cause | Change |
+|---|---|---|
+| "The assets scan is duplicated" (three "Asset discovery" rows, two "Network ownership") | Not duplicated: three different engines run subdomain discovery and two run IP enrichment, but every row was labelled by its *stage type* | Stages are labelled by capability (ADR-022) — "Passive subdomain discovery", "Certificate transparency", "Deep subdomain enumeration"; "Network ownership enrichment" vs "Internet exposure intelligence" |
+| "It takes waaaaay too long" (a 1h31m stage) | The deep-enumeration budget was 90 minutes in Deep Assessment and 30 in the daily profiles, and that stage mostly repeats what the faster sources already found | 25 / 10 minutes; the broad passive source 30 → 15 |
+| "The errors tell the user which engine we use" | Stage errors were the raw sensor text (`nuclei exit code 1: [FTL] …no templates provided for scan`, `unexpected sensor error: RuntimeError`) | `scans/messages.friendly` maps known failures to advice and scrubs the rest; adapters raise `ConfigurationError` with a product-level sentence. Raw output stays in the worker log |
+| "It's easy to reverse engineer the software from inspecting the network activity" | Engine names in API responses (stages, findings `source`, profile stages, capability schemas, tags, rule-id prefixes) **and** an `X-ASM-Scanner: Exteriq-ASM` header on outgoing probes | Capability labels and opaque `eng_…` tokens everywhere (ADR-022), enforced by `test_engine_disclosure.py`; no product header unless `ASM_SCANNER_IDENTITY` is set, neutral user agent |
+
+Verified against a Deep Assessment on the dev stack: eleven distinctly-named stages, and the
+new messages in place of the raw ones. Note that **stages stored by older scans keep their
+original error text** — only new scans are sanitized.
+
+## 11.11 Recommended next steps
+
+1. Work through the manual pass in [chapter 9.8](09-testing.md#98-the-manual-pass) on a
+   deployed stack — that is the only verification left that matters, and §11.4 says exactly
+   what it would cover.
+2. Fix what the first real image build and the first real engine versions reveal.
+3. Then the roadmap in [../MILESTONES.md](../MILESTONES.md#known-gaps--next-steps).

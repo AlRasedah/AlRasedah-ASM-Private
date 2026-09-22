@@ -1,10 +1,13 @@
 # 9. Testing
 
 ```bash
-pytest -q                                   # 123 backend + sensor tests, ~25 s
-cd frontend && npm test && npm run typecheck  # 21 UI tests, ~2 s
+pytest -q                                   # 267 backend + sensor tests, ~60 s
+cd frontend && npm test && npm run typecheck  # 27 UI tests, ~3 s
 cd backend && ruff check app ../workers/asm_sensors
 ```
+
+Two of the 267 are the broker-isolation integration tests; they skip unless a Valkey/Redis
+is reachable (§9.6).
 
 ## 9.1 Principles
 
@@ -54,7 +57,24 @@ is also reused by `scripts/seed_demo.py`.
 | `test_pipeline.py` | DB | full Standard ASM scan inline (scope enforcement at sensor level, inventory, scanner + rule findings, risk, baseline), second scan diff, scope/duplicate guards, optional vs required stage failures, passive profile never runs active sensors, global concurrency across tenants |
 | `test_api_auth.py` | API | login/me/refresh/logout, refresh-token reuse, lockout + generic errors, login rate limit, RBAC, cross-tenant 404s, MFA, password reset, internal-domain emails, API tokens, security headers |
 | `test_api_workflows.py` | API | scope check endpoint, the full analyst workflow, all report types, notifications (baseline suppressed, signed webhook, Wazuh file), syslog format, write-only credentials |
+| `test_review_fixes.py` | DB/API | the manual-test-report fixes of chapter 11.6 (audit chain seq, suspend guards, confirmations, sorting, …) |
 | `frontend/src/test/pages.test.tsx` | UI | every page renders with realistic data; asset tabs; authorization log |
+
+Added with the 2026-09-19 audit remediation and the work that followed (chapters 11.9–11.10);
+each of these is the regression test for a defect that reached a real environment:
+
+| File | Kind | Guards |
+|---|---|---|
+| `tests/sensors/test_audit_fixes.py` | unit | job claims (a redelivered job runs once), per-pool HKDF keys, result MAC, anchored ZAP origin regex, the exclusive-daemon lease, credentials never in logs, egress filter on derived destinations |
+| `tests/backend/test_audit_fixes.py` | DB/API | the advisory lock under concurrent starts, suspended tenant/inactive organization cancels the scan, an incomplete run never resolves findings, results rejected unless they answer the stage's persisted job, verification enforced on scope that already existed, a viewer's API token cannot enrol the owner's MFA |
+| `tests/integration/test_broker_isolation.py` | integration | real Celery workers on a real Valkey with the compose ACL: a sensor worker cannot publish core tasks, read another pool's queue, or use the platform's account. **Needs a broker** (§9.6) |
+| `tests/sensors/test_shodan.py` | unit | host-lookup parsing from a recorded response, the historical flag, coverage limited to its own tag, key errors that never carry the URL |
+| `tests/backend/test_shodan_pipeline.py` | DB | historical results add assets without refreshing `last_seen` or reviving anything; its CVEs land as `unverified` and stay out of risk |
+| `tests/backend/test_platform_email.py` | DB/API | platform SMTP settings override `ASM_SMTP_*`, the password is encrypted and write-only, per-user alerts go to the login address only |
+| `tests/backend/test_scan_auth_secret.py` | DB | the Start-scan cookie is encrypted per scan, reaches only the DAST engines, and is erased when the scan ends or is cancelled |
+| `tests/backend/test_scope_wildcards.py` | unit/API | `*.example.com` expands to the domain with subdomains, widens an existing entry instead of colliding, and `a.*.example.com` / `*example.com` / a wildcard on a public suffix are refused |
+| `tests/backend/test_engine_disclosure.py` | API | **no engine or upstream project name in any response** (scans, profiles, capabilities, findings, assets, observations), opaque tokens round-trip through the profile editor, and every mapped error message is advice without a tool name |
+| `tests/sensors/test_identity.py` | unit | no product header unless `ASM_SCANNER_IDENTITY` is set, neutral user agent, CRLF refused in either |
 
 ## 9.4 Writing tests
 
@@ -69,6 +89,76 @@ is also reused by `scripts/seed_demo.py`.
 
 ## 9.5 CI
 
-`.github/workflows/ci.yml`: `backend` (PostgreSQL 16 service, ruff, pytest), `frontend`
-(npm ci, typecheck, tests, build), `deployment` (compose validation, build all images,
-print scanner tool versions).
+`.github/workflows/ci.yml`: `backend` (PostgreSQL 16 service, a disposable Valkey 8 for the
+broker test, ruff, pytest), `frontend` (npm ci, typecheck, tests, build), `deployment`
+(compose validation, build all images, print scanner tool versions).
+
+## 9.6 The broker-isolation test
+
+`tests/integration/test_broker_isolation.py` is the only test needing a service beyond
+PostgreSQL, because the thing it proves — that a compromised sensor worker cannot step
+outside its pool — lives in the Valkey ACL, not in our code. It reads the ACL rules out of
+`docker-compose.yml`, applies them to a **disposable** server (database 0 is flushed), and
+runs real Celery workers against it.
+
+```bash
+docker run -d --name valkey -p 56379:6379 valkey/valkey:8-alpine valkey-server --requirepass secret
+ASM_TEST_BROKER_ADMIN_URL=redis://:secret@127.0.0.1:56379/0 pytest tests/integration -q
+```
+
+Without `ASM_TEST_BROKER_ADMIN_URL` both tests skip. If you change the ACL in
+`docker-compose.yml`, run this — the rules are exact (`PSUBSCRIBE` needs a literal channel
+match, so a pidbox pattern with a trailing `*` fails), and a denial surfaces as a generic
+`ResponseError`.
+
+## 9.7 What the suites cannot tell you
+
+The fixtures are recorded output, so every test passes against a machine with no scanner
+binaries, no broker, no ZAP, no SpiderFoot and no API keys. That is deliberate, and it means
+the suite says nothing about: real tool versions and their flags, ZAP and SpiderFoot API
+paths, whether Nuclei's templates downloaded, delivery to a real SMTP/Wazuh/Slack endpoint,
+PDF rendering, image builds and container start-up, or behaviour at scale. Those belong to
+the manual pass in §9.8 and the "Not verified" column of chapter 11.4 — read it before
+claiming a release is tested.
+
+## 9.8 The manual pass
+
+Run on a deployed stack (`docker compose up -d`, DAST and enrichment profiles included),
+against a domain you own and have authorized. Ordered so a failure stops you early. Anything
+already covered by the suites is left out on purpose.
+
+**A. The stack comes up**
+1. `docker compose build` then `up -d`; every container healthy.
+2. `docker compose run --rm asm-scanner versions` — each engine prints a version. A missing
+   binary here is what "This capability is not installed in the scanner deployed here"
+   means later.
+3. Scanner start-up downloads the detection templates (~1 GB). Confirm it finished, or the
+   detection stage will report "Detection content is not installed yet."
+4. Sign in; `/settings` → **Email delivery** → save the mail server → **Send test email**.
+
+**B. First scan**
+5. Add scope both ways — `example.com` and `*.example.com` — and verify ownership (DNS TXT)
+   or approve as platform admin.
+6. Run **Passive Discovery**, then **Standard ASM**. Watch the Pipeline: every stage should
+   carry a distinct capability name, and any failure should read as advice, not as tool
+   output. Any raw tool text here is a missing mapping in `app/scans/messages.py`.
+7. Compare observations against what you know of the domain; note anything the fixtures do
+   not predict (this is how adapter bugs at real tool versions surface).
+8. Open the browser network tab on Scans, Findings and Scan profiles: no engine or project
+   name in any response. A leak here is a bug in `scans/engines.py` — add the case to
+   `test_engine_disclosure.py`.
+
+**C. The new surfaces**
+9. Integrations → add the **Shodan** key → **Test** → run a scan with an IP in scope →
+   confirm the exposure stage produces observations, and that its CVEs appear in the
+   **unverified** findings view only, not in risk.
+10. Start scan → the DAST profile → paste a session **Cookie** → confirm the crawl reaches
+    authenticated pages, and that `scans.auth_secret_encrypted` is NULL once it ends.
+11. Account → personal alerts → trigger a high-severity change → mail arrives at the login
+    address.
+12. Timings: record each stage's duration. The budgets in §11.10 were set from one report;
+    the second data point is yours.
+
+**D. Delivery**
+13. Wazuh: point a test manager at the syslog channel, validate with `wazuh-logtest`.
+14. Generate each report type, including PDF (WeasyPrint only exists inside the image).

@@ -33,6 +33,11 @@ entry in `TENANT_TABLES`.
 See [../SENSORS.md](../SENSORS.md#adding-a-scanner). Then use it in a profile (built-in:
 `BUILTIN_PROFILES` in `app/scans/profiles.py`; the next `bootstrap()` refreshes built-ins).
 
+Two things are easy to forget and both are caught by `tests/backend/test_engine_disclosure.py`:
+give the adapter a `display_name` that distinguishes it from the other engines on its stage
+(it is what the user reads on the Pipeline — see chapter 4.11), and add a `_KNOWN` mapping in
+`app/scans/messages.py` for each way the tool reports failure in its own words.
+
 ## Add a new stage type
 
 1. `StageType` in `workers/asm_sensors/base.py`.

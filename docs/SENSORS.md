@@ -22,8 +22,18 @@ platform or its database.
 | `zap_spider` | web crawling (+ passive scanning) | **active** (optional) | OWASP ZAP daemon (spider / AJAX spider / passive scanner) over REST | finding coverage for passive alerts on the crawled endpoints |
 | `zap_active` | vulnerability detection | **active** (optional) | OWASP ZAP daemon (active scanner) over REST | finding coverage for active-scan alerts on the scanned endpoints |
 
-User-facing labels come from the stage (e.g. "Web service fingerprinting"); engine names are
-implementation details shown only in advanced profile views.
+User-facing labels come from the adapter's `display_name`, which is the **capability**
+("Certificate transparency", "Deep subdomain enumeration", "Web service discovery").
+Engine names never leave the backend: the API identifies an engine by an opaque
+per-deployment token and labels everything else, and stage errors are rewritten as advice
+(developer handbook ADR-022, chapter 4.11). Two consequences when you add an adapter:
+
+- `display_name` is product copy. It is what a customer reads on the Pipeline, so it must
+  distinguish this engine from the others on the same stage — otherwise two stages look like
+  one stage listed twice.
+- Raise `ConfigurationError("<capability> is not enabled in this deployment")` rather than
+  letting an exception escape, and add a mapping to `backend/app/scans/messages.py` for any
+  failure the tool reports in its own words.
 
 ## Adding a scanner
 
@@ -96,6 +106,10 @@ class MyToolAdapter(ScannerAdapter):
   `ctx.coordinator.lease(...)` and left clean for the next job.
 - Credentials arrive decrypted in `ctx.credentials` only for providers listed in
   `credential_providers`; write them to files with `0600` inside `ctx.workdir` and delete them.
+- HTTP requests take their headers from `identity.user_agent(ctx.settings)` and
+  `identity.identity_header(ctx.settings)` — never a hardcoded user agent or product header.
+- Set `historical=True` on the result if the data describes what a third party saw, not what
+  this run saw; the platform then refuses to let it refresh, revive or close anything.
 
 ## Tool notes
 

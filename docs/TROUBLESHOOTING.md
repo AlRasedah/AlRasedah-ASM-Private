@@ -171,7 +171,27 @@ Set `ASM_ZAP_URL=http://zap:8090` and a random `ASM_ZAP_API_KEY` in `.env` (the 
 service starts with that same key). Targets must be in scope with active scanning
 permitted.
 
-### 14. Certificate/KEV/EPSS intel not updating (air-gapped)
+### 14. A stage failed and the message doesn't name a tool
+
+By design: the interface names capabilities, not engines, and stage errors are rewritten as
+advice (developer handbook ADR-022). The raw output is in the sensor log —
+`docker compose logs asm-scanner` — keyed by the stage id that the message came from. The
+mapping back, for operators:
+
+| What the user sees | What actually happened | Do |
+|---|---|---|
+| "Detection content is not installed yet. It downloads when the scanner starts (about 1 GB)…" | Nuclei has no templates | Give the scanner internet access on start-up (the entrypoint runs `-update-templates` into `ASM_NUCLEI_TEMPLATES_DIR`), or mount a populated templates directory; then rescan |
+| "This capability is not installed in the scanner deployed here." | the engine's binary is missing from the image | `docker compose run --rm asm-scanner versions`; rebuild the scanner image |
+| "The web application scanner is not enabled in this deployment." | `ASM_ZAP_URL`/`ASM_ZAP_API_KEY` unset, or the ZAP container is down | issue 13 above |
+| "Open-source intelligence enrichment is not enabled in this deployment." | `ASM_SPIDERFOOT_URL` unset or that container is down | `docker compose --profile enrichment up -d` |
+| "No API key is stored for this data source…" / "…was rejected" | a tenant data-source credential is missing or invalid | Integrations → Data-source API keys → **Test** |
+| "A data source did not answer, so its results are incomplete." | an upstream HTTP error (crt.sh is the usual one) | usually transient; check egress and rescan |
+| "This stage ran out of time before it finished…" | the stage hit its budget | raise it in a custom profile, or narrow the scope |
+| "<Capability> did not finish successfully." | no mapping for this failure | read `asm-scanner` logs, then add the case to `backend/app/scans/messages.py` |
+
+Errors stored by scans that ran **before** this change keep their original raw text.
+
+### 15. Certificate/KEV/EPSS intel not updating (air-gapped)
 Point the feeds at mirrors (`ASM_INTEL_*_URL`) or disable auto-refresh
 (`ASM_INTEL_REFRESH_ENABLED=false`) and import offline — see DEPLOYMENT.md §6.
 
