@@ -35,7 +35,10 @@ class PlatformSetting(Timestamps, Base):
     # {"host", "port", "username", "sender", "starttls", "ssl"} — no secret here.
     smtp: Mapped[dict[str, Any]] = mapped_column(default=dict)
     smtp_password_ciphertext: Mapped[str | None] = mapped_column(Text)
-    updated_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    # Website screenshot policy (app/screenshots/service.py DEFAULT_POLICY): availability,
+    # deployment-wide concurrency, per-tenant quotas, retention and capture limits.
+    screenshots: Mapped[dict[str, Any]] = mapped_column(default=dict)
+    updated_by:Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
 
 
 class UserAlertPreference(UUIDPk, TenantScoped, Timestamps, Base):

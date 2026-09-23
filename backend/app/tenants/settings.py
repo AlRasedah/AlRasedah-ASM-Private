@@ -45,6 +45,12 @@ DEFAULT_TENANT_SETTINGS: dict[str, Any] = {
     "scanning": {
         "require_scope_verification": False,
     },
+    # Website screenshots (docs/SCREENSHOTS.md). Off until a tenant administrator turns them
+    # on, and only usable once the platform has enabled the capability.
+    "screenshots": {
+        "enabled": False,
+        "cadence": "manual",  # manual | weekly
+    },
     "detection_rules": {
         "risky_ports": True,
         "management_interfaces": True,

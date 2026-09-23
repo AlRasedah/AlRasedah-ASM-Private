@@ -179,6 +179,7 @@
     <a href="#changes">11. Changes &amp; alerts</a>
     <a href="#dast">12. Web app testing (DAST)</a>
     <a href="#threats">12a. Threat Center</a>
+    <a href="#screenshots">12b. Website screenshots</a>
     <div class="toc-group">Reporting &amp; config</div>
     <a href="#reports">13. Reports</a>
     <a href="#integrations">14. Integrations &amp; notifications</a>
@@ -548,6 +549,22 @@
       </ul>
       <p>Platform administrators manage advisories and the list of approved checks under <b>Threat Center → Manage advisories</b>:
       drafts are invisible to tenants until published, and archiving keeps each tenant's history.</p>
+    </section>
+
+    <section id="screenshots">
+      <h2>12b. Website screenshots<a class="anchor" href="#screenshots">#</a></h2>
+      <p>A screenshot shows what a web endpoint looked like to an anonymous visitor, so you can recognise an application
+      — a VPN portal, a login page, a default install — without opening it. It is a picture, <em>not</em> evidence of a vulnerability.</p>
+      <ul>
+        <li>Open a <b>web endpoint</b> in the inventory and choose the <b>Screenshots</b> tab to see the latest image, when it was
+        taken, the page title and the address it loaded, plus the last ten attempts.</li>
+        <li><b>Capture screenshot</b> (analysts and administrators) visits the page once from your scanner. It needs the same
+        active-scanning authorization in scope as web fingerprinting. States: waiting, capturing, succeeded, failed, blocked
+        (not allowed by scope or policy) and cancelled. A failed attempt never removes the previous image.</li>
+        <li>Tenant administrators turn screenshots on under <b>Settings → Website screenshots</b> and choose on-request or weekly.
+        If your platform has not enabled the capability yet, the page says so.</li>
+        <li>Only the latest captures per endpoint are kept (two by default), within your tenant's storage quota.</li>
+      </ul>
     </section>
 
     <section id="reports">

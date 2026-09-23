@@ -110,6 +110,13 @@ Canonical values (`assets.normalized_value`):
 | `threat_matches` | tenant | unique `(tenant, advisory, asset)`; `basis` (product/finding/third_party), `match_status`, `evidence`, `finding_ids[]` / `unverified_finding_ids[]` (references), `check_outcome` + `check_detail` + `checked_at` + `last_check_run_id`, derived `assessment`, `remediation_status` + `assigned_to` + `remediation_note` |
 | `threat_check_runs` | tenant | one per organization per "Check selected assets": `scan_id`, `asset_ids[]`, `check_key`, `status`, `summary`. Partial unique index: one queued/running run per `(tenant, organization, advisory)` |
 
+### Website screenshots
+
+| Table | Key columns |
+|---|---|
+| `screenshot_captures` | tenant-owned; one row per attempt: `organization_id`, `asset_id`, `url`, `trigger` (manual/scheduled), `status` (queued/running/succeeded/failed/blocked/cancelled), sanitized `error`; job binding `task_id` + `worker_pool` + `dispatched_at`; on success `storage_key` (derived by the platform: `tenants/<tenant>/screenshots/<id>.png`), `size`, `sha256`, `width`, `height`, `captured_at`, `final_url` (no query string), `page_title`, `http_status` |
+| `platform_settings.screenshots` | JSONB policy (see `app/screenshots/service.py` `DEFAULT_POLICY`): `available`, `max_concurrent`, per-tenant daily/queued limits, `retention_per_endpoint`, `storage_quota_mb`, capture limits. System sessions only |
+
 ## 5.3 Writing a migration
 
 1. Change or add models under `app/models/` and import new modules in `app/models/__init__.py`.

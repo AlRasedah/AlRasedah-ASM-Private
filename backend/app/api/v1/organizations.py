@@ -98,6 +98,10 @@ def delete_organization(org_id: uuid.UUID, _: Principal = Depends(require(Permis
                         db: Session = Depends(get_db)) -> Message:
     org = _get(db, org_id)
     audit.record(db, Action.ORG_DELETED, object_type="organization", object_id=org.id, previous={"name": org.name})
+    # Screenshot records cascade with the organization; their stored images must go too.
+    from app.screenshots.service import delete_organization_objects
+
+    delete_organization_objects(db, org.id)
     db.delete(org)
     db.commit()
     return Message(message="Organization and all of its data were deleted")

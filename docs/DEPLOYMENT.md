@@ -149,6 +149,56 @@ Users switch on alerts to their own login address under **Your account → Email
   complete header line (`X-Audit: ticket-4711`). `ASM_SCANNER_USER_AGENT` overrides the user
   agent. Profiles can still switch the header off per stage (`identify_scanner`).
 
+## 5b. Website screenshots (optional)
+
+Screenshots run in each tenant's **own scanner** (the pool's scanner service) with a pinned
+Chromium. Nothing is offered to tenants until a platform administrator enables it in the UI,
+and that should happen only after the self-test below passes. Product behavior, limits and
+measurements: [SCREENSHOTS.md](SCREENSHOTS.md).
+
+1. **Host prerequisite — unprivileged user namespaces.** Chromium's sandbox needs them.
+   Debian-family kernels: `sysctl kernel.unprivileged_userns_clone=1`. Ubuntu 23.10+: also
+   `kernel.apparmor_restrict_unprivileged_userns=0`, or an AppArmor profile allowing
+   `userns` for `/usr/lib/chromium/chromium`.
+2. **Seccomp profile.** Docker's default profile refuses the sandbox's namespace syscalls to a
+   container without `CAP_SYS_ADMIN` (the scanner has no capabilities at all). Derive a
+   profile from *your engine's* default that adds exactly `clone`, `unshare`, `setns` and
+   `chroot`:
+   ```bash
+   curl -fsSLo default.json https://raw.githubusercontent.com/moby/moby/v<your docker version>/profiles/seccomp/default.json
+   python scripts/make_browser_seccomp.py default.json > docker/scanner/seccomp-browser.json
+   ```
+   Do **not** use `seccomp=unconfined`, and never add `--no-sandbox` anywhere: the adapter
+   refuses to run the browser without its sandbox.
+3. **Pin and build.** Choose the exact `chromium` package version for the scanner's Alpine
+   base (`docker run --rm python:3.12-alpine sh -c 'apk update >/dev/null && apk policy chromium'`)
+   and build with the override file; the build fails without a version:
+   ```bash
+   export ASM_CHROMIUM_VERSION=<exact version>
+   docker compose -f docker-compose.yml -f docker-compose.screenshots.yml build asm-scanner
+   docker compose -f docker-compose.yml -f docker-compose.screenshots.yml up -d asm-scanner
+   ```
+   Repeat the override's block for every per-tenant scanner service (`asm-scanner-<pool>`).
+   The override adds the seccomp profile (`no-new-privileges` stays), 256 MB `/dev/shm` and
+   a PID limit; the base file's 2 CPU / 2 GB cap still applies.
+4. **Self-test** (no network needed): prints JSON and exits non-zero on failure.
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.screenshots.yml run --rm asm-scanner browser-selftest
+   ```
+   `"ok": true` means the pinned browser started **with its sandbox** and produced an image.
+   "sandbox is unavailable" means steps 1–2 are not in effect.
+5. **Measure** on the deployed image (optional, recommended before raising limits):
+   `... run --rm asm-scanner python /opt/asm/measure_screenshots.py --runs 10`. It also lists
+   every external destination the browser contacted.
+6. **Enable**: Settings → *Website screenshots — platform* → tick "The scanners have the
+   screenshot browser". Keep "Active captures, whole deployment" at 1 on small hosts; each
+   concurrent capture needs about 0.6 GB on its scanner (see the measurements).
+
+Screenshots use the existing object storage (`asm-storage` volume or S3) under
+`tenants/<id>/screenshots/`, and the existing egress firewall recommendation applies to the
+scanner unchanged. To withdraw the feature, untick it; images are removed by retention or
+with the organization.
+
 ## 6. In-Kingdom / air-gapped operation
 
 Nothing in the platform requires a foreign cloud service. External calls are limited to:
@@ -221,6 +271,24 @@ deployment where every tenant is the same organization can set
 
 Tenant-managed **file exports** now write to `ASM_INTEGRATION_EXPORT_DIR/<tenant-id>/`;
 point each collector's `localfile` at its tenant's directory.
+
+**Upgrading to the Threat Center / screenshots / exposure map release (migrations 0008,
+0009).** Take the §7 backup, then the usual three commands: `asm-migrate` applies both
+migrations and `bootstrap` adds the internal Threat Center check profile. Nothing changes for
+existing scans, profiles, findings, integrations or notification preferences, and no new
+environment variable is required. New and visible afterwards:
+- **Threat Center** in the sidebar, empty until a platform administrator publishes an
+  advisory (Threat Center → Manage advisories). Publishing matches every tenant's inventory
+  in the background and may send one "advisory may affect assets" alert per organization.
+- **Exposure map** in the sidebar and on asset pages; read-only, no configuration.
+- **Website screenshots** stay **off** — see §5b; tenants see why until you enable them.
+- New beat tasks: `asm.core.threat_evaluate` (daily 04:40 UTC), `asm.core.screenshot_dispatch`
+  (every minute), `asm.core.screenshot_schedule` (daily 02:30 UTC). They run in the existing
+  `asm-scheduler`/`asm-worker`; `asm-ingest` now also accepts screenshot results.
+
+Rollback: `alembic downgrade 0007` removes the new tables (catalog, assessments, capture
+records — export first if needed); stored screenshot images are not deleted by a downgrade
+(`tenants/*/screenshots/` in the object store).
 
 **Upgrading within the current release line** (capability naming, idle sessions): nothing to
 do beyond the three commands. No migration was added, and every new setting has a default —

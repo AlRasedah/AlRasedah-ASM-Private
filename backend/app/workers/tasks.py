@@ -240,6 +240,32 @@ def threat_evaluate(advisory_id: str = "") -> dict:
     return stats
 
 
+@celery_app.task(shared=False, name="asm.core.screenshot_dispatch")
+def screenshot_dispatch() -> int:
+    """Start queued website captures while the deployment-wide limit allows (also the watchdog)."""
+    from app.screenshots.jobs import dispatch
+
+    return dispatch()
+
+
+@celery_app.task(shared=False, name="asm.core.screenshot_schedule")
+def screenshot_schedule() -> int:
+    """Weekly cadence: queue captures for endpoints not captured in the last seven days."""
+    from app.models import Tenant
+    from app.screenshots.service import schedule_weekly
+
+    queued = 0
+    for tid in maintenance.active_tenants():
+        with new_session(tid) as db:
+            tenant = db.get(Tenant, tid)
+            if tenant is not None:
+                queued += schedule_weekly(db, tenant)
+                db.commit()
+    if queued:
+        screenshot_dispatch.delay()
+    return queued
+
+
 @celery_app.task(shared=False, name="asm.core.generate_report")
 def generate_report(tenant_id: str, report_id: str) -> None:
     from app.reporting.service import run_report

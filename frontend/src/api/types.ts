@@ -595,3 +595,48 @@ export interface ApprovedCheck {
   enabled: boolean;
   updated_at: string;
 }
+
+// -------------------------------------------------------------- Website screenshots
+export interface ScreenshotStatus {
+  available: boolean;
+  enabled: boolean;
+  cadence: string | null;
+  reason: string | null;
+  usage: { stored_bytes: number; captures_today: number; active: number };
+  limits: { per_tenant_daily: number; per_tenant_queued: number; retention_per_endpoint: number; storage_quota_mb: number;
+    timeout_seconds: number; viewport_width: number; viewport_height: number };
+}
+
+export interface ScreenshotCapture {
+  id: string;
+  asset_id: string;
+  status: "queued" | "running" | "succeeded" | "failed" | "blocked" | "cancelled";
+  trigger: string;
+  error: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  captured_at: string | null;
+  final_url: string | null;
+  page_title: string | null;
+  http_status: number | null;
+  size: number | null;
+  width: number | null;
+  height: number | null;
+  sha256: string | null;
+  has_image: boolean;
+}
+
+export interface ScreenshotPolicy {
+  available: boolean;
+  max_concurrent: number;
+  per_tenant_daily: number;
+  per_tenant_queued: number;
+  retention_per_endpoint: number;
+  storage_quota_mb: number;
+  failed_retention_days: number;
+  timeout_seconds: number;
+  viewport_width: number;
+  viewport_height: number;
+  max_image_kb: number;
+}

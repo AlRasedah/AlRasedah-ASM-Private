@@ -7,7 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { me, mockApi } from "./fixtures";
+import { capture, me, mockApi, screenshotStatus as shotStatus } from "./fixtures";
+const screenshotStatus = () => structuredClone(shotStatus);
 import { api, ApiError } from "@/api/client";
 
 vi.mock("@/api/client", async () => {
@@ -138,3 +139,88 @@ describe("Threat Center", () => {
   });
 });
 
+
+describe("Website screenshots", () => {
+  const endpoint = () => ({ ...(mockApi("/assets/a3") as object), id: "a3", asset_type: "http_endpoint", value: "https://vpn.example.com:10443" });
+  const listing = (over: Record<string, unknown>) => ({ ...(mockApi("/assets/a3/screenshots") as object), ...over });
+
+  beforeEach(() => {
+    globalThis.URL.createObjectURL = vi.fn(() => "blob:shot");
+    globalThis.URL.revokeObjectURL = vi.fn();
+  });
+
+  async function openTab() {
+    renderAt("/assets/a3");
+    fireEvent.click(await screen.findByRole("tab", { name: "Screenshots" }));
+  }
+
+  it("shows the latest image, fetched through the API, and lets an analyst capture", async () => {
+    const calls = serve((p, o) => {
+      if (p === "/auth/me") return as("security_analyst", ANALYST);
+      if (p === "/assets/a3") return endpoint();
+      if (p.endsWith("/image")) return new Blob(["png"], { type: "image/png" });
+      if (p === "/assets/a3/screenshots" && o?.method === "POST") return { id: "sc2", status: "queued" };
+      return undefined;
+    });
+    await openTab();
+    const img = await screen.findByRole("img", { name: /Screenshot of https:\/\/vpn.example.com:10443\/remote\/login/ });
+    expect(img.getAttribute("src")).toBe("blob:shot");
+    expect(screen.getByText(/not evidence of a vulnerability/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Capture screenshot/ }));
+    await waitFor(() => expect(calls.some((c) => c.path === "/assets/a3/screenshots" && c.method === "POST")).toBe(true));
+    // the image request goes to the asset-scoped endpoint, never a raw storage key
+    expect(calls.some((c) => c.path === "/assets/a3/screenshots/sc1/image")).toBe(true);
+  });
+
+  it("a viewer can look but not capture or delete", async () => {
+    serve((p) => (p === "/auth/me" ? as("viewer", VIEWER) : p === "/assets/a3" ? endpoint()
+      : p.endsWith("/image") ? new Blob(["png"]) : undefined));
+    await openTab();
+    await screen.findByText("Latest screenshot");
+    expect(screen.queryByRole("button", { name: /Capture screenshot/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete screenshot" })).toBeNull();
+  });
+
+  it("explains a disabled feature instead of offering the button", async () => {
+    const off = { ...screenshotStatus(), available: false, enabled: false,
+      reason: "Website screenshots are not enabled in this deployment. A platform administrator enables them in Settings once the scanners have the screenshot browser installed." };
+    serve((p) => (p === "/auth/me" ? as("security_analyst", ANALYST) : p === "/assets/a3" ? endpoint()
+      : p === "/assets/a3/screenshots" ? { status: off, latest: null, captures: [] } : undefined));
+    await openTab();
+    expect(await screen.findByText(/not enabled in this deployment/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Capture screenshot/ })).toBeNull();
+  });
+
+  it("queued, running, failed and blocked captures read as such, and a failure keeps the old image", async () => {
+    for (const [state, text] of [["queued", /Waiting for a free capture slot/], ["running", /Capturing the page/]] as const) {
+      serve((p) => (p === "/assets/a3" ? endpoint() : p.endsWith("/image") ? new Blob(["png"])
+        : p === "/assets/a3/screenshots" ? listing({ captures: [capture("sc2", state), capture("sc1", "succeeded")] }) : undefined));
+      await openTab();
+      expect(await screen.findByText(text)).toBeTruthy();
+      expect((screen.getByRole("button", { name: /Capture in progress/ }) as HTMLButtonElement).disabled).toBe(true);
+      cleanup();
+    }
+    serve((p) => (p === "/assets/a3" ? endpoint() : p.endsWith("/image") ? new Blob(["png"])
+      : p === "/assets/a3/screenshots" ? listing({ captures: [
+        capture("sc3", "blocked", { error: "not authorized by scope: hostname excluded from scope" }), capture("sc1", "succeeded")] })
+      : undefined));
+    await openTab();
+    expect(await screen.findByText(/was not allowed/)).toBeTruthy();
+    expect(screen.getByText(/The previous screenshot is still shown/)).toBeTruthy();
+    expect(await screen.findByRole("img")).toBeTruthy();
+  });
+
+  it("settings: tenant card explains an unavailable platform; the policy card is platform-only", async () => {
+    serve((p) => (p === "/auth/me" ? as("tenant_admin", [...ANALYST, "settings:write"])
+      : p === "/screenshots/status" ? { ...screenshotStatus(), available: false, reason: "Website screenshots are not enabled in this deployment." }
+      : undefined));
+    renderAt("/settings");
+    expect(await screen.findByText("Website screenshots are not enabled in this deployment.")).toBeTruthy();
+    expect((screen.getByRole("checkbox", { name: /Allow screenshots/ }) as HTMLInputElement).disabled).toBe(true);
+    expect(screen.queryByText("Website screenshots — platform")).toBeNull();
+    cleanup();
+    serve(() => undefined); // the default session is a platform administrator
+    renderAt("/settings");
+    expect(await screen.findByText("Website screenshots — platform")).toBeTruthy();
+  });
+});

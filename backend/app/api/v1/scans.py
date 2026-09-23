@@ -165,7 +165,8 @@ def engines(_: Principal = Depends(require(Permission.SCANS_READ))) -> list:
                       stage_types=d["stage_types"], target_kinds=d["target_kinds"], active=d["active"],
                       credential_providers=d["credential_providers"],
                       config_schema=engine_identity.sanitize_schema(d["config_schema"], d["display_name"]))
-            for d in describe_adapters()]
+            # Capabilities that are not scan stages (website screenshots) cannot go in a profile.
+            for d in describe_adapters() if d["stage_types"]]
 
 
 @router.get("/scan-profiles/{profile_id}", response_model=ProfileOut, tags=["scan-profiles"])

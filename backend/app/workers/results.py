@@ -30,6 +30,8 @@ from app.core.config import get_settings
 from app.db.session import new_session
 from app.models import Scan, ScanStage
 from app.scans import orchestrator
+from app.screenshots import service as screenshots
+from app.screenshots.service import ADAPTER as SCREENSHOT_ADAPTER
 from app.workers.celery_app import transport_options
 
 log = logging.getLogger(__name__)
@@ -53,12 +55,20 @@ results_app.conf.update(
 
 
 def receive_result(envelope: object) -> uuid.UUID | None:
-    """Verify and ingest one submitted result. Returns the scan to advance, or None if rejected."""
+    """Verify and ingest one submitted result. Returns the scan to advance, or None if rejected.
+
+    A website-screenshot result is bound to its capture record instead of a scan stage
+    (``app.screenshots.service.binding_error``) and never advances a scan. The two
+    bindings are disjoint: a result naming the other kind finds no matching row."""
     try:
         env, result = open_result(envelope, crypto.pool_transport_key)
         tenant_id, scan_id, stage_id = uuid.UUID(env.tenant_id), uuid.UUID(env.scan_id), uuid.UUID(env.stage_id)
     except (ResultRejected, ValueError) as exc:
         log.warning("rejected sensor result: %s", exc)
+        return None
+    if result.adapter == SCREENSHOT_ADAPTER:
+        if screenshots.receive_result(env, result):
+            _send_core("asm.core.screenshot_dispatch")  # its slot is free now
         return None
     with new_session(tenant_id) as db:
         scan = db.get(Scan, scan_id, with_for_update=True)  # serializes with advance_scan
@@ -71,6 +81,17 @@ def receive_result(envelope: object) -> uuid.UUID | None:
         orchestrator.complete_stage(db, scan, stage, result)
         db.commit()
     return scan_id
+
+
+def _send_core(name: str, *args: str) -> None:
+    if s.sensor_mode == "inline":
+        return
+    from app.workers.celery_app import celery_app
+
+    try:
+        celery_app.send_task(name, args=list(args), queue="core")
+    except Exception:  # noqa: BLE001 - the periodic task picks it up within a minute
+        log.warning("could not queue %s", name)
 
 
 @results_app.task(name=RESULT_TASK_NAME, shared=False)

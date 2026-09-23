@@ -1,0 +1,31 @@
+# Website screenshots (docs/SCREENSHOTS.md, DEPLOYMENT.md §5b) — an override for the
+# scanner service(s). Nothing here changes the other services.
+#
+#   ASM_CHROMIUM_VERSION=<exact apk version> \
+#   docker compose -f docker-compose.yml -f docker-compose.screenshots.yml up -d --build asm-scanner
+#   docker compose -f docker-compose.yml -f docker-compose.screenshots.yml run --rm asm-scanner browser-selftest
+#
+# Then, and only when the self-test prints "ok": true, a platform administrator turns
+# screenshots on under Settings -> Website screenshots. Repeat the service block for
+# every per-tenant scanner service (asm-scanner-<pool>) you run.
+services:
+  asm-scanner:
+    build:
+      args:
+        INSTALL_SCREENSHOT_BROWSER: "true"
+        CHROMIUM_VERSION: ${ASM_CHROMIUM_VERSION:?set ASM_CHROMIUM_VERSION to the exact chromium package version to pin}
+    # The browser keeps its sandbox. Chromium's sandbox needs unprivileged user
+    # namespaces, which Docker's default seccomp profile refuses to a container without
+    # CAP_SYS_ADMIN; this profile is Docker's default plus exactly those syscalls
+    # (generate it with scripts/make_browser_seccomp.py). Compose appends this to the base
+    # file's security_opt, so no-new-privileges stays on.
+    security_opt:
+      - "seccomp=./docker/scanner/seccomp-browser.json"
+    # Chromium uses /dev/shm; the default 64 MB is too small for a 1280x800 page.
+    shm_size: "256m"
+    # The base file already caps the scanner at 2 CPUs / 2 GB and mounts /tmp and
+    # /data/home as tmpfs (the browser profile lives there and dies with the job).
+    deploy:
+      resources:
+        limits:
+          pids: 1024

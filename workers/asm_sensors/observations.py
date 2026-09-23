@@ -243,6 +243,29 @@ class RawArtifact(_Model):
     data: str
 
 
+# A capture travels base64-encoded inside the result envelope, so the broker message
+# is bounded by this (the platform's configured image limit is lower still).
+SCREENSHOT_MAX_BYTES = 5 * 1024 * 1024
+
+
+class ScreenshotImage(_Model):
+    """One website capture (the ``screenshot`` adapter). Never evidence of a vulnerability."""
+
+    url: str = Field(max_length=2048)
+    # Where the page ended up, without query string or fragment (they can carry tokens).
+    final_url: str | None = Field(default=None, max_length=2048)
+    redirects: list[str] = Field(default_factory=list, max_length=10)
+    status_code: int | None = None
+    title: str | None = Field(default=None, max_length=300)
+    content_type: Literal["image/png"] = "image/png"
+    width: int = Field(ge=1, le=4096)
+    height: int = Field(ge=1, le=4096)
+    size: int = Field(ge=1, le=SCREENSHOT_MAX_BYTES)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    data: str = Field(max_length=(SCREENSHOT_MAX_BYTES * 4) // 3 + 8)  # base64
+    captured_at: datetime
+
+
 class SensorResult(_Model):
     adapter: str
     adapter_version: str | None = None
@@ -260,3 +283,5 @@ class SensorResult(_Model):
     errors: list[str] = Field(default_factory=list)
     stats: dict[str, Any] = Field(default_factory=dict)
     artifacts: list[RawArtifact] = Field(default_factory=list)
+    # At most one capture per result: a screenshot job covers exactly one endpoint.
+    screenshots: list[ScreenshotImage] = Field(default_factory=list, max_length=1)

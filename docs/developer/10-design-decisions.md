@@ -252,3 +252,31 @@ refused without it).
 CPE-based matching against NVD (heavier data, needs a subscription/feed pipeline and still
 misses unfingerprinted assets); running checks automatically on publish (rejected: surprise
 traffic against every tenant).
+
+## ADR-027 Website screenshots: the tenant's scanner, a pinned browser, and a proxy that decides every connection
+**Context**: analysts want to recognise exposed applications at a glance, on limited
+infrastructure, without an always-running browser service, and without opening a way into
+internal networks or across tenants.
+**Decision**: a capture is a sealed sensor job (adapter `screenshot`) for exactly one URL,
+dispatched to the **tenant's own scanner pool** by a platform service — not a scan stage and
+not part of discovery. The scanner image optionally carries the distribution's Chromium,
+pinned to an exact version (the build refuses otherwise). Each capture gets a fresh profile
+and no network of its own: the browser's resolver answers NOTFOUND, UDP is off, and every
+request goes through a per-job proxy that resolves, checks and pins each connection. The
+sandbox stays on; the adapter refuses sandbox-disabling flags and reports a missing sandbox
+as a deployment problem. The deployment-wide concurrency limit (default 1) is a PostgreSQL
+advisory-lock-protected count of running captures, plus a per-pool lease and a stale-browser
+reaper in the scanner. Images are re-validated by the platform (the scanner is untrusted),
+stored under a platform-derived key, served only through an asset-scoped endpoint, and
+retained per endpoint and per tenant quota.
+**Consequences**: no new service, queue, credential or trust boundary; the HTTP fingerprinter
+stays untouched. Operators must provide user namespaces and a derived seccomp profile — the
+price of keeping the sandbox — and verify with `browser-selftest`. Base64 images travel in the
+result envelope, bounded (≤ 5 MB, one per job). Branded Chrome builds make background calls to
+vendor services; the proxy refuses the known ones, and the measurement script lists whatever
+else a given build contacts.
+**Alternatives**: the fingerprinter's headless mode (couples capture to discovery, runtime
+browser download, unsandboxed as root, no per-connection control); a shared screenshot service
+(one compromise would see every tenant's targets and could forge their images); Playwright or
+a CDP client (a large dependency for one screenshot); `--no-sandbox` in a locked-down
+container (rejected by requirement).

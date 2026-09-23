@@ -65,6 +65,9 @@ celery_app.conf.update(
         "snapshot-metrics": {"task": "asm.core.snapshot_metrics", "schedule": crontab(hour=0, minute=5)},
         # Safety net for the Threat Center; normal re-evaluation is incremental (scan end, publish).
         "threat-evaluate": {"task": "asm.core.threat_evaluate", "schedule": crontab(hour=4, minute=40)},
+        # Website screenshots: the dispatcher also fails captures that never report back.
+        "screenshot-dispatch": {"task": "asm.core.screenshot_dispatch", "schedule": 60.0},
+        "screenshot-schedule": {"task": "asm.core.screenshot_schedule", "schedule": crontab(hour=2, minute=30)},
     },
 )
 

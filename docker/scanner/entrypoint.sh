@@ -33,6 +33,16 @@ case "$role" in
   versions)
     for b in subfinder dnsx httpx naabu nuclei; do printf '%s: ' "$b"; "$b" -version 2>&1 | tail -n 1; done
     printf 'amass: '; amass -version 2>&1 | tail -n 1
+    if [ -x "${ASM_BIN_CHROMIUM:-/usr/bin/chromium-browser}" ]; then
+      printf 'screenshot browser: '; "${ASM_BIN_CHROMIUM:-/usr/bin/chromium-browser}" --version 2>&1 | tail -n 1
+    else
+      echo "screenshot browser: not installed"
+    fi
+    ;;
+  browser-selftest)
+    # Website screenshots: can this container start the pinned browser with its sandbox?
+    # Prints JSON and exits non-zero when not. Needs no network.
+    exec python -m asm_sensors.adapters.screenshot
     ;;
   *)
     exec "$role" "$@"

@@ -87,6 +87,16 @@ def evaluate_advisory(advisory_id: uuid.UUID | None) -> None:
     _send("asm.core.threat_evaluate", str(advisory_id) if advisory_id else "")
 
 
+def dispatch_screenshots() -> None:
+    """Start queued website captures (inline: run them now)."""
+    if _inline():
+        from app.screenshots.jobs import dispatch
+
+        dispatch()
+        return
+    _send("asm.core.screenshot_dispatch")
+
+
 def revoke(tasks: list[tuple[str, str]]) -> None:
     """Stop running sensor jobs: ``(task_id, worker_pool)`` pairs, sent on each pool's control channel."""
     if not tasks or _inline():

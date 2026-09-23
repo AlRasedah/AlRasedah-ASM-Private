@@ -5,6 +5,7 @@ import { api } from "@/api/client";
 import { useAuth } from "@/auth/AuthContext";
 import { Card, ErrorBox, Field, Loading, PageHead } from "@/components/ui";
 import { label } from "@/lib/format";
+import { ScreenshotPolicyCard, TenantScreenshotsCard } from "./ScreenshotSettings";
 
 type Settings = Record<string, any>;
 
@@ -68,6 +69,7 @@ export default function SettingsPage() {
   const save = useMutation({
     mutationFn: () => api("/settings", { method: "PUT", body: {
       inactivity: s!.inactivity, risk: s!.risk, scanning: s!.scanning, detection_rules: s!.detection_rules,
+      screenshots: { enabled: !!s!.screenshots?.enabled, cadence: s!.screenshots?.cadence ?? "manual" },
       branding: { name: s!.branding?.name || null, primary_color: s!.branding?.primary_color || null } } }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["settings"] }),
   });
@@ -125,6 +127,7 @@ export default function SettingsPage() {
           </div>
         </Card>
         <EmailDeliveryCard />
+        <ScreenshotPolicyCard />
         <div className="stack">
           <Card title="Built-in detection rules">
             <div className="form">
@@ -135,6 +138,7 @@ export default function SettingsPage() {
               {num("detection_rules", "certificate_expiry_days", "Certificate expiry warning (days)")}
             </div>
           </Card>
+          <TenantScreenshotsCard value={s.screenshots} onChange={(v) => setS({ ...s, screenshots: v })} />
           <Card title="Report branding">
             <div className="form-row">
               <Field label="Brand name"><input value={s.branding?.name ?? ""} onChange={(e) => set("branding", "name", e.target.value)} placeholder="Exteriq ASM" /></Field>

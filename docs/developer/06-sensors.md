@@ -124,6 +124,16 @@ the constraints you applied.** Passive discovery tools declare none.
   its own tag, so it can resolve its own stale reports and nothing else. The key is a tenant
   credential and travels as a query parameter (Shodan accepts nothing else), so errors record
   the status code and never the URL.
+- **screenshot** — not a scan stage (`stage_types` is empty, so profiles cannot contain it and
+  the engines endpoint does not list it); the platform's screenshot service sends exactly one
+  URL per job. It overrides `run()` because the pipeline hooks do not fit one capture:
+  pool lease → reap stale browsers → start `EgressProxy` → preflight redirects through the
+  proxy → Chromium with a fresh profile, no resolver, UDP off, sandbox on
+  (`FORBIDDEN_FLAGS` is a tripwire) → PNG checks → a `ScreenshotImage` on the result
+  (`SensorResult.screenshots`, max one). Outcomes (`stats.outcome`: succeeded, failed,
+  blocked, timeout, unavailable) drive the platform's status. Tests drive it with
+  `tests/sensors/fake_browser.py`, a stand-in that honours the same flags; the real flags were
+  exercised against Chrome 153 (docs/SCREENSHOTS.md, measurements).
 - **spiderfoot** — driven over its web API from a separate container; the URL is deployment
   configuration (not user input, avoiding SSRF); only the `passive` use case is non-active.
   Absent configuration raises `ConfigurationError`, so the user is told it is not enabled.

@@ -150,8 +150,30 @@ export const advisoryAdmin = {
   published: null,
 };
 
+export const screenshotStatus = {
+  available: true, enabled: true, cadence: "manual", reason: null,
+  usage: { stored_bytes: 170000, captures_today: 2, active: 0 },
+  limits: { per_tenant_daily: 50, per_tenant_queued: 10, retention_per_endpoint: 2, storage_quota_mb: 200,
+    timeout_seconds: 20, viewport_width: 1280, viewport_height: 800 },
+};
+
+export const capture = (id: string, status: string, extra: Record<string, unknown> = {}) => ({
+  id, asset_id: "a3", status, trigger: "manual", error: null, created_at: now, started_at: now, finished_at: now,
+  captured_at: status === "succeeded" ? now : null, final_url: status === "succeeded" ? "https://vpn.example.com:10443/remote/login" : null,
+  page_title: status === "succeeded" ? "Fortinet SSL VPN Login" : null, http_status: status === "succeeded" ? 200 : null,
+  size: status === "succeeded" ? 84869 : null, width: 1280, height: 800, sha256: null, has_image: status === "succeeded", ...extra,
+});
+
+export const screenshotPolicy = { available: true, max_concurrent: 1, per_tenant_daily: 50, per_tenant_queued: 10,
+  retention_per_endpoint: 2, storage_quota_mb: 200, failed_retention_days: 30, timeout_seconds: 20, viewport_width: 1280,
+  viewport_height: 800, max_image_kb: 2048 };
+
 export function mockApi(path: string): unknown {
   const routes: [RegExp, unknown][] = [
+    [/^\/screenshots\/status$/, screenshotStatus],
+    [/^\/assets\/[^/]+\/screenshots$/, { status: screenshotStatus, latest: capture("sc1", "succeeded"), captures: [capture("sc1", "succeeded")] }],
+    [/^\/settings\/screenshots$/, { policy: screenshotPolicy, defaults: screenshotPolicy,
+      bounds: { max_concurrent: [1, 8], per_tenant_daily: [1, 5000] } }],
     [/^\/threats$/, page([advisory])],
     [/^\/threats\/[^/]+\/assets$/, page(threatMatches)],
     [/^\/threats\/[^/]+\/checks$/, advisoryDetail.check_runs],

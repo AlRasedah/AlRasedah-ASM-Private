@@ -27,10 +27,11 @@
 | `runner.py` | `execute_job`: build the `ExecutionContext` from job + deployment env, unseal credentials, apply the egress filter, run the adapter in a temp dir, turn every error into a *failed* `SensorResult` (a sensor never crashes the worker). |
 | `coordination.py` | The pool's `Coordinator`: job claims (a redelivered job is ignored) and leases for shared external daemons, so two scans never drive one ZAP instance at the same time. |
 | `logs.py` | Keeps credentials out of the worker's logs: silences routine HTTP request logging (the URL carries Shodan's key) and redacts known secret shapes from any record. |
+| `egress_proxy.py` | The per-job forward proxy a screenshot browser must use: resolves and checks **each** connection (non-public, link-local/metadata even in lab mode, scope exclusions, IPv4 hidden in IPv6, browser-vendor services) and connects to the exact address it checked; bounds connections, bytes and idle time. |
 | `identity.py` | What the scanner looks like on the wire: `user_agent()` (neutral by default) and `identity_header()` (nothing unless `ASM_SCANNER_IDENTITY` is set). Scan traffic must not advertise the product — see ADR-022. |
 | `worker.py` | The Celery app for sensor containers (`celery -A asm_sensors.worker worker -Q scanners.default`); tasks are `shared=False` so a sensor worker knows only its own task. |
 | `adapters/_common.py` | `ObservationSet` (dedup while building observations), `clean_hostname/ip/cidr/asn`, `port_value`. |
-| `adapters/<tool>/` | One package per engine: `amass`, `subfinder`, `crtsh`, `dnsx`, `asnlookup`, `naabu`, `httpx`, `nuclei`, `spiderfoot`, `bbot`, `shodan` (passive host lookups, `historical`) and `zap` (the OWASP ZAP `zap_spider` + `zap_active` DAST engines). |
+| `adapters/<tool>/` | One package per engine: `amass`, `subfinder`, `crtsh`, `dnsx`, `asnlookup`, `naabu`, `httpx`, `nuclei`, `spiderfoot`, `bbot`, `shodan` (passive host lookups, `historical`), `zap` (the OWASP ZAP `zap_spider` + `zap_active` DAST engines) and `screenshot` (website capture with a pinned Chromium behind `egress_proxy`; not a scan stage — dispatched by the platform's screenshot service; `python -m asm_sensors.adapters.screenshot` is the operator self-test). |
 
 ## `backend/app` — the platform
 
@@ -78,6 +79,7 @@
 | `scans/schedules.py` | Cron/timezone helpers. |
 | `intel/service.py` | KEV, EPSS, NVD fetch/parse/cache, offline import, re-enrichment. |
 | `threats/` | Threat Center: `content.py` (what an advisory may contain — data only), `versions.py` (the documented version rule), `matching.py` (pure product/version matcher), `service.py` (catalog, per-organization evaluation, checks through `create_scan`, remediation, counts), `jobs.py` (cross-tenant evaluation). See [../THREAT_CENTER.md](../THREAT_CENTER.md). |
+| `screenshots/` | Website screenshots: `service.py` (policy in `platform_settings.screenshots`, request checks, the deployment-wide dispatcher under a PostgreSQL advisory lock with its watchdog, result binding and image re-validation, storage, retention, weekly schedule), `jobs.py` (reserve → launch → publish, or run inline). See [../SCREENSHOTS.md](../SCREENSHOTS.md). |
 | `integrations/channels.py` | Notification channel adapters and their config models; SSRF guard; Wazuh/syslog formatting; shared email formatting. Channels with `implemented = False` (Jira, ServiceNow) stay in the code but are **not offered by the API or UI** until they work. |
 | `scans/engines.py` | Capability labels, opaque per-deployment engine tokens and schema scrubbing — how the product avoids naming its engines in anything a browser sees. |
 | `scans/messages.py` | Sensor errors → advice a user can act on, with no tool names; raw output stays in the worker log. |
@@ -114,6 +116,7 @@ tenants, profiles, audit log and private auth tables). `alembic/env.py` sets
 | `0005_platform_email` | `platform_settings` (encrypted SMTP password) and `user_alert_preferences` (ADR-021) |
 | `0006_scan_auth_secret` | `scans.auth_secret_encrypted` / `auth_header_name` — the per-scan session secret for authenticated DAST (ADR-023) |
 | `0008_threat_center` | Threat Center: global `threat_advisories`, `threat_advisory_versions`, `threat_checks` (RLS `catalog_read` = published only, `catalog_write` = system sessions only); tenant `threat_campaigns`, `threat_matches`, `threat_check_runs` (standard tenant isolation). One active check run per advisory and organization (partial unique index) |
+| `0009_screenshots` | `screenshot_captures` (tenant isolation; partial index on queued/running for the dispatcher) and `platform_settings.screenshots` (the platform policy, empty = defaults = off) |
 | `0007_personal_delivery_rows` | `notification_deliveries.recipient_user_id` — a personal alert gets a durable, retryable row like an integration delivery |
 
 ## `frontend/src`

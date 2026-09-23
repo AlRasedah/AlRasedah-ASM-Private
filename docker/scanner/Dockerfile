@@ -28,14 +28,26 @@ RUN go install -ldflags="-s -w" github.com/owasp-amass/amass/v4/cmd/amass@${AMAS
 
 FROM ${PYTHON_IMAGE}
 ARG INSTALL_BBOT=false
+# Website screenshots (docs/SCREENSHOTS.md): the distribution Chromium, pinned to an exact
+# package version. Off by default; the build refuses an unpinned browser.
+ARG INSTALL_SCREENSHOT_BROWSER=false
+ARG CHROMIUM_VERSION=
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 \
     PATH=/opt/asm/bin:$PATH \
     ASM_BIN_HTTPX=/opt/asm/bin/httpx \
     ASM_NUCLEI_TEMPLATES_DIR=/data/nuclei-templates \
     ASM_NUCLEI_HOME=/data/nuclei-home \
+    ASM_BIN_CHROMIUM=/usr/bin/chromium-browser \
     HOME=/data/home
 
 RUN apk add --no-cache libpcap ca-certificates tini bind-tools \
+ && if [ "$INSTALL_SCREENSHOT_BROWSER" = "true" ]; then \
+      if [ -z "$CHROMIUM_VERSION" ]; then \
+        echo "set CHROMIUM_VERSION to the exact chromium package version to pin (see: apk policy chromium)" >&2; \
+        exit 1; \
+      fi; \
+      apk add --no-cache "chromium=${CHROMIUM_VERSION}" font-noto font-noto-arabic util-linux-misc; \
+    fi \
  && addgroup -S -g 10002 sensor && adduser -S -D -H -u 10002 -G sensor -h /data/home -s /sbin/nologin sensor
 
 COPY --from=tools /out/ /opt/asm/bin/
@@ -47,6 +59,8 @@ RUN pip install "/src/workers[worker]" \
  && chown -R sensor:sensor /data
 
 COPY docker/scanner/entrypoint.sh /usr/local/bin/sensor-entrypoint
+COPY scripts/measure_screenshots.py /opt/asm/measure_screenshots.py
+COPY scripts/measure_screenshots.py /opt/asm/measure_screenshots.py
 RUN chmod 0755 /usr/local/bin/sensor-entrypoint
 
 USER sensor

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
@@ -82,6 +82,11 @@ class DetectionRules(Input):
     certificate_expiry_days: int | None = Field(default=None, ge=1, le=365)
 
 
+class Screenshots(Input):
+    enabled: bool | None = None
+    cadence: Literal["manual", "weekly"] | None = None
+
+
 class Branding(Input):
     name: str | None = Field(default=None, max_length=100)
     primary_color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
@@ -93,6 +98,7 @@ class SettingsUpdate(Input):
     scanning: Scanning | None = None
     detection_rules: DetectionRules | None = None
     branding: Branding | None = None
+    screenshots: Screenshots | None = None
 
 
 @router.get("/settings", tags=["settings"])

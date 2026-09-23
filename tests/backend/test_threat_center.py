@@ -219,7 +219,7 @@ def test_third_party_reports_stay_unverified(world, tenant_db):
 
 # -------------------------------------------------------------------- checks
 def test_check_runs_through_the_pipeline_and_is_deduplicated(world, system_db):
-    from app.models import Scan, ThreatCheckRun
+    from app.models import Scan
 
     c, root, analyst, viewer, fake = world["c"], world["root"], world["analyst"], world["viewer"], world["fake"]
     _approve_check(c, root)

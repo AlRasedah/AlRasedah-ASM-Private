@@ -9,9 +9,10 @@ import {
   Card, Empty, ErrorBox, Field, JsonView, Loading, PageHead, Pagination, RiskScore, SeverityBadge, StatusBadge, Tabs,
 } from "@/components/ui";
 import { Timeline } from "@/components/Timeline";
+import Screenshots from "./Screenshots";
 import { APPROVAL_STATES, ASSET_TYPE_LABELS, fmtDate, fmtDay, label, timeAgo } from "@/lib/format";
 
-type Tab = "overview" | "relationships" | "dns" | "ports" | "web" | "tech" | "certs" | "findings" | "timeline" | "raw";
+type Tab = "overview" | "relationships" | "dns" | "ports" | "web" | "tech" | "certs" | "screenshots" | "findings" | "timeline" | "raw";
 
 const HOSTNAME = ["root_domain", "domain", "subdomain"];
 
@@ -34,6 +35,7 @@ export default function AssetDetail() {
   if (HOSTNAME.includes(a.asset_type) || a.asset_type === "ip_address") tabs.push({ id: "web", label: "Web endpoints" });
   if (a.asset_type === "http_endpoint") tabs.push({ id: "tech", label: "Technologies" });
   if (a.asset_type === "http_endpoint" || a.asset_type === "certificate") tabs.push({ id: "certs", label: "Certificates" });
+  if (a.asset_type === "http_endpoint" || a.asset_type === "web_application") tabs.push({ id: "screenshots", label: "Screenshots" });
   tabs.push({ id: "findings", label: `Findings (${a.open_findings})` }, { id: "timeline", label: "Timeline" },
             { id: "raw", label: "Raw observations" });
 
@@ -56,6 +58,7 @@ export default function AssetDetail() {
       {tab === "web" && <RelatedTable items={[...rel("serves")]} empty="No web endpoints observed." />}
       {tab === "tech" && <Technologies items={rel("uses_technology")} />}
       {tab === "certs" && <Certificates a={a} />}
+      {tab === "screenshots" && <Screenshots assetId={a.id} />}
       {tab === "findings" && <AssetFindings assetId={a.id} />}
       {tab === "timeline" && <AssetTimeline assetId={a.id} />}
       {tab === "raw" && <RawObservations assetId={a.id} />}

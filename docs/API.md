@@ -47,6 +47,7 @@ complete with `POST /auth/mfa/verify`.
 | `/intel` | feeds, `cve/{id}`, refresh (platform admin) |
 | `/threats` | Threat Center (tenant view): list published advisories with this tenant's counts and freshness, get, `{id}/assets` (matches with evidence, linked findings, check outcome, remediation; filter `assessment`), `{id}/assets/export.csv`, `{id}/checks` (POST `{match_ids}`: run the approved check through the scan pipeline; 409 while one is active), `matches/{id}` (PATCH remediation). See [THREAT_CENTER.md](THREAT_CENTER.md) |
 | `/threat-catalog` | (platform admin) advisories incl. drafts, create, `{id}/draft` (PUT), `{id}/publish`, `{id}/archive`, `{id}/restore`, `evaluate`; `checks` list and `checks/{key}` (PUT) — the approved-check allowlist |
+| `/assets/{id}/screenshots` | Website screenshots of a web endpoint: list (tenant `status`, `latest` success, last 10 attempts), POST (queue a capture; 202; an active capture is reused), `{capture}/image` (PNG, asset-scoped, `no-store`), `{capture}/cancel`, DELETE `{capture}`. `/screenshots/status` — this tenant's availability, usage and limits; `/settings/screenshots` get/put — the platform policy (platform admin). See [SCREENSHOTS.md](SCREENSHOTS.md) |
 | `/health`, `/health/ready` | liveness / readiness |
 
 ## Example: start a scan and follow it

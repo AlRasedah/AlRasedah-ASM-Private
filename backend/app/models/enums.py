@@ -13,7 +13,7 @@ __all__ = [
     "FindingStatus", "ScanStatus", "StageStatus", "ScanTrigger", "EventType", "ScopeEntryType",
     "VerificationStatus", "DecisionResult", "IntegrationType", "DeliveryStatus", "ReportType",
     "ReportFormat", "JobStatus", "RiskLevel", "AdvisoryStatus", "MatchBasis", "MatchStatus", "CheckOutcome",
-    "Assessment", "RemediationStatus", "CheckRunStatus",
+    "Assessment", "RemediationStatus", "CheckRunStatus", "ScreenshotStatus",
 ]
 
 
@@ -300,3 +300,15 @@ class CheckRunStatus(StrEnum):
 
 
 ACTIVE_CHECK_RUN_STATES = (CheckRunStatus.QUEUED, CheckRunStatus.RUNNING)
+
+
+class ScreenshotStatus(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"  # the page could not be captured (unreachable, timeout, not a page, limits)
+    BLOCKED = "blocked"  # refused by scope, egress policy or a disabled feature — nothing was fetched
+    CANCELLED = "cancelled"
+
+
+ACTIVE_SCREENSHOT_STATES = (ScreenshotStatus.QUEUED, ScreenshotStatus.RUNNING)
