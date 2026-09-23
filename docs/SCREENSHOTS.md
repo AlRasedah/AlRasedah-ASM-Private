@@ -119,8 +119,10 @@ Refused destinations are recorded as `host:port: reason` — never a path or que
 - The job runs in the **tenant's own scanner pool** (ADR-025), so one tenant's captures never
   share a scanner with another tenant's.
 - The sandbox stays on. Flags that would disable it are refused by the adapter
-  (`FORBIDDEN_FLAGS`); a container without the sandbox's prerequisites fails the capture
-  with a message saying so.
+  (`FORBIDDEN_FLAGS`, including the GPU process's own sandbox); a container without the
+  sandbox's prerequisites fails the capture with a message saying so. The GPU shader disk
+  cache is off: Alpine's Chromium 152 writes it with a syscall (`pwritev2`) that its own
+  GPU-process seccomp policy forbids, which crashed every capture on the first install.
 - The browser runs in its own process group with a hard time limit; a cancelled or
   timed-out job kills the group. On Linux it is also started under
   `setpriv --pdeathsig KILL` (util-linux's, which the image installs; BusyBox's applet lacks
