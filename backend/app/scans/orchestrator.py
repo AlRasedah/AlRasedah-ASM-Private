@@ -282,8 +282,9 @@ def prepare_next_stage(db: Session, scan: Scan) -> tuple[ScanStage, SensorJob] |
         if stage.status != StageStatus.PENDING:
             continue
         checker = load_checker(db, org)
-        built = build_targets(db, org, scan, stage.stage_type, s.max_targets_per_stage)
         adapter = get_adapter(stage.engine)
+        built = build_targets(db, org, scan, stage.stage_type, s.max_targets_per_stage,
+                              crawled_pages=adapter.wants_crawled_pages)
         cfg = {k: v for k, v in stage.config.items() if not k.startswith("_")}
         active = adapter.is_active(adapter.parse_config(cfg))
         allowed: list[Target] = []

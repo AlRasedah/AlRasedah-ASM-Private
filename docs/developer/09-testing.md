@@ -1,12 +1,12 @@
 # 9. Testing
 
 ```bash
-pytest -q                                   # 301 backend + sensor tests, ~80 s
+pytest -q                                   # 306 backend + sensor tests, ~81 s
 cd frontend && npm test && npm run typecheck  # 35 UI tests, ~9 s
 cd backend && ruff check app ../workers/asm_sensors
 ```
 
-Two of the 301 are the broker-isolation integration tests; they skip unless a Valkey/Redis
+Two of the 306 are the broker-isolation integration tests; they skip unless a Valkey/Redis
 is reachable (§9.6). `ASM_TEST_ADMIN_URL` is a **psycopg** DSN
 (`postgresql://postgres:postgres@127.0.0.1:55432/postgres`), not a SQLAlchemy URL — a
 `postgresql+psycopg://` value fails to connect and every database test silently *skips*

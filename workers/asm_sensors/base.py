@@ -118,6 +118,10 @@ class ScannerAdapter(ABC):
     # Reports what a third party last saw, not what is live now (e.g. Shodan). The
     # platform then adds new knowledge but never refreshes liveness from it.
     historical: ClassVar[bool] = False
+    # Wants the individual pages a previous crawl found, not just each web endpoint's
+    # origin. A scanner that tests request parameters is useless without them: it would
+    # attack the site root alone. The platform expands the stage's targets accordingly.
+    wants_crawled_pages: ClassVar[bool] = False
     binaries: ClassVar[tuple[str, ...]] = ()
     credential_providers: ClassVar[tuple[str, ...]] = ()
     config_model: ClassVar[type[AdapterConfig]]

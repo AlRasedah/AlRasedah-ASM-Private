@@ -77,7 +77,7 @@ delivery endpoints — nothing below marked "not verified" has been exercised by
 | Area | How it was verified | Not verified |
 |---|---|---|
 | Sensor parsing/normalization | recorded output of each engine (fixtures written to match documented output formats) | real binaries at the pinned versions; exact CLI flags for Amass v4 (`-o`, `-dir`, `-nocolor`), BBOT 2.x output path, SpiderFoot 4 export endpoint, ZAP 2.15 API paths, a live Shodan key against a paid plan |
-| Pipeline, change detection, findings, risk | 301 automated tests on PostgreSQL 18 | behaviour at 50k+ assets (performance) |
+| Pipeline, change detection, findings, risk | 306 automated tests on PostgreSQL 18 | behaviour at 50k+ assets (performance) |
 | Tenant isolation | RLS tests for every tenant table and API cross-tenant tests | separate BYPASSRLS role hardening (documented, not implemented) |
 | Broker trust boundary (A01) | real Celery workers against a real Valkey 9 using the compose ACL (`tests/integration`) | the ACL under a multi-pool deployment (only `default` is exercised) |
 | Audit remediation (A01–A11) | a regression test per finding; the auditor's reproductions re-run | a re-audit by the reviewer |
@@ -321,7 +321,44 @@ host is still refused. Verified against the running stack with the reported valu
 out-of-scope host:port is refused as out of scope. 22 regressions in
 `tests/backend/test_target_ports.py`.
 
-## 11.14 Recommended next steps
+## 11.14 DAST against a live DVWA (22 September 2026)
+
+The first run of the web application stages against a real target (a local DVWA, a real
+ZAP 2.17) — everything before this was recorded fixtures. Three defects, none of which
+any unit test could have found.
+
+**The active scanner only ever attacked the site root.** Every ZAP job replaces the
+daemon's session so jobs cannot see each other's traffic (§6.5) — which also destroys the
+*crawl's* site tree before the attack stage runs. `ascan` then recursed over a tree of one
+node. Measured: 298 crawled pages, 14 active-scan observations, and not one parameter of
+the application tested. Fixed by making the crawl's output data the platform owns, as
+ADR-003 requires of every stage: `zap_spider` records its pages on the endpoint asset
+(`crawled_pages`), an adapter declares `wants_crawled_pages`, `build_targets` expands the
+endpoint into those pages for it, and `zap_active` reloads them into the daemon before
+scanning — one context and one recursive scan per origin, not per URL. The same scan then
+ran 87 targets and 1273 observations, and reported its first parameter-based finding
+(CWE-601 on an inner page). Nuclei shares that stage and does *not* declare the flag, so
+its targets are unchanged.
+
+**An authenticated scan that could not authenticate said nothing useful.** ZAP Core omits
+the Replacer add-on, `replacer/action/addRule` returned NO_IMPLEMENTOR, and the crawl ran
+logged out while reporting partial success — one page, 19 header findings. Both stages now
+raise `ConfigurationError`, because claiming to have tested behind a login without doing so
+is the false-coverage failure ADR-002 exists to prevent.
+
+**Every crawled URL collapses into one asset.** An `http_endpoint` is an origin by
+normalization, so 298 pages became one row. Kept deliberately — an ASM inventory should not
+list every URL of an application — but it is why the pages are stored as an attribute.
+
+**Still open:** ZAP reports no SQL injection or XSS on DVWA at `security=low`, even when
+driven directly outside the platform with the rules confirmed loaded and enabled. The
+scanner's own traffic shows the seeded baseline request answering `302` while later payload
+requests answer `200`, which would defeat any response-diffing rule. Next step is ZAP-level:
+seed with redirects followed, assert the baseline is a `200`, and consider ZAP's own session
+management instead of a Replacer header. Also noticed: `attack_strength` in `ZapActiveConfig`
+is accepted and never applied to the daemon.
+
+## 11.15 Recommended next steps
 
 1. Work through the manual pass in [chapter 9.8](09-testing.md#98-the-manual-pass) on a
    deployed stack — that is the only verification left that matters, and §11.4 says exactly

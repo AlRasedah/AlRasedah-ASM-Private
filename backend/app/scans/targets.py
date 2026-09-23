@@ -118,7 +118,8 @@ def _override(scan: Scan) -> tuple[set[str], dict[str, set[int]]]:
     return hosts, dict(ports)
 
 
-def build_targets(db: Session, org: Organization, scan: Scan, stage_type: StageType, limit: int) -> StageTargets:
+def build_targets(db: Session, org: Organization, scan: Scan, stage_type: StageType, limit: int,
+                  *, crawled_pages: bool = False) -> StageTargets:
     out = StageTargets()
     override, override_ports = _override(scan)
     entries = db.execute(select(ScopeEntry).where(ScopeEntry.organization_id == org.id,
@@ -216,9 +217,10 @@ def build_targets(db: Session, org: Organization, scan: Scan, stage_type: StageT
         # http_discovery stage re-probing them.
         ip_to_hosts, _ = _resolution_map(db, org)
         out.derived_from = ip_to_hosts
-        for (url,) in db.execute(select(Asset.normalized_value).where(
+        for asset in db.execute(select(Asset).where(
                 Asset.organization_id == org.id, Asset.asset_type == AssetType.HTTP_ENDPOINT,
-                Asset.status == AssetStatus.ACTIVE, Asset.scope_status != ScopeStatus.OUT_OF_SCOPE)):
+                Asset.status == AssetStatus.ACTIVE, Asset.scope_status != ScopeStatus.OUT_OF_SCOPE)).scalars():
+            url = asset.normalized_value
             u = urlsplit(url)
             if override and u.hostname not in override:
                 continue
@@ -226,6 +228,13 @@ def build_targets(db: Session, org: Organization, scan: Scan, stage_type: StageT
             if named and (u.port or (443 if u.scheme == "https" else 80)) not in named:
                 continue  # crawl and attack only the port the user asked for
             _t(TargetKind.URL, url, out)
+            # A scanner that tests request parameters needs the pages a crawl found, not
+            # just this origin; they are recorded on the endpoint by the web_crawl stage.
+            if crawled_pages:
+                for page in (asset.meta or {}).get("crawled_pages") or []:
+                    if len(out.targets) >= limit:
+                        break
+                    _t(TargetKind.URL, url + str(page), out)
 
     if len(out.targets) > limit:
         out.targets = out.targets[:limit]

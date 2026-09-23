@@ -340,8 +340,8 @@ class TestZapAuth:
     async def test_active_no_auth_when_no_credential(self, tmp_path):
         zap = _FakeZap()
         raw = RawOutput()
-        await ZapActiveAdapter()._scan_one(zap, "https://app.example.com", ZapActiveConfig(), raw,
-                                           "asm-ascan-0", auth=None)
+        await ZapActiveAdapter()._scan_origin(zap, "https://app.example.com", ["https://app.example.com"],
+                                              ZapActiveConfig(), raw, "asm-ascan-0", auth=None)
         assert zap.auth_added == [] and zap.auth_removed == []
         assert zap.params("scan")[0]["contextId"] == "7"  # the active scan is bound to the job's context
 

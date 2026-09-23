@@ -61,6 +61,7 @@ import contextlib
 import hashlib
 import re
 import time
+from collections import defaultdict
 from collections.abc import AsyncIterator
 from typing import Annotated, Any, Literal
 
@@ -96,6 +97,9 @@ _TLS_PORTS = {443, 4443, 8443, 9443, 10443}
 # value or an authorization header value). It is stored per tenant, encrypted at
 # rest, and delivered to the sensor in a sealed envelope like any other credential.
 AUTH_PROVIDER = "zap_auth"
+# Pages a crawl records on its endpoint, so the active scanner can rebuild the tree.
+MAX_PAGES_PER_ENDPOINT = 2000
+MAX_PAGE_LENGTH = 512
 # Injecting the sign-in header needs the daemon's request-replacer component, which some
 # distributions omit. Without it an "authenticated" scan silently crawls the login page,
 # so the scan is failed instead: no coverage is better than coverage that is not real.
@@ -506,14 +510,23 @@ class ZapSpiderAdapter(ScannerAdapter):
         obs = ObservationSet()
         scanned: list[AssetRef] = []
         seen_bases: set[str] = set()
+        # An endpoint asset is an origin, so every crawled URL collapses into one. The
+        # pages themselves are kept on that origin: the active scanner starts from a
+        # blank daemon session and cannot see this crawl's site tree, so without them it
+        # would have nothing to attack but the site root.
+        pages: dict[str, set[str]] = defaultdict(set)
         for rec in parsed:
             if rec.get("kind") == "url":
-                base = endpoint_base(str(rec.get("value") or ""))
+                raw_url = str(rec.get("value") or "")
+                base = endpoint_base(raw_url)
                 if not base:
                     continue
                 endpoint, scheme, host, _port = base
                 obs.add(ObservedType.HTTP_ENDPOINT, endpoint, {"url": endpoint, "scheme": scheme, "host": host,
                                                                "discovery_sources": ["web_crawl"]}, confidence=80)
+                path = raw_url[len(endpoint):] if raw_url.startswith(endpoint) else ""
+                if path and len(path) <= MAX_PAGE_LENGTH:
+                    pages[endpoint].add(path)
                 if endpoint not in seen_bases:
                     seen_bases.add(endpoint)
                     scanned.append(AssetRef(type=ObservedType.HTTP_ENDPOINT, value=endpoint))
@@ -523,6 +536,10 @@ class ZapSpiderAdapter(ScannerAdapter):
                     asset_ref, finding = mapped
                     obs.findings.append(finding)
                     obs.add(asset_ref.type, asset_ref.value)
+
+        for endpoint, found in pages.items():
+            obs.add(ObservedType.HTTP_ENDPOINT, endpoint,
+                    {"crawled_pages": sorted(found)[:MAX_PAGES_PER_ENDPOINT]})
 
         # Seed target endpoints into coverage so a resolved passive alert can auto-close.
         for t in targets:
@@ -547,6 +564,8 @@ class ZapActiveConfig(AdapterConfig):
     alert_threshold: Literal["low", "medium", "high"] = "medium"
     in_scope_only: bool = True
     recurse: bool = True
+    # Pages reloaded into the daemon before the scan starts (see _scan_origin).
+    max_seed_pages: int = Field(default=1000, ge=1, le=5000)
     poll_interval_seconds: int = Field(default=10, ge=2, le=60)
     max_alerts: int = Field(default=5000, ge=1, le=50000)
     # Authenticated scanning: header carrying the `zap_auth` session secret
@@ -561,6 +580,7 @@ class ZapActiveAdapter(ScannerAdapter):
     stage_types = frozenset({StageType.VULNERABILITY_DETECTION})
     target_kinds = frozenset({TargetKind.URL, TargetKind.HOST_PORT})
     active = True
+    wants_crawled_pages = True  # it tests request parameters; origins alone tell it nothing
     credential_providers = (AUTH_PROVIDER,)
     config_model = ZapActiveConfig
 
@@ -576,15 +596,25 @@ class ZapActiveAdapter(ScannerAdapter):
             async with _ZapClient(base_url, api_key, 60, user_agent(ctx.settings)) as zap, \
                     _exclusive_daemon(zap, ctx):
                 await self._set_options(zap, config, raw)
-                for i, t in enumerate(targets):
+                # One scan per origin, not per URL: the pages of an application are
+                # branches of one tree, and ZAP walks it once with `recurse`.
+                by_origin: dict[str, list[str]] = {}
+                for t in targets:
                     url = target_url(t)
                     if not url:
                         raw.errors.append(f"zap_active: cannot derive a URL for {t.value}")
                         continue
+                    base = endpoint_base(url)
+                    if not base:
+                        raw.errors.append(f"zap_active: cannot derive an origin for {t.value}")
+                        continue
+                    by_origin.setdefault(base[0], []).append(url)
+                for i, (origin_url, urls) in enumerate(sorted(by_origin.items())):
                     try:
-                        await self._scan_one(zap, url, config, raw, ctx_name=f"asm-{ctx.job_id}-{i}", auth=auth)
+                        await self._scan_origin(zap, origin_url, urls, config, raw,
+                                                ctx_name=f"asm-{ctx.job_id}-{i}", auth=auth)
                     except (httpx.HTTPError, ValueError, KeyError) as exc:
-                        raw.errors.append(f"zap_active error for {url}: {type(exc).__name__}")
+                        raw.errors.append(f"zap_active error for {origin_url}: {type(exc).__name__}")
         except LeaseUnavailable:
             raw.errors.append("zap_active: the ZAP daemon stayed busy with another job; nothing was scanned")
         except httpx.HTTPError as exc:
@@ -599,8 +629,8 @@ class ZapActiveAdapter(ScannerAdapter):
         except httpx.HTTPError as exc:
             raw.errors.append(f"zap_active: could not set options: {type(exc).__name__}")
 
-    async def _scan_one(self, zap: _ZapClient, url: str, config: ZapActiveConfig, raw: RawOutput, ctx_name: str,
-                        auth: str | None = None) -> None:
+    async def _scan_origin(self, zap: _ZapClient, url: str, urls: list[str], config: ZapActiveConfig,
+                           raw: RawOutput, ctx_name: str, auth: str | None = None) -> None:
         origin = _include_regex(url)
         context_id = await zap.new_context(ctx_name, origin)
         rule = None
@@ -613,9 +643,21 @@ class ZapActiveAdapter(ScannerAdapter):
                     await zap.add_auth_header(rule, config.auth_header_name, auth, origin)
                 except httpx.HTTPError as exc:
                     raise ConfigurationError(AUTH_UNAVAILABLE) from exc
-            # Seed the sites tree so the active scanner has something to attack — without
-            # following redirects, so no other host ever enters the request path.
-            await zap.call("core", "action", "accessUrl", {"url": url, "followRedirects": "false"})
+            # Rebuild the sites tree before attacking it. Every job starts from a blank
+            # daemon session (jobs must not see each other's traffic), so the crawl's tree
+            # is gone by now: without re-seeding, `recurse` would walk a tree of one node
+            # and the scanner would test the site root alone — no page and no parameter of
+            # the application behind it. Redirects are never followed, so no other host
+            # can enter the request path.
+            failed = 0
+            for seed in [url, *sorted(set(urls) - {url})][:config.max_seed_pages]:
+                try:
+                    await zap.call("core", "action", "accessUrl", {"url": seed, "followRedirects": "false"})
+                except httpx.HTTPError:
+                    failed += 1
+            if failed:
+                raw.errors.append(f"zap_active: {failed} known pages of {url} could not be reloaded before the scan; "
+                                  "its results are incomplete")
             started = await zap.call("ascan", "action", "scan", {
                 "url": url, "recurse": str(config.recurse).lower(), "inScopeOnly": str(config.in_scope_only).lower(),
                 "scanPolicyName": config.scan_policy, "method": "", "postData": "", "contextId": context_id})

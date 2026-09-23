@@ -127,7 +127,8 @@ class TestCompleteness:
         cfg = ZapActiveAdapter().parse_config({"max_alerts": 3, "max_duration_minutes": 1, "poll_interval_seconds": 2})
         with patch("asm_sensors.adapters.zap.time.monotonic", _clock()), \
                 patch("asm_sensors.adapters.zap.asyncio.sleep", _no_sleep):
-            await ZapActiveAdapter()._scan_one(zap, "https://app.example.com", cfg, raw, "ctx-1")
+            await ZapActiveAdapter()._scan_origin(zap, "https://app.example.com", ["https://app.example.com"],
+                                                  cfg, raw, "ctx-1")
         assert any("did not finish" in e for e in raw.errors)
         assert any("alert limit" in e for e in raw.errors)
         assert ("ascan", "action", "stop") in zap.actions  # the remote scan is stopped, not left running
@@ -137,8 +138,8 @@ class TestCompleteness:
                                    {"url": "https://app.example.com.evil.test/x", "name": "B", "risk": "Low"},
                                    {"url": "https://app.example.com:8443/x", "name": "C", "risk": "Low"}])
         raw = RawOutput()
-        await ZapActiveAdapter()._scan_one(zap, "https://app.example.com", ZapActiveAdapter().parse_config({}), raw,
-                                           "ctx-1")
+        await ZapActiveAdapter()._scan_origin(zap, "https://app.example.com", ["https://app.example.com"],
+                                              ZapActiveAdapter().parse_config({}), raw, "ctx-1")
         assert [r["name"] for r in raw.records] == ["A"]
 
 

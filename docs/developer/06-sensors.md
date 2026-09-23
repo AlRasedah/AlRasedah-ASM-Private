@@ -148,6 +148,12 @@ the constraints you applied.** Passive discovery tools declare none.
   host (`example.com.evil.net`) can never be crawled, and because one ZAP daemon holds global
   state, both adapters take an exclusive lease from the pool `Coordinator` — two scans never
   drive the same instance at once.
+  **The crawl's pages reach the attack through the database, not the daemon.** Each job
+  replaces the ZAP session (isolation), which also drops the site tree the crawl built, so
+  `zap_spider` records its pages on the endpoint asset (`crawled_pages`); `zap_active` sets
+  `wants_crawled_pages`, receives them as targets, and reloads them before scanning — one
+  context and one recursive `ascan` per origin. Without that the scanner attacks the site
+  root alone and never tests a request parameter (chapter 11.14).
   **Authenticated scanning** uses the `zap_auth` credential provider (`credential_providers`),
   so the session secret is sealed and delivered through the normal credential channel
   (`ctx.credentials`, `auth_secret()`). It can come from a stored tenant credential or from
