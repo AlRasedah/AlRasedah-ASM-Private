@@ -57,8 +57,14 @@ def create_tenant(db: Session, name: str, *, slug: str | None = None, plan_code:
     plan = db.execute(select(Plan).where(Plan.code == plan_code)).scalar_one_or_none() if plan_code else default_plan(db)
     if plan_code and plan is None:
         raise ValidationFailed(f"Unknown plan '{plan_code}'")
+    s = get_settings()
+    # A pool is a trust domain (see orchestrator.scanner_pool_error), so a new tenant
+    # gets one of its own rather than landing in whichever pool happens to exist. Its
+    # scans then wait, with a clear reason, until an administrator provisions it —
+    # which is the intended answer, not an accident of configuration.
+    pool = f"t-{slug}"[:64] if s.scanner_isolation == "per_tenant" else "default"
     tenant = Tenant(name=name.strip(), slug=slug, plan_id=plan.id if plan else None,
-                    data_region=get_settings().data_region, settings={})
+                    worker_pool=pool, data_region=s.data_region, settings={})
     db.add(tenant)
     db.flush()
     audit.record(db, Action.TENANT_CREATED, tenant_id=tenant.id, object_type="tenant", object_id=tenant.id,

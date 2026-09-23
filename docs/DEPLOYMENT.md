@@ -88,7 +88,10 @@ Users switch on alerts to their own login address under **Your account → Email
 - **Pools**: `tenants.worker_pool` (default `default`) routes a tenant's sensor jobs to queue
   `scanners.<pool>`; results come back on `results.<pool>`. A pool is also a trust boundary
   (its own broker user and key — see ARCHITECTURE.md §2), so tenants that must not share
-  scanners get their own pool. To add pool `bank-a`:
+  scanners get their own pool — and with `ASM_SCANNER_ISOLATION=per_tenant` (the default)
+  the platform **refuses to dispatch** a scan whose pool another tenant also uses, rather
+  than trusting that an operator read this section. `cli scanner-pool <pool>` prints the
+  whole block below ready to paste. To add pool `bank-a` by hand:
   1. Copy the redis service's `--user scanner-default …` block in `docker-compose.yml`,
      replacing every `default` with `bank-a` (queue, bookkeeping and binding keys,
      `asm.pool.bank-a.*`, `*.asm-bank-a.pidbox`, `&/0.asm-bank-a.pidbox`) and giving it its
@@ -199,6 +202,25 @@ pulling, rebuilding and restarting never touches it. `docker compose down` is sa
 Take the §7 backup before any upgrade anyway, and let running scans finish first.
 
 Read release notes for tool version changes (new detection behaviour can change findings).
+
+**Upgrading to tenant-isolated scanners.** `ASM_SCANNER_ISOLATION` now defaults to
+`per_tenant`: a tenant whose scanner pool is shared with another tenant cannot scan, and
+the scan is cancelled with a message naming the fix. A single-tenant deployment is
+unaffected — one tenant alone on `default` shares with nobody. Adding a second customer
+does require a pool for them:
+
+```bash
+docker compose run --rm asm-api cli scanner-pool t-globex
+```
+
+That prints the broker password, the Valkey ACL block, the derived transport key and the
+scanner service (including its own ZAP daemon, since a ZAP session is global state). Add
+the pool to `ASM_WORKER_POOLS` so `asm-ingest` consumes its results. An in-house
+deployment where every tenant is the same organization can set
+`ASM_SCANNER_ISOLATION=shared` instead — deliberately, and knowing what it gives up.
+
+Tenant-managed **file exports** now write to `ASM_INTEGRATION_EXPORT_DIR/<tenant-id>/`;
+point each collector's `localfile` at its tenant's directory.
 
 **Upgrading within the current release line** (capability naming, idle sessions): nothing to
 do beyond the three commands. No migration was added, and every new setting has a default —

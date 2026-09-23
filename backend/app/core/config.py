@@ -90,6 +90,13 @@ class Settings(BaseSettings):
     sensor_queue_prefix: str = "scanners"
     # Worker pools whose result queues (results.<pool>) the result consumer serves.
     worker_pools: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["default"])
+    # A worker pool is a trust domain: its workers hold that pool's broker credentials
+    # and transport key, so a compromised scanner reaches every job in the pool. With
+    # "per_tenant" (the default) the platform refuses to dispatch a tenant's scan to a
+    # pool another tenant also uses — mutually untrusted customers must not share
+    # scanners. "shared" permits it, for a single-tenant or in-house deployment where
+    # every tenant is the same organization.
+    scanner_isolation: Literal["per_tenant", "shared"] = "per_tenant"
     max_concurrent_scans_global: int = 10
     scanner_max_rate: int = 2000
     stage_timeout_seconds: int = 4 * 3600

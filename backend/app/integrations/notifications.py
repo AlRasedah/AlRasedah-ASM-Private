@@ -29,7 +29,7 @@ from app.models import (
 from app.models.enums import DeliveryStatus, Severity
 from app.services.secrets import get_secret_value
 
-from .channels import CHANNELS, ChannelError, email_message
+from .channels import CHANNELS, ChannelError, Destination, email_message
 from .mailer import MailNotConfigured, send_email
 
 log = logging.getLogger(__name__)
@@ -96,7 +96,9 @@ def deliver(db: Session, integration: Integration, payloads: list[dict[str, Any]
     if channel is None:
         raise ChannelError(f"unknown integration type {integration.integration_type}")
     secret = get_secret_value(db, integration.secret_id) if integration.secret_id else None
-    channel.send(integration.config or {}, secret, payloads)
+    # The owning tenant comes from the integration row, never from its configuration.
+    channel.send(integration.config or {}, secret, payloads,
+                 Destination(tenant_id=integration.tenant_id, integration_id=integration.id))
 
 
 # A user who has not chosen otherwise gets high and critical changes in their inbox.

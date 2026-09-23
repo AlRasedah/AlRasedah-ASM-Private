@@ -206,3 +206,27 @@ A wildcard may only replace the first label, and never covers a public suffix.
 it was silently rewritten to `example.com`, which looked like the tool ignoring the input.
 **Consequences**: one representation in the database, so the scope checker is unchanged.
 `a.*.example.com` is refused with the accepted form rather than guessed at.
+
+
+## ADR-025 A worker pool is a tenant boundary, enforced by the platform
+**Context**: queues, broker accounts and transport keys are per pool, and tenants all
+defaulted to `default`. A compromised scanner therefore reached every job in its pool: it
+could read other tenants' queued jobs, open their sealed credentials and sign results for
+their pending stages (binding a result to tenant/scan/stage/job rejects an invented job,
+but those ids are in the job it can already read). `SECURITY.md` said to use separate pools
+for tenants that must not share scanners, which an independent review correctly called a
+documented limitation rather than a guarantee.
+**Decision**: `ASM_SCANNER_ISOLATION=per_tenant` is the default. The platform cancels a scan
+whose tenant shares a pool with another tenant, or whose pool no scanner consumes, naming
+the command that fixes it; `create_tenant` gives each tenant its own pool name; and
+`cli scanner-pool <pool>` prints the key, broker user, ACL and scanner service (with its own
+ZAP daemon) so the three cannot drift apart. `shared` remains for deployments where every
+tenant is the same organization.
+**Consequences**: a new customer cannot be scanned until their scanner exists, which is the
+honest answer rather than an accident of configuration; single-tenant installs are
+unaffected, because one tenant alone shares with nobody; idle capacity grows with the number
+of customers. The check asks the question in a system session — RLS would hide the other
+tenants and answer "not shared" every time.
+**Alternatives**: per-job ephemeral scanner containers (a smaller boundary still, and the
+direction to take if per-tenant capacity becomes the cost driver); keeping shared pools with
+documentation (rejected — the review's central point).

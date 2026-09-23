@@ -15,6 +15,11 @@ os.environ.setdefault("ASM_ENV", "test")
 os.environ.setdefault("ASM_SECRET_KEY", "test-secret-key-0123456789-abcdefghijklmnop")
 os.environ.setdefault("ASM_SENSOR_MODE", "inline")
 os.environ.setdefault("ASM_ALLOW_NON_PUBLIC_SCOPE", "true")
+# The suite creates throwaway tenants that all run on one fake pool, which a
+# production deployment refuses (a pool is a trust domain — see
+# orchestrator.scanner_pool_error). Tests that care about that enforcement set
+# `scanner_isolation` themselves; see tests/backend/test_pool_isolation.py.
+os.environ.setdefault("ASM_SCANNER_ISOLATION", "shared")
 os.environ.setdefault("ASM_COOKIE_SECURE", "false")
 os.environ.setdefault("ASM_LOG_JSON", "false")
 os.environ.setdefault("ASM_STORAGE_LOCAL_PATH", tempfile.mkdtemp(prefix="asm-test-storage-"))

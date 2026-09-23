@@ -218,6 +218,33 @@ def _inactive_reason(db: Session, scan: Scan) -> str | None:
     org = db.get(Organization, scan.organization_id)
     if org is None or not org.is_active:
         return "Cancelled: the organization is inactive"
+    return scanner_pool_error(tenant)
+
+
+def scanner_pool_error(tenant: Tenant) -> str | None:
+    """Why this tenant's scans must not be dispatched, if so.
+
+    A worker pool is a trust domain, not a queue name: its containers hold the pool's
+    broker credentials and transport key, so a compromised scanner can read every job
+    in the pool, open those tenants' sealed credentials and sign results for their
+    pending stages. Tenants who do not trust each other therefore may not share one,
+    and the platform refuses the dispatch rather than relying on an operator having
+    read the deployment guide.
+    """
+    s = get_settings()
+    pool = tenant.worker_pool or "default"
+    if pool not in s.worker_pools:
+        return (f"Cancelled: no scanner is running for this tenant's pool ({pool!r}). A platform administrator "
+                f"provisions one with `cli scanner-pool {pool}` and adds it to ASM_WORKER_POOLS.")
+    if s.scanner_isolation != "per_tenant":
+        return None
+    # Cross-tenant question: RLS hides other tenants from `db`, so ask outside it.
+    with system_session() as sys_db:
+        others = list(sys_db.execute(
+            select(Tenant.name).where(Tenant.worker_pool == pool, Tenant.id != tenant.id).limit(3)).scalars())
+    if others:
+        return (f"Cancelled: the scanner pool {pool!r} is shared with another tenant, and this deployment isolates "
+                "tenants at the scanner. A platform administrator must give this tenant a pool of its own.")
     return None
 
 

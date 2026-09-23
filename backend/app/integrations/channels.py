@@ -15,6 +15,8 @@ import json
 import os
 import socket
 import time
+import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar, Literal
@@ -26,6 +28,19 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.core.config import get_settings
 from app.integrations.mailer import send_email
 from app.schemas.common import Email
+
+
+@dataclass(frozen=True)
+class Destination:
+    """Who a delivery belongs to, from the platform rather than from tenant config.
+
+    A channel that writes somewhere shared — the file export, today — must separate
+    tenants by an identity they cannot choose. Tenant-supplied fields (a file name,
+    a URL) are not that: two customers can pick the same one, by accident or not.
+    """
+
+    tenant_id: uuid.UUID
+    integration_id: uuid.UUID | None = None
 
 
 class ChannelError(RuntimeError):
@@ -114,7 +129,8 @@ class Channel:
     def validate(self, config: dict[str, Any]) -> dict[str, Any]:
         return self.config_model.model_validate(config).model_dump(mode="json")
 
-    def send(self, config: dict[str, Any], secret: str | None, payloads: list[dict[str, Any]]) -> None:
+    def send(self, config: dict[str, Any], secret: str | None, payloads: list[dict[str, Any]],
+             destination: Destination | None = None) -> None:
         raise NotImplementedError
 
 
@@ -147,7 +163,8 @@ class EmailChannel(Channel):
     type = "email"
     config_model = EmailConfig
 
-    def send(self, config: dict[str, Any], secret: str | None, payloads: list[dict[str, Any]]) -> None:
+    def send(self, config: dict[str, Any], secret: str | None, payloads: list[dict[str, Any]],
+             destination: Destination | None = None) -> None:
         cfg = EmailConfig.model_validate(config)
         subject, body = email_message(payloads, cfg.subject_prefix)
         try:
@@ -163,7 +180,8 @@ class WebhookChannel(Channel):
     type = "webhook"
     config_model = WebhookConfig
 
-    def send(self, config: dict[str, Any], secret: str | None, payloads: list[dict[str, Any]]) -> None:
+    def send(self, config: dict[str, Any], secret: str | None, payloads: list[dict[str, Any]],
+             destination: Destination | None = None) -> None:
         cfg = WebhookConfig.model_validate(config)
         bodies = [{"events": payloads}] if cfg.batch else payloads
         for body in bodies:
@@ -214,7 +232,8 @@ class WazuhChannel(Channel):
     type = "wazuh"
     config_model = WazuhConfig
 
-    def send(self, config: dict[str, Any], secret: str | None, payloads: list[dict[str, Any]]) -> None:
+    def send(self, config: dict[str, Any], secret: str | None, payloads: list[dict[str, Any]],
+             destination: Destination | None = None) -> None:
         cfg = WazuhConfig.model_validate(config)
         if cfg.mode == "syslog":
             if not cfg.host:
@@ -237,7 +256,12 @@ class WazuhChannel(Channel):
             for p in payloads:
                 _post_json(cfg.url, wazuh_event(p), headers)
         else:
-            directory = Path(os.environ.get("ASM_INTEGRATION_EXPORT_DIR", "/data/exports"))
+            # One directory per tenant. The file name is tenant-chosen, so without this
+            # two customers picking the default would append to one file and each would
+            # read the other's findings out of their own collector.
+            if destination is None:
+                raise ChannelError("file mode has no owning tenant; this delivery was not routed")
+            directory = Path(os.environ.get("ASM_INTEGRATION_EXPORT_DIR", "/data/exports")) / str(destination.tenant_id)
             directory.mkdir(parents=True, exist_ok=True)
             path = directory / cfg.file_name
             with path.open("a", encoding="utf-8") as fh:
@@ -250,7 +274,8 @@ class SlackChannel(Channel):
     config_model = ChatConfig
     needs_secret = True  # the incoming-webhook URL is a credential
 
-    def send(self, config: dict[str, Any], secret: str | None, payloads: list[dict[str, Any]]) -> None:
+    def send(self, config: dict[str, Any], secret: str | None, payloads: list[dict[str, Any]],
+             destination: Destination | None = None) -> None:
         if not secret:
             raise ChannelError("Slack incoming webhook URL is not configured")
         cfg = ChatConfig.model_validate(config)
@@ -265,7 +290,8 @@ class TeamsChannel(Channel):
     config_model = ChatConfig
     needs_secret = True
 
-    def send(self, config: dict[str, Any], secret: str | None, payloads: list[dict[str, Any]]) -> None:
+    def send(self, config: dict[str, Any], secret: str | None, payloads: list[dict[str, Any]],
+             destination: Destination | None = None) -> None:
         if not secret:
             raise ChannelError("Teams webhook URL is not configured")
         body = [{"type": "TextBlock", "weight": "Bolder", "text": "Exteriq ASM", "size": "Medium"}]
@@ -283,7 +309,8 @@ class _Planned(Channel):
     config_model = _Cfg
     implemented = False
 
-    def send(self, config: dict[str, Any], secret: str | None, payloads: list[dict[str, Any]]) -> None:
+    def send(self, config: dict[str, Any], secret: str | None, payloads: list[dict[str, Any]],
+             destination: Destination | None = None) -> None:
         raise ChannelError(f"the {self.type} integration is planned but not yet available")
 
 

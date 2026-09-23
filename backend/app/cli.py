@@ -3,6 +3,7 @@
     python -m app.cli bootstrap                 # plans, built-in profiles, first admin (idempotent)
     python -m app.cli generate-keys             # print fresh secrets for .env
     python -m app.cli scanner-pool-key <pool>   # the key a worker pool's sensor containers receive
+    python -m app.cli scanner-pool <pool>       # everything to give a tenant its own scanner
     python -m app.cli create-admin --email ... --tenant "Acme"
     python -m app.cli intel-import --kev kev.json --epss epss_scores-current.csv.gz
     python -m app.cli intel-refresh
@@ -42,6 +43,50 @@ def cmd_scanner_pool_key(a: argparse.Namespace) -> None:
     from app.core.crypto import pool_transport_key
 
     print(f"ASM_SCANNER_TRANSPORT_KEY={encode_key(pool_transport_key(a.pool))}   # for the '{a.pool}' sensor workers")
+
+
+def cmd_scanner_pool(a: argparse.Namespace) -> None:
+    """Everything needed to give a tenant its own scanner: key, broker user, ACL, service.
+
+    A pool is a trust domain, so each tenant that must not share scanners needs its
+    own workers, its own broker account and its own derived key. Printing the whole
+    block keeps the three in step — a pool provisioned by hand with a mismatched key
+    fails at result verification, long after the mistake.
+    """
+    from asm_sensors.jobs import encode_key
+
+    from app.core.crypto import pool_transport_key
+
+    pool = a.pool
+    password = secrets.token_urlsafe(32)
+    queues = [f"scanners.{pool}", f"results.{pool}"]
+    print(f"# --- scanner pool '{pool}' ------------------------------------------------")
+    print("# 1. .env (platform):")
+    print(f"#    add '{pool}' to ASM_WORKER_POOLS, so asm-ingest consumes results.{pool}")
+    print(f"ASM_SCANNER_REDIS_PASSWORD_{pool.upper().replace('-', '_')}={password}")
+    print("\n# 2. docker-compose.yml — redis command, a copy of the scanner-default block:")
+    print(f'              "--user", "scanner-{pool}", "on", ">{password}",')
+    print('              "resetkeys", "resetchannels",')
+    for q in queues:
+        print(f'              "~{q}", "~_kombu.binding.{q}",')
+    print(f'              "~unacked.scanners.{pool}", "~unacked_index.scanners.{pool}", '
+          f'"~unacked_mutex.scanners.{pool}",')
+    print(f'              "~asm.pool.{pool}.*", "&/0.asm-{pool}.pidbox", "~*.asm-{pool}.pidbox",')
+    print(f'              "~_kombu.binding.asm-{pool}.pidbox",')
+    print('              "+@read", "+@write", "+@connection", "+ping", "+client|setinfo", "-@dangerous",')
+    print("\n# 3. docker-compose.yml — the scanner service for this pool:")
+    print(f"""  asm-scanner-{pool}:
+    <<: *scanner
+    environment:
+      <<: *scanner-env
+      ASM_SENSOR_POOL: {pool}
+      ASM_CELERY_BROKER_URL: redis://scanner-{pool}:{password}@redis:6379/0
+      ASM_SCANNER_TRANSPORT_KEY: {encode_key(pool_transport_key(pool))}
+      # Its own DAST daemon: a ZAP session is global state shared by whoever uses it.
+      ASM_ZAP_URL: http://zap-{pool}:8090""")
+    print("\n# 4. Point the tenant at it (Platform -> Tenants, or set tenants.worker_pool to")
+    print(f"#    {pool!r} for that tenant). A tenant created after this pool exists already")
+    print("#    carries its own pool name, so there is usually nothing to change.")
 
 
 def cmd_bootstrap(_: argparse.Namespace) -> None:
@@ -166,6 +211,9 @@ def main(argv: list[str] | None = None) -> None:
     k = sub.add_parser("scanner-pool-key")
     k.add_argument("pool", nargs="?", default="default")
     k.set_defaults(fn=cmd_scanner_pool_key)
+    sp = sub.add_parser("scanner-pool", help="provision a tenant-exclusive scanner pool")
+    sp.add_argument("pool")
+    sp.set_defaults(fn=cmd_scanner_pool)
     c = sub.add_parser("create-admin")
     c.add_argument("--email", required=True)
     c.add_argument("--tenant", default="Default")
