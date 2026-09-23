@@ -14,8 +14,9 @@ from app.core.config import get_settings
 from app.core.errors import Conflict, NotFound
 from app.models import Scan, ScanArtifact, ScanProfile, ScanSchedule, ScopeDecision
 from app.models.enums import DecisionResult, ScanStatus, ScanTrigger, StageType
-from app.scans import orchestrator
-from app.scans.profiles import STAGE_LABELS, profile_is_active, stage_time_limit, validate_stages
+from app.scans import engines as engine_identity
+from app.scans import orchestrator, schedules
+from app.scans.profiles import INTERNAL_SLUGS, STAGE_LABELS, profile_is_active, stage_time_limit, validate_stages
 from app.scans.schedules import next_run, validate_timezone
 from app.schemas.common import Message, Page, paginate
 from app.schemas.scans import (
@@ -26,6 +27,7 @@ from app.schemas.scans import (
     ProfileOut,
     ProfileStage,
     ProfileUpdate,
+    RecurrenceOut,
     ScanCreate,
     ScanDetail,
     ScanOut,
@@ -48,7 +50,9 @@ def _detail(scan: Scan) -> ScanDetail:
     stages = []
     for st in sorted(scan.stages, key=lambda s: s.position):
         o = StageOut.model_validate(st)
-        o.label = STAGE_LABELS.get(st.stage_type, st.stage_type.value)
+        # Each stage is named by the capability it performs, so two engines doing the
+        # same kind of work do not look like the same stage running twice.
+        o.label = engine_identity.label_for(st.engine, STAGE_LABELS.get(st.stage_type, st.stage_type.value))
         o.time_limit_seconds = stage_time_limit(st.engine, st.config, get_settings().stage_timeout_seconds)
         stages.append(o)
     return ScanDetail(**ScanOut.model_validate(scan).model_dump(), stages=stages)
@@ -74,7 +78,8 @@ def create_scan(body: ScanCreate, principal: Principal = Depends(require(Permiss
     scan = orchestrator.create_scan(db, tenant_id=principal.require_tenant(), organization_id=body.organization_id,
                                     profile_id=body.profile_id,
                                     trigger=ScanTrigger.API if principal.api_token_id else ScanTrigger.MANUAL,
-                                    requested_by=principal.user_id, target_override=body.targets)
+                                    requested_by=principal.user_id, target_override=body.targets,
+                                    auth_secret=body.auth_secret, auth_header_name=body.auth_header_name)
     db.commit()
     dispatch.start_scan(scan.tenant_id, scan.id)
     db.refresh(scan)
@@ -136,7 +141,10 @@ def download_artifact(scan_id: uuid.UUID, artifact_id: uuid.UUID,
 
 # ------------------------------------------------------------------- profiles
 def _profile_out(p: ScanProfile) -> ProfileOut:
-    stages = [ProfileStage(**s, label=STAGE_LABELS.get(StageType(s["stage"]))) for s in p.stages]
+    stages = [ProfileStage(**{**s, "engine": engine_identity.token_for(s["engine"])},
+                           label=engine_identity.label_for(s["engine"], STAGE_LABELS.get(StageType(s["stage"]))),
+                           accepts_login=engine_identity.accepts_login(s["engine"]))
+              for s in p.stages]
     return ProfileOut(id=p.id, slug=p.slug, name=p.name, description=p.description, stages=stages,
                       is_builtin=p.is_builtin, is_active_scanning=p.is_active_scanning,
                       retain_raw_output=p.retain_raw_output, tenant_id=p.tenant_id)
@@ -145,19 +153,27 @@ def _profile_out(p: ScanProfile) -> ProfileOut:
 @router.get("/scan-profiles", response_model=list[ProfileOut], tags=["scan-profiles"])
 def list_profiles(_: Principal = Depends(require(Permission.SCANS_READ)), db: Session = Depends(get_db)) -> list:
     rows = db.execute(select(ScanProfile).order_by(ScanProfile.is_builtin.desc(), ScanProfile.name)).scalars()
-    return [_profile_out(p) for p in rows]
+    # Internal profiles (Threat Center checks) are never offered to people.
+    return [_profile_out(p) for p in rows if not (p.tenant_id is None and p.slug in INTERNAL_SLUGS)]
 
 
 @router.get("/scan-profiles/engines", response_model=list[EngineOut], tags=["scan-profiles"])
 def engines(_: Principal = Depends(require(Permission.SCANS_READ))) -> list:
-    return [EngineOut(**d) for d in describe_adapters()]
+    """The capabilities a profile can use. Engines are identified by an opaque,
+    deployment-specific token; the implementing tool is not disclosed."""
+    return [EngineOut(id=engine_identity.token_for(d["name"]), display_name=d["display_name"],
+                      stage_types=d["stage_types"], target_kinds=d["target_kinds"], active=d["active"],
+                      credential_providers=d["credential_providers"],
+                      config_schema=engine_identity.sanitize_schema(d["config_schema"], d["display_name"]))
+            # Capabilities that are not scan stages (website screenshots) cannot go in a profile.
+            for d in describe_adapters() if d["stage_types"]]
 
 
 @router.get("/scan-profiles/{profile_id}", response_model=ProfileOut, tags=["scan-profiles"])
 def get_profile(profile_id: uuid.UUID, _: Principal = Depends(require(Permission.SCANS_READ)),
                 db: Session = Depends(get_db)) -> ProfileOut:
     p = db.get(ScanProfile, profile_id)
-    if p is None:
+    if p is None or (p.tenant_id is None and p.slug in INTERNAL_SLUGS):
         raise NotFound("Profile not found")
     return _profile_out(p)
 
@@ -217,42 +233,62 @@ def delete_profile(profile_id: uuid.UUID, principal: Principal = Depends(require
 
 
 # ------------------------------------------------------------------ schedules
+def _schedule_out(s: ScanSchedule) -> ScheduleOut:
+    """A schedule as words, so no screen has to show a cron expression."""
+    rec = schedules.from_cron(s.cron)
+    return ScheduleOut.model_validate(s).model_copy(update={
+        "description": schedules.describe(s.cron),
+        "recurrence": RecurrenceOut(**vars(rec)) if rec else None,
+    })
+
+
+def _cron_of(body: ScheduleCreate | ScheduleUpdate) -> str | None:
+    if body.repeat is not None:
+        return schedules.to_cron(schedules.Recurrence(**body.repeat.model_dump()))
+    return body.cron
+
+
 @router.get("/schedules", response_model=list[ScheduleOut], tags=["schedules"])
 def list_schedules(organization_id: uuid.UUID | None = None, _: Principal = Depends(require(Permission.SCANS_READ)),
                    db: Session = Depends(get_db)) -> list:
     stmt = select(ScanSchedule).order_by(ScanSchedule.name)
     if organization_id:
         stmt = stmt.where(ScanSchedule.organization_id == organization_id)
-    return list(db.execute(stmt).scalars())
+    return [_schedule_out(s) for s in db.execute(stmt).scalars()]
 
 
 @router.post("/schedules", response_model=ScheduleOut, status_code=201, tags=["schedules"])
 def create_schedule(body: ScheduleCreate, principal: Principal = Depends(require(Permission.SCHEDULES_WRITE)),
-                    db: Session = Depends(get_db)) -> ScanSchedule:
+                    db: Session = Depends(get_db)) -> ScheduleOut:
     tid = principal.require_tenant()
     validate_timezone(body.timezone)
     profile = db.get(ScanProfile, body.profile_id)
-    if profile is None:
+    if profile is None or (profile.tenant_id is None and profile.slug in INTERNAL_SLUGS):
         raise NotFound("Profile not found")
+    cron = _cron_of(body)
+    assert cron is not None  # the schema requires exactly one of repeat/cron
     s = ScanSchedule(tenant_id=tid, organization_id=body.organization_id, profile_id=body.profile_id, name=body.name,
-                     cron=body.cron, timezone=body.timezone, enabled=body.enabled,
-                     next_run_at=next_run(body.cron, body.timezone) if body.enabled else None,
+                     cron=cron, timezone=body.timezone, enabled=body.enabled,
+                     next_run_at=next_run(cron, body.timezone) if body.enabled else None,
                      created_by=principal.user_id)
     db.add(s)
     db.flush()
     audit.record(db, Action.SCHEDULE_CHANGED, object_type="scan_schedule", object_id=s.id,
-                 new=body.model_dump(mode="json"))
+                 new={**body.model_dump(mode="json", exclude={"repeat"}), "cron": cron,
+                      "schedule": schedules.describe(cron)})
     db.commit()
-    return s
+    return _schedule_out(s)
 
 
 @router.patch("/schedules/{schedule_id}", response_model=ScheduleOut, tags=["schedules"])
 def update_schedule(schedule_id: uuid.UUID, body: ScheduleUpdate,
-                    _: Principal = Depends(require(Permission.SCHEDULES_WRITE)), db: Session = Depends(get_db)) -> ScanSchedule:
+                    _: Principal = Depends(require(Permission.SCHEDULES_WRITE)), db: Session = Depends(get_db)) -> ScheduleOut:
     s = db.get(ScanSchedule, schedule_id)
     if s is None:
         raise NotFound("Schedule not found")
-    changes = body.model_dump(exclude_unset=True)
+    changes = body.model_dump(exclude_unset=True, exclude={"repeat"})
+    if (cron := _cron_of(body)) is not None:
+        changes["cron"] = cron
     if changes.get("timezone"):
         validate_timezone(changes["timezone"])
     before = {k: getattr(s, k) for k in changes}
@@ -261,9 +297,9 @@ def update_schedule(schedule_id: uuid.UUID, body: ScheduleUpdate,
             setattr(s, k, v)
     s.next_run_at = next_run(s.cron, s.timezone) if s.enabled else None
     audit.record(db, Action.SCHEDULE_CHANGED, object_type="scan_schedule", object_id=s.id, previous=before,
-                 new=changes)
+                 new={**changes, "schedule": schedules.describe(s.cron)})
     db.commit()
-    return s
+    return _schedule_out(s)
 
 
 @router.delete("/schedules/{schedule_id}", response_model=Message, tags=["schedules"])

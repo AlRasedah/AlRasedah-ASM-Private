@@ -13,6 +13,7 @@ export const me = {
     "users:write", "settings:write", "audit:read", "tenants:admin", "intel:admin",
   ],
   memberships: [{ tenant: { id: "t1", name: "Acme", slug: "acme" }, role: "tenant_admin" }],
+  session_idle_minutes: 30,
 };
 
 export const org = {
@@ -56,17 +57,17 @@ const finding = {
   severity: "critical", status: "new", cve: ["CVE-2018-13379"], cvss_score: 9.8, epss_score: 0.97, kev: true,
   risk_score: 95, risk_level: "critical", first_seen: earlier, last_seen: now, resolved_at: null, assigned_to: null,
   tags: ["cve"], false_positive: false, location: "https://vpn.example.com:10443/remote/x",
-  source: "nuclei", source_label: "Vulnerability detection",
+  source_label: "Vulnerability detection", dast: false, unverified: false,
   asset: ref("a3", "http_endpoint", "https://vpn.example.com:10443"),
 };
 
-// A dynamically-confirmed web vulnerability from the OWASP ZAP active scanner (DAST).
+// A web vulnerability confirmed dynamically against the running application (DAST).
 const dastFinding = {
   id: "f2", organization_id: "o1", asset_id: "a3", title: "SQL Injection", category: "vulnerability",
   severity: "high", status: "new", cve: [], cvss_score: null, epss_score: null, kev: false,
   risk_score: 72, risk_level: "high", first_seen: earlier, last_seen: now, resolved_at: null, assigned_to: null,
   tags: ["zap"], false_positive: false, location: "https://vpn.example.com:10443/search [q]",
-  source: "zap_active", source_label: "Active web scanning",
+  source_label: "Active web scanning", dast: true, unverified: false,
   asset: ref("a3", "http_endpoint", "https://vpn.example.com:10443"),
 };
 
@@ -74,7 +75,7 @@ const scan = {
   id: "s1", organization_id: "o1", profile_id: "p1", profile_name: "Standard ASM", status: "completed", trigger: "manual",
   is_baseline: false, target_override: null, started_at: earlier, finished_at: now, created_at: earlier,
   stats: { new_assets: 2, events: 5, new_findings: 1 }, error: null,
-  stages: [{ id: "st1", position: 0, stage_type: "dns_resolution", label: "DNS resolution", engine: "dnsx", status: "completed",
+  stages: [{ id: "st1", position: 0, stage_type: "dns_resolution", label: "DNS resolution", status: "completed",
     is_active: false, target_count: 6, rejected_count: 1, observation_count: 18, started_at: earlier, finished_at: now,
     error: null, stats: { duration_seconds: 3.2 } }],
 };
@@ -82,7 +83,8 @@ const scan = {
 const profile = {
   id: "p1", slug: "standard-asm", name: "Standard ASM", description: "Recommended", is_builtin: true,
   is_active_scanning: true, retain_raw_output: false, tenant_id: null,
-  stages: [{ stage: "dns_resolution", engine: "dnsx", config: {}, enabled: true, optional: false, active: false, label: "DNS resolution" }],
+  stages: [{ stage: "dns_resolution", engine: "eng_0123456789abcdef", config: {}, enabled: true, optional: false,
+    active: false, label: "DNS resolution", accepts_login: false }],
 };
 
 const page = <T,>(items: T[]) => ({ items, total: items.length, page: 1, page_size: 50 });
@@ -99,8 +101,123 @@ export const dashboard = {
   hosting_distribution: [{ provider: "aws", count: 1 }],
 };
 
+const counts = { affected: 3, confirmed: 1, not_detected: 1, inconclusive: 0, unchecked: 1, check_pending: 0,
+  reported_unverified: 0, version_unknown: 0, not_affected_version: 1, no_longer_observed: 0, remediated: 1 };
+
+export const advisory = {
+  id: "adv1", slug: "cve-2099-0001", title: "Example VPN pre-auth RCE", severity: "critical", cves: ["CVE-2099-0001"],
+  status: "published", published_version: 2, source_published_at: earlier, source_updated_at: now,
+  version_published_at: now, counts, last_evaluated_at: now, evaluated_version: 2, stale: false, has_check: true,
+};
+
+export const advisoryDetail = {
+  ...advisory, summary: "A pre-authentication remote code execution in Example VPN.", remediation: "Upgrade to 7.2.5.",
+  references: ["https://vendor.example.org/psirt/2099-0001"],
+  affected_products: [{ vendor: "Example", product: "Example VPN", match_names: ["example vpn"], versions: [{ introduced: "7.0", fixed: "7.2.5" }] }],
+  intel: [{ cve: "CVE-2099-0001", kev: true, kev_due_date: "2026-10-01", epss_score: 0.91, cvss_score: 9.8 }],
+  check: { key: "cve-2099-0001", name: "Example VPN RCE detection", description: null },
+  check_runs: [{ id: "cr1", organization_id: "o1", advisory_version: 2, check_key: "cve-2099-0001", scan_id: "s1",
+    asset_ids: ["a3"], status: "completed", created_at: earlier, finished_at: now, summary: { detected: 1, not_detected: 1, inconclusive: 0 } }],
+};
+
+const evidence = (version: string | null, reason: string) => ({ observations: [{ product: "Example VPN", vendor: "Example",
+  matched_name: "example vpn", version, source: "technology", verdict: "potentially_affected", reason, observed_at: now, third_party: false }] });
+
+export const threatMatches = [
+  { id: "m1", organization_id: "o1", asset: ref("a3", "http_endpoint", "https://vpn.example.com:10443"), owner: "Network team",
+    business_unit: "IT", basis: "product", match_status: "potentially_affected", assessment: "confirmed",
+    evidence: evidence("7.2.1", "version 7.2.1 is inside the affected range (from 7.0, fixed in 7.2.5)"),
+    findings: [{ id: "f1", title: "Fortinet FortiOS - Path Traversal", severity: "critical", status: "new", unverified: false }],
+    check_outcome: "detected", check_detail: "the approved check reported the issue on this asset", checked_at: now,
+    remediation_status: "in_progress", assigned_to: null, remediation_note: null, first_matched_at: earlier, last_evaluated_at: now, advisory_version: 2 },
+  { id: "m2", organization_id: "o1", asset: ref("a5", "http_endpoint", "https://vpn2.example.com"), owner: null, business_unit: null,
+    basis: "product", match_status: "potentially_affected", assessment: "not_detected",
+    evidence: evidence("7.1.0", "version 7.1.0 is inside the affected range (from 7.0, fixed in 7.2.5)"), findings: [],
+    check_outcome: "not_detected", check_detail: "the check completed without detecting the issue. This is not proof the asset is safe",
+    checked_at: now, remediation_status: "open", assigned_to: null, remediation_note: null, first_matched_at: earlier, last_evaluated_at: now, advisory_version: 2 },
+  { id: "m3", organization_id: "o1", asset: ref("a6", "service", "198.51.100.9:443/tcp"), owner: null, business_unit: null,
+    basis: "product", match_status: "version_unknown", assessment: "version_unknown",
+    evidence: evidence(null, "the product was seen but no version was reported"), findings: [],
+    check_outcome: "none", check_detail: null, checked_at: null, remediation_status: "open", assigned_to: null, remediation_note: null,
+    first_matched_at: earlier, last_evaluated_at: now, advisory_version: 2 },
+];
+
+export const advisoryAdmin = {
+  id: "adv1", slug: "cve-2099-0001", title: advisory.title, severity: "critical", status: "published", published_version: 2,
+  version_published_at: now, updated_at: now, has_draft: true, draft_version: 3, versions: [],
+  draft: { title: advisory.title, summary: "x", severity: "critical", cves: ["CVE-2099-0001"], references: [], remediation: "",
+    affected: advisoryDetail.affected_products, check_keys: ["cve-2099-0001"], source_published_at: null, source_updated_at: null },
+  published: null,
+};
+
+export const screenshotStatus = {
+  available: true, enabled: true, cadence: "manual", reason: null,
+  usage: { stored_bytes: 170000, captures_today: 2, active: 0 },
+  limits: { per_tenant_daily: 50, per_tenant_queued: 10, retention_per_endpoint: 2, storage_quota_mb: 200,
+    timeout_seconds: 20, viewport_width: 1280, viewport_height: 800 },
+};
+
+export const capture = (id: string, status: string, extra: Record<string, unknown> = {}) => ({
+  id, asset_id: "a3", status, trigger: "manual", error: null, created_at: now, started_at: now, finished_at: now,
+  captured_at: status === "succeeded" ? now : null, final_url: status === "succeeded" ? "https://vpn.example.com:10443/remote/login" : null,
+  page_title: status === "succeeded" ? "Fortinet SSL VPN Login" : null, http_status: status === "succeeded" ? 200 : null,
+  size: status === "succeeded" ? 84869 : null, width: 1280, height: 800, sha256: null, has_image: status === "succeeded", ...extra,
+});
+
+export const screenshotPolicy = { available: true, max_concurrent: 1, per_tenant_daily: 50, per_tenant_queued: 10,
+  retention_per_endpoint: 2, storage_quota_mb: 200, failed_retention_days: 30, timeout_seconds: 20, viewport_width: 1280,
+  viewport_height: 800, max_image_kb: 2048 };
+
+const xnode = (id: string, type: string, labelText: string, depth: number, extra: Record<string, unknown> = {}) => ({
+  id, kind: "asset", type, label: labelText, status: "active", scope_status: "in_scope", risk_score: 40, open_findings: 0,
+  first_seen: earlier, last_seen: now, depth, hidden: {}, third_party_only: false, ...extra,
+});
+const xedge = (id: string, source: string, target: string, relation: string, freshness: string, extra: Record<string, unknown> = {}) => ({
+  id, source, target, relation, meaning: `${relation} meaning`, active: freshness !== "inactive", evidence: "observed",
+  source_label: "DNS resolution", first_seen: earlier, last_seen: now, age_days: 0, freshness, ...extra,
+});
+
+export const exposureMap = {
+  organization: { id: "o1", name: "Example Corp" }, root_ids: ["x1"], expanded: null,
+  nodes: [
+    xnode("x1", "root_domain", "example.com", 0, { hidden: { subdomain_of: 40 } }),
+    xnode("x2", "subdomain", "vpn.example.com", 1),
+    xnode("x3", "ip_address", "198.51.100.7", 2, { scope_status: "derived" }),
+    xnode("x4", "port", "198.51.100.7:10443/tcp", 3, { third_party_only: true }),
+    xnode("x5", "http_endpoint", "https://vpn.example.com:10443", 2),
+    xnode("x6", "ip_address", "198.51.100.99", 2, { status: "inactive" }),
+    { id: "f:f1", kind: "finding", finding_id: "f1", type: "finding", label: "Fortinet FortiOS - Path Traversal", severity: "critical",
+      status: "new", unverified: false, risk_score: 95, first_seen: earlier, last_seen: now, depth: 3, hidden: {} },
+  ],
+  edges: [
+    xedge("e1", "x2", "x1", "subdomain_of", "current", { evidence: "derived", source_label: "Platform (from names)",
+      meaning: "Naming: this host name is under the domain. Derived from the names, not a network connection." }),
+    xedge("e2", "x2", "x3", "resolves_to", "stale", { age_days: 40 }),
+    xedge("e3", "x3", "x4", "has_port", "historical", { source_label: "Internet exposure intelligence" }),
+    xedge("e4", "x2", "x5", "serves", "current"),
+    xedge("e5", "x2", "x6", "resolves_to", "inactive"),
+    xedge("hf:f1", "x5", "f:f1", "has_finding", "current", { source_label: "Vulnerability detection" }),
+  ],
+  truncated: false, truncation_reasons: [],
+  limits: { depth: 2, max_nodes: 150, max_edges: 450, per_node: 25, time_budget_ms: 4000 }, elapsed_ms: 12,
+  notice: "Observed relationships only. A line never means one asset can be used to reach another.",
+};
+
 export function mockApi(path: string): unknown {
   const routes: [RegExp, unknown][] = [
+    [/^\/exposure-map$/, exposureMap],
+    [/^\/screenshots\/status$/, screenshotStatus],
+    [/^\/assets\/[^/]+\/screenshots$/, { status: screenshotStatus, latest: capture("sc1", "succeeded"), captures: [capture("sc1", "succeeded")] }],
+    [/^\/settings\/screenshots$/, { policy: screenshotPolicy, defaults: screenshotPolicy,
+      bounds: { max_concurrent: [1, 8], per_tenant_daily: [1, 5000] } }],
+    [/^\/threats$/, page([advisory])],
+    [/^\/threats\/[^/]+\/assets$/, page(threatMatches)],
+    [/^\/threats\/[^/]+\/checks$/, advisoryDetail.check_runs],
+    [/^\/threats\/[^/]+$/, advisoryDetail],
+    [/^\/threat-catalog$/, [advisoryAdmin]],
+    [/^\/threat-catalog\/checks$/, [{ key: "cve-2099-0001", name: "Example VPN RCE detection", description: null, kind: "detection_template",
+      template_id: "cve-2099-0001", enabled: true, updated_at: now }]],
+    [/^\/threat-catalog\/[^/]+$/, advisoryAdmin],
     [/^\/auth\/me$/, me],
     [/^\/auth\/api-tokens$/, []],
     [/^\/organizations$/, [org]],
@@ -113,7 +230,7 @@ export function mockApi(path: string): unknown {
     [/^\/assets\/facets$/, { asset_types: [], statuses: [], approval: [], technologies: [{ value: "nginx", count: 1 }], asns: [], owners: [], business_units: [], tags: [] }],
     [/^\/assets$/, page([asset])],
     [/^\/assets\/[^/]+\/timeline$/, page([event])],
-    [/^\/assets\/[^/]+\/observations$/, page([{ id: 1, scan_id: "s1", source: "dnsx", source_label: "DNS resolution", observed_at: now, data: { resolves: true } }])],
+    [/^\/assets\/[^/]+\/observations$/, page([{ id: 1, scan_id: "s1", source_label: "DNS resolution", observed_at: now, data: { resolves: true } }])],
     [/^\/assets\/[^/]+$/, assetDetail],
     [/^\/findings$/, page([finding, dastFinding])],
     [/^\/dashboard\/web-apps$/, page([{ id: "a3", url: "https://vpn.example.com:10443", host: "vpn.example.com",
@@ -131,7 +248,7 @@ export function mockApi(path: string): unknown {
     [/^\/scans\/[^/]+\/decisions$/, page([{ id: 1, stage_id: "st1", target: "dev-api.example.com", decision: "rejected", reason: "hostname excluded from scope", active: false, created_at: now }])],
     [/^\/scans\/[^/]+$/, scan],
     [/^\/scan-profiles$/, [profile]],
-    [/^\/schedules$/, [{ id: "sch1", organization_id: "o1", profile_id: "p1", name: "Nightly", cron: "0 2 * * *", timezone: "Asia/Riyadh", enabled: true, next_run_at: now, last_run_at: earlier, last_scan_id: "s1" }]],
+    [/^\/schedules$/, [{ id: "sch1", organization_id: "o1", profile_id: "p1", name: "Nightly", cron: "0 2 * * *", description: "Every day at 02:00", recurrence: { frequency: "daily", hour: 2, minute: 0, weekday: null, day: null }, timezone: "Asia/Riyadh", enabled: true, next_run_at: now, last_run_at: earlier, last_scan_id: "s1" }]],
     [/^\/reports$/, page([{ id: "r1", organization_id: "o1", report_type: "executive", report_format: "html", title: "Executive Attack Surface Report",
       status: "completed", size: 20480, error: null, parameters: {}, created_at: now, completed_at: now }])],
     [/^\/integrations$/, [{ id: "i1", name: "Wazuh", integration_type: "wazuh", config: { mode: "syslog", host: "wazuh", port: 514, protocol: "udp" },

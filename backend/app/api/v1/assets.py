@@ -184,7 +184,8 @@ def get_asset(asset_id: uuid.UUID, _: Principal = Depends(require(Permission.ASS
                          risk_factors=a.risk_factors or [], discovered_at=a.discovered_at,
                          last_scanned_at=a.last_scanned_at, inactive_since=a.inactive_since,
                          missed_count=a.missed_count, discovery_method=a.discovery_method,
-                         sources=sorted({source_label(s) or s for s in (a.sources or [])}))
+                         # Capability labels only: never the engine names stored on the row.
+                         sources=sorted({source_label(s) or "Scan" for s in (a.sources or [])}))
     detail.relationships = _relationships(db, a)
     return detail
 

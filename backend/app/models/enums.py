@@ -12,7 +12,8 @@ __all__ = [
     "Role", "TenantStatus", "AssetType", "AssetStatus", "ScopeStatus", "ApprovalStatus", "Criticality",
     "FindingStatus", "ScanStatus", "StageStatus", "ScanTrigger", "EventType", "ScopeEntryType",
     "VerificationStatus", "DecisionResult", "IntegrationType", "DeliveryStatus", "ReportType",
-    "ReportFormat", "JobStatus", "RiskLevel",
+    "ReportFormat", "JobStatus", "RiskLevel", "AdvisoryStatus", "MatchBasis", "MatchStatus", "CheckOutcome",
+    "Assessment", "RemediationStatus", "CheckRunStatus", "ScreenshotStatus",
 ]
 
 
@@ -163,6 +164,8 @@ class EventType(StrEnum):
     SHADOW_IT_DISCOVERED = "shadow_it_discovered"
     SCAN_FAILED = "scan_failed"
     SCAN_COMPLETED = "scan_completed"
+    # A published advisory matched assets that had not matched it before (Threat Center).
+    THREAT_ADVISORY_MATCHED = "threat_advisory_matched"
 
 
 class ScopeEntryType(StrEnum):
@@ -220,3 +223,92 @@ class JobStatus(StrEnum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+# ------------------------------------------------------------------ Threat Center
+class AdvisoryStatus(StrEnum):
+    DRAFT = "draft"  # never published: visible to platform administrators only
+    PUBLISHED = "published"
+    ARCHIVED = "archived"  # no longer evaluated; tenants keep their history
+
+
+class MatchBasis(StrEnum):
+    """Why an asset is on an advisory's list at all."""
+
+    PRODUCT = "product"  # a product name from the advisory was observed on the asset
+    FINDING = "finding"  # a verified finding on the asset carries one of the advisory's CVEs
+    THIRD_PARTY = "third_party"  # only an unverified third-party report (e.g. exposure intelligence) names a CVE
+
+
+class MatchStatus(StrEnum):
+    """What the inventory says, before any check."""
+
+    POTENTIALLY_AFFECTED = "potentially_affected"
+    VERSION_UNKNOWN = "version_unknown"  # product seen, version missing or unreadable
+    NOT_AFFECTED_VERSION = "not_affected_version"  # product seen at a version outside every affected range
+    NO_LONGER_OBSERVED = "no_longer_observed"  # matched before; the evidence is gone now
+
+
+class CheckOutcome(StrEnum):
+    NONE = "none"
+    PENDING = "pending"
+    DETECTED = "detected"
+    NOT_DETECTED = "not_detected"  # a completed check found nothing — never proof of safety
+    INCONCLUSIVE = "inconclusive"  # failed, unsupported, blocked, cancelled, timed out or incomplete
+
+
+class Assessment(StrEnum):
+    """The single label shown per asset, derived from match, check and findings."""
+
+    CONFIRMED = "confirmed"  # a verified finding exists
+    CHECK_PENDING = "check_pending"
+    NOT_DETECTED = "not_detected"
+    INCONCLUSIVE = "inconclusive"
+    POTENTIALLY_AFFECTED = "potentially_affected"
+    VERSION_UNKNOWN = "version_unknown"
+    REPORTED_UNVERIFIED = "reported_unverified"
+    NOT_AFFECTED_VERSION = "not_affected_version"
+    NO_LONGER_OBSERVED = "no_longer_observed"
+
+
+# Assessments that count as "may be affected" (everything except the two that say otherwise).
+AFFECTED_ASSESSMENTS = (
+    Assessment.CONFIRMED, Assessment.CHECK_PENDING, Assessment.NOT_DETECTED, Assessment.INCONCLUSIVE,
+    Assessment.POTENTIALLY_AFFECTED, Assessment.VERSION_UNKNOWN, Assessment.REPORTED_UNVERIFIED,
+)
+
+
+class RemediationStatus(StrEnum):
+    """The tenant's own workflow, independent of what scans say."""
+
+    OPEN = "open"
+    IN_PROGRESS = "in_progress"
+    RESOLVED = "resolved"
+    ACCEPTED_RISK = "accepted_risk"
+    NOT_APPLICABLE = "not_applicable"
+
+
+REMEDIATION_DONE = (RemediationStatus.RESOLVED, RemediationStatus.ACCEPTED_RISK, RemediationStatus.NOT_APPLICABLE)
+
+
+class CheckRunStatus(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"  # the scan finished; per-asset outcomes live on the matches
+    INCONCLUSIVE = "inconclusive"  # the scan failed, was cancelled or could not run
+    CANCELLED = "cancelled"
+
+
+ACTIVE_CHECK_RUN_STATES = (CheckRunStatus.QUEUED, CheckRunStatus.RUNNING)
+
+
+class ScreenshotStatus(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"  # the page could not be captured (unreachable, timeout, not a page, limits)
+    BLOCKED = "blocked"  # refused by scope, egress policy or a disabled feature — nothing was fetched
+    CANCELLED = "cancelled"
+
+
+ACTIVE_SCREENSHOT_STATES = (ScreenshotStatus.QUEUED, ScreenshotStatus.RUNNING)

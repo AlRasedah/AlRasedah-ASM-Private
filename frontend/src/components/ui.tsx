@@ -69,6 +69,8 @@ const STATUS_TONE: Record<string, string> = {
   decommissioned: "neutral", new: "accent", investigating: "warn", accepted_risk: "neutral", false_positive: "neutral",
   remediated: "ok", reopened: "bad", sent: "ok", in_scope: "ok", derived: "neutral", out_of_scope: "neutral",
   allowed: "ok", rejected: "bad", verified: "ok", not_required: "neutral",
+  succeeded: "ok", blocked: "bad", inconclusive: "warn", resolved: "ok", in_progress: "warn", open: "neutral",
+  not_applicable: "neutral", published: "ok", archived: "neutral", draft: "warn",
 };
 
 export function StatusBadge({ value }: { value: string | null | undefined }) {

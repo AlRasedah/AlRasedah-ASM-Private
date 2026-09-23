@@ -23,11 +23,15 @@
 | `base.py` | `ScannerAdapter` ABC (`validate_configuration → execute → parse_results → normalize`, driven by `run()`), `AdapterConfig` (`extra="forbid"`), `ExecutionContext`, `RawOutput`, `StageType`, helpers (`write_targets_file`, `iter_json_lines`, `make_artifact`). |
 | `ports.py` | Explicit port sets (`web`, `common`, `extended`, `full`) and spec helpers (`validate_port_spec`, `port_in_spec`, `normalize_spec`). |
 | `registry.py` | `@register`, `get_adapter`, `describe_adapters` (feeds the profile editor), entry-point discovery for external adapters. |
-| `jobs.py` | `SensorJob` (the message the platform sends), task name `asm.sensors.run`, AES-GCM credential sealing bound to the job id. |
-| `runner.py` | `execute_job`: build the `ExecutionContext` from job + deployment env, unseal credentials, run the adapter in a temp dir, turn every error into a *failed* `SensorResult` (a sensor never crashes the worker). |
-| `worker.py` | The Celery app for sensor containers (`celery -A asm_sensors.worker worker -Q scanners.default`). |
+| `jobs.py` | `SensorJob` (the message the platform sends), task name `asm.sensors.run`, `ResultEnvelope`, per-pool HKDF keys, AES-GCM credential sealing bound to the job id and HMAC signing of results. |
+| `runner.py` | `execute_job`: build the `ExecutionContext` from job + deployment env, unseal credentials, apply the egress filter, run the adapter in a temp dir, turn every error into a *failed* `SensorResult` (a sensor never crashes the worker). |
+| `coordination.py` | The pool's `Coordinator`: job claims (a redelivered job is ignored) and leases for shared external daemons, so two scans never drive one ZAP instance at the same time. |
+| `logs.py` | Keeps credentials out of the worker's logs: silences routine HTTP request logging (the URL carries Shodan's key) and redacts known secret shapes from any record. |
+| `egress_proxy.py` | The per-job forward proxy a screenshot browser must use: resolves and checks **each** connection (non-public, link-local/metadata even in lab mode, scope exclusions, IPv4 hidden in IPv6, browser-vendor services) and connects to the exact address it checked; bounds connections, bytes and idle time. |
+| `identity.py` | What the scanner looks like on the wire: `user_agent()` (neutral by default) and `identity_header()` (nothing unless `ASM_SCANNER_IDENTITY` is set). Scan traffic must not advertise the product — see ADR-022. |
+| `worker.py` | The Celery app for sensor containers (`celery -A asm_sensors.worker worker -Q scanners.default`); tasks are `shared=False` so a sensor worker knows only its own task. |
 | `adapters/_common.py` | `ObservationSet` (dedup while building observations), `clean_hostname/ip/cidr/asn`, `port_value`. |
-| `adapters/<tool>/` | One package per tool: `amass`, `subfinder`, `crtsh`, `dnsx`, `asnlookup`, `naabu`, `httpx`, `nuclei`, `spiderfoot`, `bbot`, `zap` (the OWASP ZAP `zap_spider` + `zap_active` DAST engines). |
+| `adapters/<tool>/` | One package per engine: `amass`, `subfinder`, `crtsh`, `dnsx`, `asnlookup`, `naabu`, `httpx`, `nuclei`, `spiderfoot`, `bbot`, `shodan` (passive host lookups, `historical`), `zap` (the OWASP ZAP `zap_spider` + `zap_active` DAST engines) and `screenshot` (website capture with a pinned Chromium behind `egress_proxy`; not a scan stage — dispatched by the platform's screenshot service; `python -m asm_sensors.adapters.screenshot` is the operator self-test). |
 
 ## `backend/app` — the platform
 
@@ -74,7 +78,14 @@
 | `scans/orchestrator.py` | `create_scan`, `cancel_scan`, `try_start`, `prepare_next_stage` (authorization + job), `complete_stage` (ingest + rules), `fail_stage`, `finalize_scan`, `run_inline`. |
 | `scans/schedules.py` | Cron/timezone helpers. |
 | `intel/service.py` | KEV, EPSS, NVD fetch/parse/cache, offline import, re-enrichment. |
-| `integrations/channels.py` | Notification channel adapters and their config models; SSRF guard; Wazuh/syslog formatting. |
+| `threats/` | Threat Center: `content.py` (what an advisory may contain — data only), `versions.py` (the documented version rule), `matching.py` (pure product/version matcher), `service.py` (catalog, per-organization evaluation, checks through `create_scan`, remediation, counts), `jobs.py` (cross-tenant evaluation). See [../THREAT_CENTER.md](../THREAT_CENTER.md). |
+| `screenshots/` | Website screenshots: `service.py` (policy in `platform_settings.screenshots`, request checks, the deployment-wide dispatcher under a PostgreSQL advisory lock with its watchdog, result binding and image re-validation, storage, retention, weekly schedule), `jobs.py` (reserve → launch → publish, or run inline). See [../SCREENSHOTS.md](../SCREENSHOTS.md). |
+| `exposure/graph.py` | External exposure map: bounded breadth-first traversal of observed relationships inside one organization (window-ranked neighbours per node, node/edge caps, statement timeout, time budget, visited set), edge meaning/evidence/freshness, findings as leaves, a 30 s TTL cache keyed by tenant + role + findings permission. See [../EXPOSURE_MAP.md](../EXPOSURE_MAP.md). |
+| `integrations/channels.py` | Notification channel adapters and their config models; SSRF guard; Wazuh/syslog formatting; shared email formatting. Channels with `implemented = False` (Jira, ServiceNow) stay in the code but are **not offered by the API or UI** until they work. |
+| `scans/engines.py` | Capability labels, opaque per-deployment engine tokens and schema scrubbing — how the product avoids naming its engines in anything a browser sees. |
+| `scans/messages.py` | Sensor errors → advice a user can act on, with no tool names; raw output stays in the worker log. |
+| `integrations/providers.py` | What each data-source credential is, its group, key format and where to get it — the single source for the UI and the user guide. |
+| `services/platform_settings.py` | Deployment settings a platform admin edits in the UI (mail server; password encrypted), overriding `ASM_SMTP_*`. |
 | `integrations/notifications.py` | Policy matching, throttling, batching per channel, delivery log, retries, test sends. |
 | `integrations/mailer.py` | SMTP sending; password reset mail. |
 | `reporting/` | `service.py` (context building, HTML/PDF/CSV rendering, `run_report`), `charts.py` (dependency-free SVG), `templates/report.html`. |
@@ -96,7 +107,18 @@
 `backend/alembic/versions/0001_initial_schema.py` — autogenerated table DDL wrapped with
 `CREATE EXTENSION pg_trgm` and `apply_rls()` (policies for every tenant table, users,
 tenants, profiles, audit log and private auth tables). `alembic/env.py` sets
-`app.bypass_rls = on` for the migration connection.
+`app.bypass_rls = on` for the migration connection. Then:
+
+| Revision | Adds |
+|---|---|
+| `0002_audit_chain_seq` | gapless per-chain `audit_logs.chain_seq` (chapter 11.6) |
+| `0003_stage_dispatch_binding` | `scan_stages.dispatched_at` / `worker_pool` — a result is accepted only if it answers the job the stage actually published |
+| `0004_unverified_findings` | `findings.unverified` — third-party CVE reports wait in their own view (ADR-020) |
+| `0005_platform_email` | `platform_settings` (encrypted SMTP password) and `user_alert_preferences` (ADR-021) |
+| `0006_scan_auth_secret` | `scans.auth_secret_encrypted` / `auth_header_name` — the per-scan session secret for authenticated DAST (ADR-023) |
+| `0008_threat_center` | Threat Center: global `threat_advisories`, `threat_advisory_versions`, `threat_checks` (RLS `catalog_read` = published only, `catalog_write` = system sessions only); tenant `threat_campaigns`, `threat_matches`, `threat_check_runs` (standard tenant isolation). One active check run per advisory and organization (partial unique index) |
+| `0009_screenshots` | `screenshot_captures` (tenant isolation; partial index on queued/running for the dispatcher) and `platform_settings.screenshots` (the platform policy, empty = defaults = off) |
+| `0007_personal_delivery_rows` | `notification_deliveries.recipient_user_id` — a personal alert gets a durable, retryable row like an integration delivery |
 
 ## `frontend/src`
 
@@ -138,6 +160,7 @@ documentation opened by the sidebar **Documentation** link — see chapter 7.10)
 | `backend/conftest.py` | Creates the test DB + non-superuser role, migrates, bootstraps; truncates between tests; `Factory` helpers. |
 | `backend/sensors_fake.py` | `FakeSensors` — replaces adapter execution with recorded output. |
 | `backend/test_*.py` | Unit (pure logic), database (RLS, change detection, pipeline) and API tests. |
+| `integration/` | Tests needing a real broker (`test_broker_isolation.py` starts Celery workers against Valkey with the compose ACL); skipped when none is reachable. |
 
 ## `scripts/`
 

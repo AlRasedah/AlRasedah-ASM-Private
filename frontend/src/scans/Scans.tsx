@@ -7,11 +7,13 @@ import type { Page, Scan, ScanProfile } from "@/api/types";
 import { useAuth } from "@/auth/AuthContext";
 import { useOrg } from "@/auth/OrgContext";
 import { Card, Empty, ErrorBox, Field, Loading, Modal, PageHead, Pagination, StatusBadge } from "@/components/ui";
+import { useTenantEmpty } from "@/components/TenantEmpty";
 import { fmtDate, label } from "@/lib/format";
 
 export default function Scans() {
   const { orgId, orgName } = useOrg();
   const { can } = useAuth();
+  const tenantEmpty = useTenantEmpty();
   const [page, setPage] = useState(1);
   const [open, setOpen] = useState(false);
   const q = useQuery({
@@ -25,7 +27,7 @@ export default function Scans() {
       <PageHead title="Scans" sub="Discovery and exposure scans. Every target is checked against the authorized scope before it is contacted."
                 actions={can("scans:run") && <button className="btn primary" onClick={() => setOpen(true)}><Play /> New scan</button>} />
       <Card flush>
-        {q.isLoading ? <Loading /> : !q.data?.items.length ? <Empty>No scans yet.</Empty> : (
+        {q.isLoading ? <Loading /> : !q.data?.items.length ? (tenantEmpty ?? <Empty>No scans yet.</Empty>) : (
           <>
             <table className="data">
               <thead><tr><th>Started</th><th>Organization</th><th>Profile</th><th>Status</th><th>Trigger</th>
@@ -64,11 +66,17 @@ function NewScan({ onClose }: { onClose: () => void }) {
   const [org, setOrg] = useState(orgId ?? orgs[0]?.id ?? "");
   const [profile, setProfile] = useState("");
   const [targets, setTargets] = useState("");
+  const [authSecret, setAuthSecret] = useState("");
+  const [authHeader, setAuthHeader] = useState<"Cookie" | "Authorization">("Cookie");
   const selected = profiles.data?.find((p) => p.id === (profile || profiles.data?.[0]?.id));
+  // Only stages that can sign in offer the field (the API says which; engines are not exposed).
+  const webAppStage = selected?.stages.some((s) => s.enabled && s.accepts_login);
   const m = useMutation({
     mutationFn: () => api<Scan>("/scans", { method: "POST", body: {
       organization_id: org, profile_id: selected?.id,
-      targets: targets.trim() ? targets.split(/[\s,]+/).filter(Boolean) : undefined } }),
+      targets: targets.trim() ? targets.split(/[\s,]+/).filter(Boolean) : undefined,
+      auth_secret: webAppStage && authSecret.trim() ? authSecret.trim() : undefined,
+      auth_header_name: authHeader } }),
     onSuccess: (s) => { qc.invalidateQueries({ queryKey: ["scans"] }); nav(`/scans/${s.id}`); },
   });
   return (
@@ -100,8 +108,33 @@ function NewScan({ onClose }: { onClose: () => void }) {
           </div>
         )}
         <Field label="Limit to specific targets (optional)">
-          <textarea placeholder="api.example.com, 203.0.113.10" value={targets} onChange={(e) => setTargets(e.target.value)} />
+          <textarea placeholder="api.example.com, 203.0.113.10, app.example.com:8580" value={targets}
+                    onChange={(e) => setTargets(e.target.value)} />
+          <div className="small muted">
+            One per line, or comma separated. Add <code>:port</code> for an application on a non-standard port
+            (<code>app.example.com:8580</code>) — that port is then probed and scanned even if it is outside the
+            profile&rsquo;s port range, and other ports on that host are left alone. Full URLs work too.
+          </div>
         </Field>
+        {webAppStage && (
+          <>
+            <Field label={`Sign in with a ${authHeader === "Cookie" ? "session cookie" : "token"} (optional)`}>
+              <div className="filters" style={{ padding: 0 }}>
+                <select value={authHeader} onChange={(e) => setAuthHeader(e.target.value as "Cookie" | "Authorization")}
+                        aria-label="Send the value as this header">
+                  <option value="Cookie">Cookie</option>
+                  <option value="Authorization">Authorization</option>
+                </select>
+                <input type="password" autoComplete="off" style={{ flex: 1, minWidth: 260 }}
+                       placeholder={authHeader === "Cookie" ? "PHPSESSID=abc123; security=low" : "Bearer eyJhbGci…"}
+                       value={authSecret} onChange={(e) => setAuthSecret(e.target.value)} />
+              </div>
+            </Field>
+            <div className="small muted">Paste a logged-in session from your browser and the web application scanner
+              tests the pages behind the login. It is sent only to the authorized origin, stored encrypted, used for
+              this scan only, and erased when the scan ends. Sessions expire, so start the scan soon after copying it.</div>
+          </>
+        )}
       </div>
     </Modal>
   );

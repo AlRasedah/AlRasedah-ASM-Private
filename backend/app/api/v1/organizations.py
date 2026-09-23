@@ -29,7 +29,8 @@ def _summary(db: Session, org: Organization) -> OrganizationSummary:
     out.assets = db.scalar(select(func.count()).select_from(Asset).where(
         Asset.organization_id == org.id, Asset.status == AssetStatus.ACTIVE)) or 0
     out.open_findings = db.scalar(select(func.count()).select_from(Finding).where(
-        Finding.organization_id == org.id, Finding.status.in_([s.value for s in OPEN_FINDING_STATES]))) or 0
+        Finding.organization_id == org.id, Finding.status.in_([s.value for s in OPEN_FINDING_STATES]),
+        Finding.unverified.is_(False))) or 0
     out.risk_score = organization_score(db, org)
     out.last_scan_at = db.scalar(select(func.max(Scan.finished_at)).where(Scan.organization_id == org.id))
     return out
@@ -97,6 +98,10 @@ def delete_organization(org_id: uuid.UUID, _: Principal = Depends(require(Permis
                         db: Session = Depends(get_db)) -> Message:
     org = _get(db, org_id)
     audit.record(db, Action.ORG_DELETED, object_type="organization", object_id=org.id, previous={"name": org.name})
+    # Screenshot records cascade with the organization; their stored images must go too.
+    from app.screenshots.service import delete_organization_objects
+
+    delete_organization_objects(db, org.id)
     db.delete(org)
     db.commit()
     return Message(message="Organization and all of its data were deleted")

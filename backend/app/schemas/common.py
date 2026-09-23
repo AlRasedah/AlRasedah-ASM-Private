@@ -53,9 +53,14 @@ SOURCE_LABELS = {
     "httpx": "Web fingerprinting",
     "naabu": "Service discovery",
     "asnlookup": "Network ownership",
+    "shodan": "Internet exposure intelligence",
     "scope": "Authorized scope",
     "manual": "Manual entry",
 }
+
+
+# Detections confirmed by actively exercising the running web application.
+DAST_SOURCES = frozenset({"zap_active"})
 
 
 def source_label(source: str | None) -> str | None:

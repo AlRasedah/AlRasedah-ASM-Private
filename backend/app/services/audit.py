@@ -59,6 +59,14 @@ class Action:
     REPORT_GENERATED = "report.generated"
     REPORT_DOWNLOADED = "report.downloaded"
     DATA_EXPORTED = "data.exported"
+    ADVISORY_CHANGED = "threat_advisory.changed"
+    ADVISORY_PUBLISHED = "threat_advisory.published"
+    THREAT_CHECK_CHANGED = "threat_check.changed"
+    THREAT_CHECK_REQUESTED = "threat_check.requested"
+    THREAT_REMEDIATION_UPDATED = "threat_match.updated"
+    SCREENSHOT_REQUESTED = "screenshot.requested"
+    SCREENSHOT_DELETED = "screenshot.deleted"
+    SCREENSHOT_POLICY_CHANGED = "screenshot_policy.changed"
 
 
 def _jsonable(value: Any) -> Any:
@@ -110,9 +118,13 @@ def record(
     previous: Any = None,
     new: Any = None,
     success: bool = True,
+    platform: bool = False,
 ) -> AuditLog:
+    """Append to the tenant's chain (``tenant_id`` or the request's tenant), or to the
+    platform chain when ``platform`` is set — for changes to global data such as the
+    Threat Center catalog, which belong to no tenant."""
     ctx = get_context()
-    tenant_id = tenant_id if tenant_id is not None else ctx.tenant_id
+    tenant_id = None if platform else (tenant_id if tenant_id is not None else ctx.tenant_id)
     lock_key = f"audit:{tenant_id or 'platform'}"
     session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": lock_key})
     last = session.execute(

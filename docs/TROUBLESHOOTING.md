@@ -131,10 +131,13 @@ The first admin is created by `bootstrap` from `.env`:
 grep -E '^ASM_BOOTSTRAP_ADMIN_EMAIL|^ASM_BOOTSTRAP_ADMIN_PASSWORD' .env
 ```
 `generate_env.py` also prints them when it generates the password. To create
-another admin:
+another admin, pass the **exact** name of the tenant they should work in:
 ```bash
 docker compose run --rm asm-api cli create-admin --email you@example.com --tenant "Your Org" --platform-admin
 ```
+The name must match exactly. If it does not, the command refuses and lists the
+tenants that exist — `--create-tenant` starts a new, empty one on purpose. (It
+used to create one silently, which produced issue 15 below.)
 
 ### 10. The login page shows old branding / a port I didn't configure
 That is almost always a **separate, older instance** running outside this stack
@@ -171,7 +174,57 @@ Set `ASM_ZAP_URL=http://zap:8090` and a random `ASM_ZAP_API_KEY` in `.env` (the 
 service starts with that same key). Targets must be in scope with active scanning
 permitted.
 
-### 14. Certificate/KEV/EPSS intel not updating (air-gapped)
+### 14. A stage failed and the message doesn't name a tool
+
+By design: the interface names capabilities, not engines, and stage errors are rewritten as
+advice (developer handbook ADR-022). The raw output is in the sensor log —
+`docker compose logs asm-scanner` — keyed by the stage id that the message came from. The
+mapping back, for operators:
+
+| What the user sees | What actually happened | Do |
+|---|---|---|
+| "Detection content is not installed yet. It downloads when the scanner starts (about 1 GB)…" | Nuclei has no templates | Give the scanner internet access on start-up (the entrypoint runs `-update-templates` into `ASM_NUCLEI_TEMPLATES_DIR`), or mount a populated templates directory; then rescan |
+| "This capability is not installed in the scanner deployed here." | the engine's binary is missing from the image | `docker compose run --rm asm-scanner versions`; rebuild the scanner image |
+| "The web application scanner is not enabled in this deployment." | `ASM_ZAP_URL`/`ASM_ZAP_API_KEY` unset, or the ZAP container is down | issue 13 above |
+| "Open-source intelligence enrichment is not enabled in this deployment." | `ASM_SPIDERFOOT_URL` unset or that container is down | `docker compose --profile enrichment up -d` |
+| "No API key is stored for this data source…" / "…was rejected" | a tenant data-source credential is missing or invalid | Integrations → Data-source API keys → **Test** |
+| "A data source did not answer, so its results are incomplete." | an upstream HTTP error (crt.sh is the usual one) | usually transient; check egress and rescan |
+| "This stage ran out of time before it finished…" | the stage hit its budget | raise it in a custom profile, or narrow the scope |
+| "<Capability> did not finish successfully." | no mapping for this failure | read `asm-scanner` logs, then add the case to `backend/app/scans/messages.py` |
+
+Errors stored by scans that ran **before** this change keep their original raw text.
+
+### 15. A user I added sees none of my data
+
+Visibility is tenant-wide: there is no per-user or per-organization restriction,
+so a member of your tenant sees every asset, finding and scan in it. Empty pages
+mean the **session is in a different tenant**, and every page now says so
+("<Tenant> has no data yet") instead of rendering an empty table. Two causes:
+
+- **They were created in a tenant of their own.** `create-admin --tenant` used to
+  create the tenant when the name did not match exactly, so `"Acme"` for
+  *"Acme Corp"* silently made a second, empty tenant with that admin in it. The
+  command now refuses unknown names; existing strays are still out there.
+- **Their account already existed.** Adding an existing email to a tenant does not
+  repoint the tenant they sign in to, by design. They land in their old one and
+  pick yours from the tenant selector in the top bar (it appears once an account
+  belongs to more than one). `create-admin` now prints a note when this applies.
+
+What is actually where:
+```bash
+docker compose exec postgres psql -U postgres -d asm -c "SELECT t.name AS tenant, t.id, count(DISTINCT s.id) AS scans, string_agg(DISTINCT u.email, ', ') AS members FROM tenants t LEFT JOIN scans s ON s.tenant_id=t.id LEFT JOIN tenant_memberships m ON m.tenant_id=t.id LEFT JOIN users u ON u.id=m.user_id GROUP BY t.id, t.name ORDER BY t.name;"
+```
+
+Fix without SQL: as an admin of the tenant that holds the data, **Users → Add
+user** with the same email. That adds the missing membership; they then pick the
+right tenant from the selector. Delete the stray tenant from Platform → Tenants.
+
+To move them outright, with the ids from the query above:
+```bash
+docker compose exec postgres psql -U postgres -d asm -c "UPDATE tenant_memberships SET tenant_id='<real>' WHERE user_id=(SELECT id FROM users WHERE email='them@example.com'); UPDATE users SET default_tenant_id='<real>' WHERE email='them@example.com';"
+```
+
+### 16. Certificate/KEV/EPSS intel not updating (air-gapped)
 Point the feeds at mirrors (`ASM_INTEL_*_URL`) or disable auto-refresh
 (`ASM_INTEL_REFRESH_ENABLED=false`) and import offline — see DEPLOYMENT.md §6.
 

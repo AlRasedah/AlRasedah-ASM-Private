@@ -98,7 +98,19 @@ def needs_rotation(token: str, keyring: Keyring | None = None) -> bool:
     return token.split(":", 2)[1] != kr.active_id
 
 
+def pool_transport_key(pool: str) -> bytes:
+    """The key held by one worker pool's sensor workers (derived from the master transport key).
+
+    It seals that pool's job credentials and authenticates its results; no other
+    pool can derive it.
+    """
+    from asm_sensors.jobs import pool_key
+
+    return pool_key(transport_key(), pool)
+
+
 def transport_key() -> bytes:
+    """The platform's master transport key. Never given to sensor workers."""
     raw = get_settings().scanner_transport_key.get_secret_value()
     if not raw or PLACEHOLDER in raw:
         if get_settings().env == "production":

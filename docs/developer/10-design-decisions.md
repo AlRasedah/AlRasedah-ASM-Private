@@ -47,11 +47,18 @@ sensor framework is isolated in its own package.
 **Alternatives**: async SQLAlchemy in the API + sync in workers (duplicated code paths).
 
 ## ADR-007 Celery state machine, sensors on their own queues
-**Decision**: `start_scan → advance_scan → chain(sensor on scanners.<pool>, ingest on core)
-→ advance_scan`, errback `stage_failed`, watchdog for lost jobs; results via the broker.
-**Consequences**: no task blocks waiting on another; sensors need only broker credentials;
-per-tenant pools come for free. Large results travel through Redis/Valkey (gzip-compressed).
-**Alternatives**: sensors writing to the DB directly (breaks isolation), Kafka (unjustified).
+**Decision**: `start_scan → advance_scan → [sensor job on scanners.<pool>] → authenticated
+result on results.<pool> → asm-ingest → advance_scan`; watchdog for lost jobs; results via
+the broker. *(Revised after the 2026-09-19 audit: the original design chained the sensor task
+to a core `ingest_stage` task, which meant sensor workers published core tasks and shared the
+platform's broker account and key.)*
+**Consequences**: no task blocks waiting on another; sensors need only their pool's broker
+user and key; a pool is a trust boundary (ACLs, per-pool HKDF keys, MAC'd results bound to
+the persisted job, a result consumer that registers a single task). Large results travel
+through Redis/Valkey. State transitions are row-locked and committed before publishing.
+**Alternatives**: sensors writing to the DB directly (breaks isolation), Celery's X.509
+message signing for every task (heavier key management; ACLs + result MACs cover the same
+threats here), Kafka (unjustified).
 
 ## ADR-008 Inline mode
 **Decision**: `ASM_SENSOR_MODE=inline` runs the same orchestrator synchronously.
@@ -94,6 +101,7 @@ server-side session check each request.
 **Consequences**: coverage is exact; results are stable across tool versions.
 
 ## ADR-016 Licensing-driven component choices
+<!-- ADR-016..019 predate the 2026-09-19 audit; 020 onwards are below, in order of decision. -->
 - Valkey instead of Redis ≥ 7.4 (RSAL/SSPL is a problem for SaaS).
 - Nmap not integrated (NPSL restricts commercial redistribution).
 - BBOT (GPL-3.0) optional, not installed by default, executed only as a program.
@@ -129,3 +137,163 @@ artifact (chapter 7.8) and `styles.css` must be kept in step.
 **Alternatives**: a UI kit (MUI/shadcn — rejected: heavier, fights the brand, not needed for
 this surface); tenant-themable accents in the UI (deferred — tenant branding applies to
 reports only).
+
+## ADR-020 Third-party intelligence is historical and unverified
+**Decision**: sensors that report a third-party database's view (today `shodan`) set
+`SensorResult.historical`; ingestion then adds new knowledge but never refreshes `last_seen`,
+reactivates an asset, or lets that source close anything. Their CVE reports are stored with
+`findings.unverified = true`, hidden from the findings list, risk scores, reports and alerts
+until a sensor that actually tested the service reports the same issue.
+**Consequences**: Shodan (and later similar sources) widen coverage — including for scope
+that may not be actively scanned — without weakening change detection or inflating risk.
+The UI needs a second findings view, and the API a filter, which is the honest trade.
+**Alternatives**: treating Shodan like a live scanner (dead services would look alive and
+version-matched CVEs would drive risk scores), or discarding its CVE list entirely (loses a
+useful lead).
+
+## ADR-021 Platform-managed email
+**Decision**: the mail server lives in `platform_settings` (encrypted password), editable by
+platform administrators in the UI and overriding `ASM_SMTP_*`; every user can have alerts
+sent to their own *login* address (`user_alert_preferences`, default on for high/critical).
+**Consequences**: a deployment can be operated entirely from the web interface, which is the
+product requirement; `.env` stays a bootstrap default. Tenants do not get their own mail
+server: in a multi-tenant deployment that would let a tenant admin change how everyone's
+password resets are sent. Per-user alerts never take a typed address, so they cannot be used
+to forward another tenant's events.
+**Alternatives**: SMTP only in `.env` (needs shell access for every change — rejected),
+per-tenant relays (revisit if a customer needs their own sending domain).
+
+## ADR-022 The product names capabilities; it never names its engines
+**Context**: a real deployment showed stage rows reading "Asset discovery" three times (three
+different discovery engines on one stage type), errors reading `nuclei exit code 1: [FTL]
+Could not run nuclei: no templates provided for scan`, engine names in every API response,
+and an `X-ASM-Scanner` header on outgoing probes. Anything the browser receives is
+inspectable, so the engine list was effectively published; and none of it helped the reader.
+**Decision**: the interface speaks in capabilities. Stages, findings and observations carry
+`display_name` labels (`scans/engines.label_for`); profiles and the capabilities endpoint
+identify an engine by `eng_<hmac>` computed under the deployment's `secret_key`, so the
+identifier is stable for the editor and meaningless anywhere else; config schemas are
+scrubbed of class titles; errors go through `scans/messages.friendly`, which maps known
+failures to advice and scrubs anything left over. Adapters raise `ConfigurationError` with a
+product-level sentence. Scan traffic sends no identifying header unless the deployment opts
+in (`ASM_SCANNER_IDENTITY`) and uses a neutral user agent.
+**Consequences**: one more indirection between the pipeline and the API, and a test
+(`test_engine_disclosure.py`) that fails whenever a name leaks — including through pydantic
+titles, tags and rule-id prefixes, which is how most leaks happened. Raw output still exists,
+in the worker log, where the operator (not the customer) reads it. Support conversations lose
+the tool name as shorthand; the capability label has to be good enough.
+**Not hidden**: `credential_providers`. The customer buys and pastes those keys, so
+Integrations names Shodan and the rest.
+**Alternatives**: renaming only the visible strings (leaks return with every new adapter);
+a per-deployment name map in config (same effect, one more thing to keep in step).
+
+## ADR-023 Per-scan session secret for authenticated DAST
+**Decision**: the cookie typed into the Start-scan modal is encrypted on the scan row
+(`scans.auth_secret_encrypted`, AAD `scan:<id>:auth`), delivered through the normal sealed
+credential channel as the `zap_auth` provider, and erased at `finalize_scan`/`_cancel`.
+**Consequences**: an authenticated crawl needs no stored credential and leaves nothing behind
+once the scan ends; a session that expires mid-scan simply yields unauthenticated results.
+The value is scoped to the authorized origin by the ZAP Replacer rule and CRLF is refused.
+**Alternatives**: only tenant-stored credentials (a session cookie is short-lived and
+per-tester — wrong lifetime), passing it in the job without encryption at rest (a scan row is
+long-lived and backed up).
+
+## ADR-024 Wildcard scope entries are input, not storage
+**Decision**: `*.example.com` is accepted wherever scope is typed and stored as the domain
+with `include_subdomains`; pasting both forms widens the existing entry instead of colliding.
+A wildcard may only replace the first label, and never covers a public suffix.
+**Context**: authorization letters are written `*.example.com`, so that is what people paste;
+it was silently rewritten to `example.com`, which looked like the tool ignoring the input.
+**Consequences**: one representation in the database, so the scope checker is unchanged.
+`a.*.example.com` is refused with the accepted form rather than guessed at.
+
+
+## ADR-025 A worker pool is a tenant boundary, enforced by the platform
+**Context**: queues, broker accounts and transport keys are per pool, and tenants all
+defaulted to `default`. A compromised scanner therefore reached every job in its pool: it
+could read other tenants' queued jobs, open their sealed credentials and sign results for
+their pending stages (binding a result to tenant/scan/stage/job rejects an invented job,
+but those ids are in the job it can already read). `SECURITY.md` said to use separate pools
+for tenants that must not share scanners, which an independent review correctly called a
+documented limitation rather than a guarantee.
+**Decision**: `ASM_SCANNER_ISOLATION=per_tenant` is the default. The platform cancels a scan
+whose tenant shares a pool with another tenant, or whose pool no scanner consumes, naming
+the command that fixes it; `create_tenant` gives each tenant its own pool name; and
+`cli scanner-pool <pool>` prints the key, broker user, ACL and scanner service (with its own
+ZAP daemon) so the three cannot drift apart. `shared` remains for deployments where every
+tenant is the same organization.
+**Consequences**: a new customer cannot be scanned until their scanner exists, which is the
+honest answer rather than an accident of configuration; single-tenant installs are
+unaffected, because one tenant alone shares with nobody; idle capacity grows with the number
+of customers. The check asks the question in a system session — RLS would hide the other
+tenants and answer "not shared" every time.
+**Alternatives**: per-job ephemeral scanner containers (a smaller boundary still, and the
+direction to take if per-tenant capacity becomes the cost driver); keeping shared pools with
+documentation (rejected — the review's central point).
+
+## ADR-026 Threat Center: curated data, deterministic matching, checks through the scan pipeline
+**Context**: tenants need to know, when a serious vulnerability is announced, which assets
+may be affected, which were checked and what remains open — on limited infrastructure,
+without a new intelligence subscription or a language model.
+**Decision**: a global, versioned catalog curated by platform administrators; advisories are
+validated *data* (names, version ranges, CVEs, prose, links) with no executable field. Tenants
+are assessed by a pure matcher over what fingerprinting already recorded, incrementally
+(scan end, publish, daily). Three axes stay separate on each match — inventory match,
+check outcome, remediation — and the displayed assessment is derived with a fixed order in
+which only a verified finding confirms. A check is an ordinary scan created with an internal,
+unlisted profile whose single stage is built from an allowlisted detection id, so scope,
+active permission, quotas, concurrency, the tenant's pool and coverage rules apply unchanged.
+**Consequences**: no new job system and no new trust boundary; a check can never close an
+unrelated finding because the detection engine's coverage is limited to the check's rule id.
+Matching is only as good as fingerprinting, which the UI states. `create_scan` gained a
+`stages` override that is accepted only for internal profiles (and internal profiles are
+refused without it).
+**Alternatives**: free-form advisory templates (rejected: executable content from the catalog);
+CPE-based matching against NVD (heavier data, needs a subscription/feed pipeline and still
+misses unfingerprinted assets); running checks automatically on publish (rejected: surprise
+traffic against every tenant).
+
+## ADR-027 Website screenshots: the tenant's scanner, a pinned browser, and a proxy that decides every connection
+**Context**: analysts want to recognise exposed applications at a glance, on limited
+infrastructure, without an always-running browser service, and without opening a way into
+internal networks or across tenants.
+**Decision**: a capture is a sealed sensor job (adapter `screenshot`) for exactly one URL,
+dispatched to the **tenant's own scanner pool** by a platform service — not a scan stage and
+not part of discovery. The scanner image optionally carries the distribution's Chromium,
+pinned to an exact version (the build refuses otherwise). Each capture gets a fresh profile
+and no network of its own: the browser's resolver answers NOTFOUND, UDP is off, and every
+request goes through a per-job proxy that resolves, checks and pins each connection. The
+sandbox stays on; the adapter refuses sandbox-disabling flags and reports a missing sandbox
+as a deployment problem. The deployment-wide concurrency limit (default 1) is a PostgreSQL
+advisory-lock-protected count of running captures, plus a per-pool lease and a stale-browser
+reaper in the scanner. Images are re-validated by the platform (the scanner is untrusted),
+stored under a platform-derived key, served only through an asset-scoped endpoint, and
+retained per endpoint and per tenant quota.
+**Consequences**: no new service, queue, credential or trust boundary; the HTTP fingerprinter
+stays untouched. Operators must provide user namespaces and a derived seccomp profile — the
+price of keeping the sandbox — and verify with `browser-selftest`. Base64 images travel in the
+result envelope, bounded (≤ 5 MB, one per job). Branded Chrome builds make background calls to
+vendor services; the proxy refuses the known ones, and the measurement script lists whatever
+else a given build contacts.
+**Alternatives**: the fingerprinter's headless mode (couples capture to discovery, runtime
+browser download, unsandboxed as root, no per-connection control); a shared screenshot service
+(one compromise would see every tenant's targets and could forge their images); Playwright or
+a CDP client (a large dependency for one screenshot); `--no-sandbox` in a locked-down
+container (rejected by requirement).
+
+## ADR-028 Exposure map: observed relationships, bounded in the database, never paths
+**Decision**: the map is built from `asset_relationships` and findings only, per request,
+inside the caller's tenant session and one organization, with PostgreSQL doing the bounding
+(per-node window ranking, counts for what was left out, a statement timeout) and the service
+enforcing depth, node/edge caps and a time budget. Edges carry their meaning, whether they
+were observed or derived from names, the capability label of their source, first/last seen
+and a freshness class. Context relationships (technology, certificate, hosting) are off by
+default.
+**Consequences**: no graph database and no precomputed graph to keep consistent; one request
+costs at most depth × two bounded queries plus findings. High-degree nodes stay usable
+through counts and explicit expansion. The map cannot answer "can an attacker get from A to
+B", and says so.
+**Alternatives**: a graph database (new infrastructure, a second copy of the data to keep in
+step and isolate); recursive CTEs over the whole organization (unbounded fan-out before any
+cap applies); inferring paths from shared IPs/certificates/providers (rejected: presents
+coincidence as exploitability).

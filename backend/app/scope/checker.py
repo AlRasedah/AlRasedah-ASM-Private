@@ -10,7 +10,13 @@ The single place that decides whether a target may be scanned. Rules:
    to it. Derived IPs may be actively scanned only when the organization allows
    derived scanning (default on) — and never when excluded.
 5. Active scanning additionally requires ``allow_active_scanning`` on the
-   matched entry, and (if the tenant requires it) a verified entry.
+   matched entry, and (if verification is required) a *verified* entry: DNS
+   TXT proof for domains, platform-administrator approval for IPs/CIDRs.
+   ``not_required`` (recorded while verification was off) is not proof.
+6. Active scanning never targets a non-public address (loopback, RFC 1918,
+   link-local/metadata, CGNAT, ...) unless the deployment allows non-public
+   scope — however the address was reached (explicit entry or DNS). Sensor
+   workers re-check resolved destinations just before connecting.
 """
 
 from __future__ import annotations
@@ -33,6 +39,7 @@ class ScopeRule:
     include_subdomains: bool = True
     is_exclusion: bool = False
     allow_active_scanning: bool = True
+    # Ownership proven (DNS TXT record, or platform-admin approval for IPs/CIDRs).
     verified: bool = True
 
     @classmethod
@@ -40,7 +47,13 @@ class ScopeRule:
         return cls(id=e.id, entry_type=ScopeEntryType(e.entry_type), value=e.value,
                    include_subdomains=e.include_subdomains, is_exclusion=e.is_exclusion,
                    allow_active_scanning=e.allow_active_scanning,
-                   verified=e.verification_status in (VerificationStatus.VERIFIED, VerificationStatus.NOT_REQUIRED))
+                   verified=e.verification_status == VerificationStatus.VERIFIED)
+
+
+def _allow_non_public_default() -> bool:
+    from app.core.config import get_settings
+
+    return get_settings().allow_non_public_scope
 
 
 @dataclass
@@ -56,6 +69,7 @@ class ScopeChecker:
     rules: list[ScopeRule]
     require_verification: bool = False
     derived_ip_scanning: bool = True
+    allow_non_public: bool = field(default_factory=_allow_non_public_default)
     _nets: list[tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ScopeRule]] = field(default_factory=list, repr=False)
 
     def __post_init__(self) -> None:
@@ -128,7 +142,8 @@ class ScopeChecker:
             return Decision(False, "IP address excluded from scope", ScopeStatus.OUT_OF_SCOPE)
         inc = self._ip_rules(host, exclusion=False)
         if inc:
-            return self._authorize(inc[0], active, "IP address")
+            d = self._authorize(inc[0], active, "IP address")
+            return self._public_only(host, active, d)
         # Derived: resolved from an in-scope hostname.
         parents = sorted((derived_from or {}).get(host, ()))
         for parent in parents:
@@ -137,9 +152,19 @@ class ScopeChecker:
                 if active and not self.derived_ip_scanning:
                     return Decision(False, "IP is only derived from in-scope hostnames and derived scanning is disabled",
                                     ScopeStatus.DERIVED, d.rule_id)
-                return Decision(True, f"IP address resolved from in-scope hostname {parent}", ScopeStatus.DERIVED,
-                                d.rule_id)
+                return self._public_only(host, active, Decision(
+                    True, f"IP address resolved from in-scope hostname {parent}", ScopeStatus.DERIVED, d.rule_id))
         return Decision(False, "IP address is not within authorized scope", ScopeStatus.OUT_OF_SCOPE)
+
+    def _public_only(self, address: str, active: bool, d: Decision) -> Decision:
+        """Refuse active scanning of non-public destinations, however they were reached."""
+        if not d.allowed or not active or self.allow_non_public:
+            return d
+        net = ipaddress.ip_network(address, strict=False)
+        if net.is_global:
+            return d
+        return Decision(False, f"{address} is not a publicly routable address; it is never actively scanned",
+                        d.status, d.rule_id)
 
     def check(self, target: Target, *, active: bool, derived_from: Mapping[str, Iterable[str]] | None = None) -> Decision:
         if target.kind == TargetKind.CIDR:
@@ -149,6 +174,6 @@ class ScopeChecker:
                     return Decision(False, f"network overlaps excluded range {r.value}", ScopeStatus.OUT_OF_SCOPE)
             for n, r in self._nets:
                 if not r.is_exclusion and n.version == net.version and net.subnet_of(n):  # type: ignore[arg-type]
-                    return self._authorize(r, active, "network")
+                    return self._public_only(target.value, active, self._authorize(r, active, "network"))
             return Decision(False, "network is not within authorized scope", ScopeStatus.OUT_OF_SCOPE)
         return self.check_host(target.host, active=active, derived_from=derived_from)

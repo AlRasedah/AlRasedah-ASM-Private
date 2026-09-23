@@ -49,22 +49,38 @@ demo data replay, CI pipeline.
 
 | Suite | Tests | Covers |
 |---|---|---|
-| tests/sensors | 43 | parsers for every tool (recorded output), target validation, safe subprocess execution, coverage-dropping on failures, credential sealing, registry |
-| tests/backend (unit) | 40 | scope authorization, normalization/PSL, cloud detection, change-detection rules, risk engine |
-| tests/backend (database) | 23 | RLS isolation (reads/writes/updates/deletes/users/no-context), audit immutability & hash chain, change detection scenarios, full pipeline runs, platform-wide scan concurrency |
-| tests/backend (API) | 17 | auth flows (refresh rotation & reuse detection, lockout, rate limit, MFA, reset, API tokens), internal-domain emails, RBAC, cross-tenant API access, scope → scan → inventory → findings workflow, reports, notifications incl. Wazuh |
-| frontend/src/test | 21 | every page renders with API data; asset tabs; authorization log |
+| tests/sensors | 90 | parsers for every engine (recorded output), target validation, safe subprocess execution, coverage-dropping on failures, credential sealing and result signing, job claims, scanner identity on the wire, registry |
+| tests/backend (unit) | 66 | scope authorization incl. wildcards, normalization/PSL, cloud detection, change-detection rules, risk engine, user-facing error messages |
+| tests/backend (database) | 78 | RLS isolation, audit immutability & hash chain, change detection scenarios, full pipeline runs, scan concurrency under contention, historical/unverified ingestion, per-scan DAST secrets, platform email |
+| tests/backend (API) | 65 | auth flows (refresh rotation & reuse detection, lockout, rate limit, MFA, reset, API tokens), RBAC, cross-tenant access, scope → scan → inventory → findings workflow, reports, notifications incl. Wazuh, engine non-disclosure |
+| tests/integration | 2 | broker trust boundary against a real Valkey with the compose ACL (skipped without one) |
+| frontend/src/test | 35 | every page renders with API data; asset tabs; authorization log |
+
+342 Python tests in total. The counts per group are approximate — several files span
+categories — but the total and the integration count are exact.
 
 ## Known gaps / next steps
 
 1. **Run against live tools**: build `asm-scanner` and execute Passive Discovery and Standard
    ASM scans against an owned domain; confirm tool flags for the pinned versions (especially
-   Amass v4 `-o`/`-dir`, BBOT 2.x output path, SpiderFoot 4 export endpoint).
-2. **Wildcard DNS handling**: detect wildcard zones before ingesting brute-forced/passive names.
-3. **Screenshots** of web endpoints (httpx headless) — schema slot exists (`meta`), UI tab planned.
+   Amass v4 `-o`/`-dir`, BBOT 2.x output path, SpiderFoot 4 export endpoint). The full
+   checklist is the manual pass in the developer handbook, chapter 9.8 — it is the main thing
+   standing between the current state and a release.
+2. **Wildcard DNS handling**: detect wildcard zones before ingesting brute-forced/passive
+   names. (Unrelated to `*.example.com` *scope entries*, which are supported.)
+3. **Website screenshots** — implemented (SCREENSHOTS.md), off by default. Open: build the
+   scanner image with the pinned Chromium, derive the seccomp profile and pass
+   `browser-selftest` on the target hosts, then measure with `measure_screenshots.py` on that
+   image; only Windows/Chrome 153 lab numbers exist so far.
+3a. **Threat Center** (THREAT_CENTER.md) and **exposure map** (EXPOSURE_MAP.md) — implemented.
+   Open: curate the first advisories and approved checks against the deployed detection
+   template set (the `-id` filter's behaviour at the pinned engine version is unverified here).
+3b. **Attack-path analysis** — deliberately not built. Needs authoritative cloud, identity and
+   internal-network evidence (EXPOSURE_MAP.md, "Future phase").
 4. **SSO**: SAML/OIDC (Entra ID, Google Workspace) using `users.auth_provider/external_id`.
 5. **Custom roles** backed by a `roles` table using the existing `Permission` vocabulary.
-6. **Jira / ServiceNow** ticketing channels (registered as planned in `integrations/channels.py`).
+6. **Jira / ServiceNow** ticketing channels — the adapters exist with `implemented = False`,
+   so the API and UI do not offer them; finish them and flip the flag.
 7. **Scale**: set-based SQL for risk recomputation and ingestion of very large surfaces;
    `asset_observations` partitioning by month.
 8. **Arabic UI / RTL**: styles use logical properties; add translations and `dir="rtl"`.

@@ -7,6 +7,7 @@ import smtplib
 import ssl
 from email.message import EmailMessage
 from email.utils import make_msgid
+from typing import Any
 
 from app.core.config import get_settings
 
@@ -17,17 +18,41 @@ class MailNotConfigured(RuntimeError):
     pass
 
 
+def _stored_settings() -> dict:
+    """Mail settings a platform administrator saved in the web interface (if any)."""
+    from app.db.session import system_session
+    from app.services.platform_settings import smtp_override as stored
+
+    try:
+        with system_session() as db:
+            return stored(db)
+    except Exception:  # noqa: BLE001 - never let a settings lookup break mail delivery
+        log.exception("could not read the platform mail settings; falling back to the environment")
+        return {}
+
+
 def send_email(to: list[str], subject: str, text: str, html: str | None = None,
                smtp_override: dict | None = None) -> None:
+    """Send one mail. Settings precedence: explicit override > platform settings > environment."""
     s = get_settings()
-    cfg = {
+    env = {
         "host": s.smtp_host, "port": s.smtp_port, "username": s.smtp_username,
         "password": s.smtp_password.get_secret_value() if s.smtp_password else None,
         "sender": s.smtp_from, "starttls": s.smtp_starttls, "ssl": s.smtp_ssl,
     }
+    stored = _stored_settings()
+    if stored.get("host"):
+        # A saved mail server is the whole configuration, not a patch over the
+        # environment. Overlaying would keep ASM_SMTP_PASSWORD after an administrator
+        # cleared the password — and send that password to the server they just chose.
+        cfg: dict[str, Any] = {k: None for k in env}
+        cfg.update(stored)  # host/port/sender/starttls/ssl are always saved together
+    else:
+        cfg = dict(env)
     cfg.update({k: v for k, v in (smtp_override or {}).items() if v is not None})
     if not cfg["host"]:
-        raise MailNotConfigured("SMTP is not configured (ASM_SMTP_HOST)")
+        raise MailNotConfigured("Email delivery is not configured. A platform administrator can set the mail "
+                                "server in Settings → Email delivery.")
     msg = EmailMessage()
     msg["From"] = cfg["sender"]
     msg["To"] = ", ".join(to)

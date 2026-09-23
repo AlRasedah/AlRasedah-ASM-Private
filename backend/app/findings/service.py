@@ -76,11 +76,20 @@ def _activity(db: Session, f: Finding, kind: str, *, user_id: uuid.UUID | None =
 
 
 def upsert_observation(db: Session, *, tenant_id: uuid.UUID, organization_id: uuid.UUID, asset: Asset,
-                       obs: FindingObservation, source: str, now: datetime, scan_id: uuid.UUID | None) -> FindingChange:
+                       obs: FindingObservation, source: str, now: datetime, scan_id: uuid.UUID | None,
+                       unverified: bool = False) -> FindingChange:
+    """Record one observed finding.
+
+    ``unverified`` marks an issue nobody tested — a third-party database (Shodan)
+    matched a service version against a CVE list. Such findings are kept out of the
+    main findings list, out of risk scores and out of alerts until a scanner
+    confirms the same issue; they have their own view in the UI.
+    """
     fp = fingerprint(tenant_id, asset.id, source, obs.rule_id, obs.location)
     f = db.execute(select(Finding).where(Finding.tenant_id == tenant_id, Finding.fingerprint == fp)).scalar_one_or_none()
     if f is None:
         f = Finding(
+            unverified=unverified,
             tenant_id=tenant_id, organization_id=organization_id, asset_id=asset.id, fingerprint=fp,
             source=source, source_finding_id=obs.rule_id, title=obs.title, description=obs.description,
             category=obs.category, severity=obs.severity, location=(obs.location or None),
@@ -94,6 +103,8 @@ def upsert_observation(db: Session, *, tenant_id: uuid.UUID, organization_id: uu
         db.add(f)
         db.flush()
         _activity(db, f, "detected", new={"severity": f.severity.value}, scan_id=scan_id)
+        if unverified:
+            return FindingChange(f, None)  # no alert for something nobody verified
         ev = EventDraft(EventType.VULNERABILITY_DETECTED, f.severity, f"{f.title} on {asset.value}",
                         f.description[:500] if f.description else None,
                         new={"severity": f.severity.value, "cve": f.cve, "rule": obs.rule_id},
@@ -101,6 +112,7 @@ def upsert_observation(db: Session, *, tenant_id: uuid.UUID, organization_id: uu
         return FindingChange(f, ev)
 
     event = None
+    f.unverified = f.unverified and unverified  # a verifying sensor clears the flag
     f.last_seen = now
     f.last_scan_id = scan_id
     f.occurrence_count += 1

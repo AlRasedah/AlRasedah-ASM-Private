@@ -95,7 +95,9 @@ def build_context(db: Session, report: Report) -> dict[str, Any]:
     s = dashboard.summary(db, org_id)
     trend = dashboard.trends(db, org_id, max(days, 7))
 
-    fq = select(Finding).where(Finding.status.in_([x.value for x in OPEN_FINDING_STATES]))
+    # Reports cover confirmed issues only; unverified third-party reports are excluded.
+    fq = select(Finding).where(Finding.status.in_([x.value for x in OPEN_FINDING_STATES]),
+                               Finding.unverified.is_(False))
     if org_id:
         fq = fq.where(Finding.organization_id == org_id)
     open_findings = db.execute(fq.order_by(Finding.risk_score.desc())).scalars().all()

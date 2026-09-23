@@ -20,17 +20,16 @@ from ...base import (
     ScannerAdapter,
     StageType,
     iter_json_lines,
-    read_output_file,
+    tool_output,
     write_targets_file,
 )
 from ...execution import minimal_env, resolve_binary, run_process
+from ...identity import identity_header
 from ...observations import NormalizedOutput, ObservedType, RelationCoverage, RelationType
 from ...ports import WEB, normalize_spec, validate_port_spec
 from ...registry import register
 from ...targets import Target, TargetKind, split_host_port
 from .._common import ObservationSet, clean_hostname, clean_ip, port_value
-
-SCANNER_HEADER = "X-ASM-Scanner: Exteriq-ASM"
 
 
 class HttpxConfig(AdapterConfig):
@@ -93,7 +92,8 @@ class HttpxAdapter(ScannerAdapter):
     binaries = ("httpx",)
     config_model = HttpxConfig
 
-    def build_argv(self, binary: str, tfile: str, out: str, cfg: HttpxConfig, need_ports: bool) -> list[str]:
+    def build_argv(self, binary: str, tfile: str, out: str, cfg: HttpxConfig, need_ports: bool,
+                   identity: str | None = None) -> list[str]:
         argv = [binary, "-l", tfile, "-json", "-o", out, "-silent", "-nc",
                 "-sc", "-cl", "-ct", "-title", "-server", "-ip", "-cname", "-cdn", "-location",
                 "-rl", str(cfg.rate_limit), "-t", str(cfg.threads),
@@ -108,8 +108,9 @@ class HttpxAdapter(ScannerAdapter):
             argv.append("-fhr")
         if need_ports:
             argv += ["-p", cfg.ports]
-        if cfg.identify_scanner:
-            argv += ["-H", SCANNER_HEADER]
+        # Only identifies the scan when the deployment configured an identity.
+        if cfg.identify_scanner and identity:
+            argv += ["-H", identity]
         return argv
 
     async def execute(self, targets: list[Target], config: HttpxConfig, ctx: ExecutionContext) -> RawOutput:  # type: ignore[override]
@@ -127,11 +128,14 @@ class HttpxAdapter(ScannerAdapter):
                 continue
             tfile = write_targets_file(ctx.workdir, group, name=f"targets-{label}.txt")
             gout = ctx.workdir / f"httpx-{label}.jsonl"
-            proc = await run_process(self.build_argv(binary, str(tfile), str(gout), config, label == "bare"),
+            proc = await run_process(self.build_argv(binary, str(tfile), str(gout), config, label == "bare",
+                                                     identity_header(ctx.settings)),
                                      timeout=ctx.timeout_seconds, cwd=str(ctx.workdir),
                                      env=minimal_env(home=str(ctx.workdir)), max_output_bytes=ctx.max_output_bytes)
             raw.process = proc if raw.process is None or not proc.ok else raw.process
-            chunks.append(read_output_file(gout, ctx.max_output_bytes) or proc.stdout)
+            data, truncated = tool_output(gout, proc, ctx.max_output_bytes)
+            raw.truncated = raw.truncated or truncated
+            chunks.append(data)
         raw.files[out.name] = b"\n".join(chunks)
         return raw
 

@@ -90,15 +90,33 @@ export const EVENT_LABELS: Record<string, string> = {
   shadow_it_discovered: "Shadow IT",
   scan_failed: "Scan failed",
   scan_completed: "Scan completed",
+  threat_advisory_matched: "Advisory may affect assets",
 };
 
-// Findings dynamically confirmed by active web scanning (OWASP ZAP active scanner) —
-// as opposed to passively observed or template-matched. Worth flagging to analysts.
-export const DAST_SOURCES = new Set(["zap_active"]);
+/** Threat Center: what each assessment means, in words a reader can act on. */
+export const ASSESSMENT_LABELS: Record<string, { text: string; tone: string; hint: string }> = {
+  confirmed: { text: "Confirmed", tone: "bad", hint: "A verified finding (from an active check or scan) exists on this asset." },
+  check_pending: { text: "Check running", tone: "accent", hint: "An approved check has been requested and has not finished." },
+  not_detected: { text: "Checked — not detected", tone: "neutral",
+    hint: "A completed check did not detect the issue. This is not proof the asset is safe: the check covers one detection method at one moment." },
+  inconclusive: { text: "Check inconclusive", tone: "warn",
+    hint: "The check failed, was blocked, cancelled, timed out, or could not reach this asset. Nothing was concluded." },
+  potentially_affected: { text: "Potentially affected", tone: "warn",
+    hint: "The product (and version, where known) recorded in inventory matches the advisory. Not confirmed." },
+  version_unknown: { text: "Version unknown", tone: "warn",
+    hint: "The product was seen but its version was not reported, so it may or may not be affected." },
+  reported_unverified: { text: "Reported, unverified", tone: "neutral",
+    hint: "Only a third-party exposure database reported this. Nobody has tested it." },
+  not_affected_version: { text: "Version not affected", tone: "ok",
+    hint: "The product was seen at a version outside every affected range. Banners can be wrong and fixes can be back-ported." },
+  no_longer_observed: { text: "No longer observed", tone: "neutral", hint: "Matched before; the evidence is no longer in inventory." },
+};
 
-export function isDast(source: string | null | undefined): boolean {
-  return !!source && DAST_SOURCES.has(source);
-}
+export const REMEDIATION_STATES = ["open", "in_progress", "resolved", "accepted_risk", "not_applicable"];
+
+// Whether a finding was dynamically confirmed against the running application is
+// decided by the API (findings carry `dast`), so the interface never needs to know
+// which engine produced it.
 
 export const SEV_COLOR: Record<string, string> = {
   critical: "var(--sev-critical)",

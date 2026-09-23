@@ -14,6 +14,8 @@ from asm_sensors.adapters.zap import (
     ZapActiveConfig,
     ZapSpiderAdapter,
     ZapSpiderConfig,
+    _include_regex,
+    _ZapClient,
     alert_to_finding,
     auth_secret,
     target_url,
@@ -268,26 +270,16 @@ class TestZapActive:
         assert ref.value == "https://a.example.com" and finding.severity == Severity.INFO
 
 
-class _FakeZap:
-    """Records API calls and serves canned responses so the per-target ZAP flow can run offline."""
+class _FakeZap(_ZapClient):
+    """A ZAP client whose HTTP layer is replaced: records API calls and serves canned responses."""
 
-    def __init__(self):
+    def __init__(self):  # no HTTP client
         self.calls = []
-        self.auth_added = []
-        self.auth_removed = []
 
-    async def new_context(self, name, include_regex):
-        self.calls.append(("new_context", name, include_regex))
-        return "1"
-
-    async def add_auth_header(self, description, header_name, value, url_regex):
-        self.auth_added.append({"description": description, "header": header_name, "value": value, "url": url_regex})
-
-    async def remove_auth_header(self, description):
-        self.auth_removed.append(description)
-
-    async def call(self, component, kind, action, params=None):
+    async def call(self, component, kind, action, params=None, *, secret=False):
         self.calls.append((component, kind, action, params or {}))
+        if action == "newContext":
+            return {"contextId": "7"}
         if action == "scan":
             return {"scan": "1"}
         if action == "status":
@@ -299,6 +291,17 @@ class _FakeZap:
         if action == "alerts":
             return {"alerts": []}
         return {}
+
+    def params(self, action):
+        return [p for (_c, _k, a, p) in self.calls if a == action]
+
+    @property
+    def auth_added(self):
+        return self.params("addRule")
+
+    @property
+    def auth_removed(self):
+        return [p["description"] for p in self.params("removeRule")]
 
 
 class TestZapAuth:
@@ -322,22 +325,25 @@ class TestZapAuth:
     async def test_spider_injects_and_removes_scoped_auth_header(self, tmp_path):
         zap = _FakeZap()
         raw = RawOutput()
-        ctx = ExecutionContext(workdir=tmp_path)
         cookie = "PHPSESSID=abc; security=low"
-        await ZapSpiderAdapter()._crawl_one(zap, "https://app.example.com", ZapSpiderConfig(), ctx, raw,
+        await ZapSpiderAdapter()._crawl_one(zap, "https://app.example.com", ZapSpiderConfig(), raw,
                                             "asm-crawl-0", auth=cookie)
         assert len(zap.auth_added) == 1
         rule = zap.auth_added[0]
-        assert rule["header"] == "Cookie" and rule["value"] == cookie
-        assert rule["url"].startswith("https://app\\.example\\.com") or "app" in rule["url"]  # scoped to origin
+        assert rule["matchString"] == "Cookie" and rule["replacement"] == cookie
+        assert rule["url"] == _include_regex("https://app.example.com")  # scoped to exactly the origin
         assert zap.auth_removed == [rule["description"]]  # cleaned up afterwards
+        assert zap.params("removeContext") == [{"contextName": "asm-crawl-0"}]
+        assert zap.params("accessUrl")[0]["followRedirects"] == "false"
+        assert not raw.errors
 
     async def test_active_no_auth_when_no_credential(self, tmp_path):
         zap = _FakeZap()
         raw = RawOutput()
-        await ZapActiveAdapter()._scan_one(zap, "https://app.example.com", ZapActiveConfig(), raw,
-                                           "asm-ascan-0", auth=None)
+        await ZapActiveAdapter()._scan_origin(zap, "https://app.example.com", ["https://app.example.com"],
+                                              ZapActiveConfig(), raw, "asm-ascan-0", auth=None)
         assert zap.auth_added == [] and zap.auth_removed == []
+        assert zap.params("scan")[0]["contextId"] == "7"  # the active scan is bound to the job's context
 
 
 def test_fixture_loader():

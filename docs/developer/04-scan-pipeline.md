@@ -8,20 +8,21 @@ POST /scans ─► orchestrator.create_scan ─► dispatch.start_scan
                                               │
       ┌───────────────────────────────────────┘
       ▼
-tasks.start_scan ─► orchestrator.try_start (concurrency) ─► tasks.advance_scan
-                                                              │
+tasks.start_scan ─► orchestrator.try_start (advisory lock, concurrency) ─► tasks.advance_scan
+                                                              │  (scan row lock)
       ┌───────────────────────────────────────────────────────┘
       ▼
 orchestrator.prepare_next_stage
-   build_targets ─► ScopeChecker.check (each target) ─► scope_decisions rows
-   seal credentials ─► SensorJob
-      │  Celery chain on queue scanners.<pool>
+   tenant/org still active? ─► build_targets ─► ScopeChecker.check (each target) ─► scope_decisions rows
+   seal credentials with the pool key ─► SensorJob ─► stage RUNNING + job binding, COMMIT
+      │  tasks.publish_job: send_task on queue scanners.<pool> (task id = job id) ─► dispatched_at
       ▼
-asm_sensors.worker.run_sensor ─► runner.execute_job ─► adapter.run()
-   validate_configuration → execute (subprocess) → parse_results → normalize
-      │  SensorResult (observations + coverage) via result backend
+asm_sensors.worker.run_sensor (claim job id) ─► runner.execute_job ─► egress_filter ─► adapter.run()
+   validate_configuration → execute (subprocess/API) → parse_results → normalize
+      │  ResultEnvelope (SensorResult, MAC'd with the pool key) on queue results.<pool>
       ▼
-tasks.ingest_stage ─► orchestrator.complete_stage
+asm-ingest: results.submit_result ─► receive_result (verify MAC, result_binding_error)
+   ─► orchestrator.complete_stage
    Ingestor(source=<adapter>).ingest(result)          assets, relations, findings, events
    rules.evaluate(touched) ─► Ingestor(source="asm-rules").ingest(...)
       │
@@ -51,6 +52,11 @@ entry and a usage record.
 
 Pending/queued → running if the tenant's plan concurrency and the platform-wide limit allow,
 otherwise `queued`. `tasks.dispatch_queued_scans` (every minute) retries queued scans.
+Reservations are serialized platform-wide with `pg_advisory_xact_lock` (held until the
+caller commits) and the scan is re-read under the lock, so parallel starts cannot exceed a
+limit and a redelivered start is a no-op. A scan whose tenant is suspended or whose
+organization is inactive is **cancelled** instead of started (the same check runs before
+every stage).
 
 ## 4.3 Choosing targets — `scans/targets.build_targets`
 
@@ -81,28 +87,41 @@ declared providers, seal them, create the `SensorJob`, mark the stage running.
 `ScopeChecker` rules (see `app/scope/checker.py` docstring): exclusions win; hostnames match
 domain entries (with/without subdomains); IPs match IP/CIDR entries; unmatched IPs are
 *derived* only if an **allowed** in-scope hostname resolves to them and the organization
-allows derived scanning; active mode requires `allow_active_scanning` and, when the tenant
-requires it, a verified entry. CIDR targets must be inside an inclusion and not overlap an
-exclusion.
+allows derived scanning; active mode requires `allow_active_scanning`, a **verified** entry
+when verification is required (`not_required` is not proof), and a publicly routable
+destination unless `ASM_ALLOW_NON_PUBLIC_SCOPE`. CIDR targets must be inside an inclusion
+and not overlap an exclusion. The job also carries the scope's excluded IP ranges, which the
+sensor checks resolved destinations against.
+
+The stage's `task_id` (= job id), `worker_pool` and RUNNING state are committed **before**
+the job is published, so a result can arrive at any time after that; if publishing fails the
+stage is failed immediately. `dispatched_at` is set once the job is on the broker.
 
 ## 4.5 Executing — the sensor side
 
-In production the job travels as JSON over the broker to a sensor container
-(`asm_sensors/worker.py`). `runner.execute_job` creates a temporary directory, unseals
-credentials, builds an `ExecutionContext` (timeouts, output caps, `ASM_SCANNER_MAX_RATE`,
-deployment settings such as the Nuclei templates path) and calls `adapter.run()`:
+In production the job travels as JSON over the broker to a sensor container of the tenant's
+pool (`asm_sensors/worker.py`), which first claims the job id (a redelivered job is ignored).
+`runner.execute_job` creates a temporary directory, unseals credentials with the pool key,
+builds an `ExecutionContext` (timeouts, output caps, `ASM_SCANNER_MAX_RATE`, deployment
+settings such as the Nuclei templates path, the pool's `Coordinator`), and — for active
+adapters — runs `egress_filter`, dropping targets that resolve to non-public or excluded
+addresses. Then it calls `adapter.run()`:
 
 1. `check_targets` (kind allowed for this adapter) and `parse_config` (strict model) and
    `apply_limits` (clamp rates).
 2. `validate_configuration` (binary present, required settings).
 3. `execute` — writes targets to a file, runs the tool with `run_process`, reads its output
-   file (falls back to stdout).
+   file (falls back to stdout) via `tool_output`, which reports truncation.
 4. `parse_results` — tolerant parsing (bad lines skipped).
 5. `normalize` — observations + coverage.
 
-If the process failed or timed out, status becomes `partial` (or `failed` with no
-observations) and **coverage is dropped**. Any exception becomes a `failed` result with a
-sanitized message. The result goes back through the result backend to `tasks.ingest_stage`.
+If the process failed or timed out, the output was truncated, or the adapter recorded any
+error in `RawOutput.errors` (API failures, deadlines, result limits), status becomes
+`partial` (or `failed` with no observations) and **coverage is dropped**; `complete_stage`
+drops coverage from non-completed results again. Any exception becomes a `failed` result with
+a sanitized message. The worker submits the result as a `ResultEnvelope` on `results.<pool>`;
+`asm-ingest` (`app/workers/results.py`) verifies its MAC with the pool key and accepts it only
+if `orchestrator.result_binding_error` finds it answers the stage's persisted job.
 
 In inline mode `run_inline` does the same by calling `execute_job` directly.
 
@@ -183,8 +202,10 @@ same dedup, history and auto-resolution as scanner findings for free.
 
 - `complete_stage`: failed result → stage `failed` (or `skipped` if optional); otherwise
   ingest + rules, store raw artifacts if the profile retains them, stage `completed` or
-  `partial`, merge counters into `scan.stats`, record sensor seconds.
-- `fail_stage` (Celery errback / watchdog): stage `failed`/`skipped`.
+  `partial`, merge counters into `scan.stats`, record sensor seconds. Whatever the outcome,
+  the stage's stored `error` is the output of `messages.friendly` (§4.11), never the raw
+  sensor text — which is written to the worker log instead.
+- `fail_stage` (publish failure / watchdog): stage `failed`/`skipped`.
 - `finalize_scan`: scan `failed` if nothing succeeded, `partial` if something failed,
   otherwise `completed` → `risk.recompute_organization` (scores, roll-up, risk
   increased/decreased events) → first successful scan sets
@@ -208,16 +229,51 @@ once per channel via `channels.CHANNELS[type].send(config, secret, payloads)`, a
 | `dispatch_schedules` | every minute | creates scans for due cron schedules (`maintenance.fire_schedule`) |
 | `dispatch_queued_scans` | every minute | retries queued scans |
 | `dispatch_notifications` | every minute | as above + retries |
-| `watchdog` | every 5 min | fails stages running longer than the stage timeout + 15 min |
+| `watchdog` | every 5 min | fails stages running longer than the stage timeout + 15 min, or not dispatched within 10 min; re-advances running scans with no stage in flight |
 | `maintenance` | hourly | age-out (not seen for `max_age_days`), certificate expiry events (30/14/7/1 days, once each), expired risk acceptances reopen, retention purge |
 | `refresh_intel` | daily 03:05 UTC | KEV, EPSS (for CVEs in findings), NVD CVSS gaps, re-enrich + rescore |
 | `recompute_all_risk` | daily 04:10 UTC | age factors change daily |
 | `snapshot_metrics` | daily 00:05 UTC | trend data |
 
-## 4.11 Where to look when…
+## 4.11 What the user is shown — `scans/engines.py`, `scans/messages.py`
+
+Everything above is written in terms of engines; nothing above the API is. Two modules sit
+between the pipeline and the interface (ADR-022):
+
+**`engines.py` — capabilities, not engines.**
+
+| Function | Used by |
+|---|---|
+| `label_for(engine)` | the adapter's `display_name` ("Certificate transparency", "Deep subdomain enumeration"). `StageOut.label`, findings, asset observations. A stage row therefore says what it *does*; two engines on the same stage type no longer read as the same line twice |
+| `token_for(engine)` / `engine_for(value)` | `eng_<16 hex>` = HMAC of the name under `secret_key`, so the identifier differs per deployment and means nothing elsewhere. Profiles and `GET /scan-profiles/engines` emit tokens; `validate_stages` accepts a token **or** a plain name, so the CLI and scripts still work |
+| `sanitize_schema(schema, display_name)` | strips pydantic class titles (`NucleiConfig` → the capability's name) from the config schema the profile editor renders |
+| `accepts_login(engine)` | whether the Start-scan modal offers the session-cookie field |
+
+There are **two** label maps and they answer different questions. `display_name` names the
+capability a *stage* exercises, and must distinguish engines that share a stage type.
+`SOURCE_LABELS` (`schemas/common.py`) names the *kind of source* a finding or observation
+came from, and is deliberately coarser — two discovery engines both labelled "Asset
+discovery" there is correct, because a finding does not care which one saw it first. Neither
+map may contain an engine or project name.
+
+**`messages.py` — errors that say what to do.** `friendly(errors, capability)` maps each
+known failure to one sentence of advice, de-duplicates, and falls back to
+"<capability> did not finish successfully." Any tool name surviving in an unmapped message
+is scrubbed. Adding a new mapping is one `(pattern, replacement)` entry in `_KNOWN`
+(most-specific first — several capabilities report "not enabled in this deployment").
+
+The corollary for adapters: when a capability is not configured, raise `ConfigurationError`
+with a product-level sentence rather than letting a `RuntimeError` escape — that is what the
+user reads. `tests/backend/test_engine_disclosure.py` asserts that no engine or upstream
+project name appears in scan, profile, findings or asset responses; `credential_providers`
+is the deliberate exception (the customer buys those keys and must know whose they are).
+
+## 4.12 Where to look when…
 
 | Symptom | Look at |
 |---|---|
+| A stage's error names a tool | a missing `_KNOWN` mapping in `messages.py`, or an adapter raising a bare exception instead of `ConfigurationError` |
+| A stage runs far longer than expected | the profile's per-stage budget (`timeout_minutes` / `max_time_minutes` / `max_duration_minutes` in `scans/profiles.py`, defaults and grace in `_ENGINE_BUDGET`), shown in the UI as "running for 40m of up to 1h" |
 | A stage is skipped with "No authorized targets" | `scope_decisions` for the scan (UI: scan → Authorization log); `build_targets`; `derived_from` |
 | A new asset produced no event | it was out of scope (`_event` skips), or it is a context type, or the scan was the baseline (events hidden by default) |
 | A port did not close | coverage constraints (`port_spec`, CDN), inactivity threshold, stage status partial/failed (coverage dropped) |

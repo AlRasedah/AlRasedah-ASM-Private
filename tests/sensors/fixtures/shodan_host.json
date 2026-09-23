@@ -1,0 +1,57 @@
+{
+  "ip_str": "198.51.100.7",
+  "asn": "AS64500",
+  "org": "Example Hosting",
+  "isp": "Example ISP",
+  "os": null,
+  "country_code": "SA",
+  "hostnames": ["vpn.example.com"],
+  "domains": ["example.com"],
+  "ports": [443, 22],
+  "last_update": "2026-09-14T08:15:00.123456",
+  "vulns": ["CVE-2018-13379"],
+  "data": [
+    {
+      "port": 443,
+      "transport": "tcp",
+      "product": "Fortinet FortiGate",
+      "version": "6.0.4",
+      "cpe23": ["cpe:2.3:o:fortinet:fortios:6.0.4"],
+      "timestamp": "2026-09-14T08:15:00.123456",
+      "data": "HTTP/1.1 200 OK\r\nServer: xxxxxxxx-xxxxx\r\n",
+      "_shodan": {"module": "https"},
+      "http": {"title": "Fortinet SSL VPN Login", "server": "xxxxxxxx-xxxxx"},
+      "ssl": {
+        "versions": ["TLSv1.2"],
+        "cert": {
+          "subject": {"CN": "vpn.example.com"},
+          "issuer": {"CN": "Example CA", "O": "Example Trust"},
+          "expires": "20270101000000Z",
+          "serial": "12345678",
+          "fingerprint": {"sha256": "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89"}
+        }
+      },
+      "vulns": {
+        "CVE-2018-13379": {"cvss": 9.8, "summary": "Path traversal in FortiOS SSL VPN web portal.", "verified": false}
+      }
+    },
+    {
+      "port": 22,
+      "transport": "tcp",
+      "product": "OpenSSH",
+      "version": "7.4",
+      "timestamp": "2026-09-13T22:02:11.000000",
+      "data": "SSH-2.0-OpenSSH_7.4",
+      "_shodan": {"module": "ssh"}
+    },
+    {
+      "port": 8080,
+      "transport": "tcp",
+      "product": "Jetty",
+      "version": "9.2",
+      "timestamp": "2024-01-04T10:00:00.000000",
+      "data": "HTTP/1.1 404 Not Found",
+      "_shodan": {"module": "http"}
+    }
+  ]
+}

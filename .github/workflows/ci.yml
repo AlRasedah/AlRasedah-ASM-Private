@@ -31,7 +31,11 @@ jobs:
       - name: Lint
         working-directory: backend
         run: ruff check app ../workers/asm_sensors
-      - name: Tests (sensors, backend, tenant isolation, API)
+      - name: Start a disposable Valkey (broker ACL integration test)
+        run: docker run -d --name valkey -p 56379:6379 valkey/valkey:8-alpine valkey-server --requirepass ci-broker-admin
+      - name: Tests (sensors, backend, tenant isolation, API, broker isolation)
+        env:
+          ASM_TEST_BROKER_ADMIN_URL: redis://:ci-broker-admin@127.0.0.1:56379/0
         run: pytest -q
 
   frontend:

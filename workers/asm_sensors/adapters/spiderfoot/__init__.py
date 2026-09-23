@@ -18,7 +18,8 @@ from typing import Any, Literal
 import httpx
 from pydantic import Field
 
-from ...base import AdapterConfig, ExecutionContext, RawOutput, ScannerAdapter, StageType
+from ...base import AdapterConfig, ConfigurationError, ExecutionContext, RawOutput, ScannerAdapter, StageType
+from ...identity import user_agent
 from ...observations import (
     FindingCategory,
     FindingObservation,
@@ -59,12 +60,13 @@ class SpiderFootAdapter(ScannerAdapter):
 
     async def validate_configuration(self, config: SpiderFootConfig, ctx: ExecutionContext) -> None:  # type: ignore[override]
         if not ctx.settings.get("spiderfoot_url"):
-            raise RuntimeError("SpiderFoot integration is not enabled in this deployment (spiderfoot_url unset)")
+            # ConfigurationError so the platform can report the reason to the user.
+            raise ConfigurationError("Open-source intelligence enrichment is not enabled in this deployment")
 
     async def execute(self, targets: list[Target], config: SpiderFootConfig, ctx: ExecutionContext) -> RawOutput:  # type: ignore[override]
         base = str(ctx.settings["spiderfoot_url"]).rstrip("/")
         raw = RawOutput()
-        headers = {"Accept": "application/json", "User-Agent": "Exteriq-ASM"}
+        headers = {"Accept": "application/json", "User-Agent": user_agent(ctx.settings)}
         async with httpx.AsyncClient(base_url=base, timeout=60, headers=headers) as client:
             for t in targets:
                 try:

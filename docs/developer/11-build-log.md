@@ -69,15 +69,23 @@ what has and has not been verified.
 
 ## 11.4 Verification status
 
+**Where the project stands (22 September 2026): the automated suites are green and a first
+manual pass against a real environment has happened** (its four findings are §11.10). What
+remains is a second manual pass on a deployed stack with real binaries, real keys and real
+delivery endpoints — nothing below marked "not verified" has been exercised by anyone yet.
+
 | Area | How it was verified | Not verified |
 |---|---|---|
-| Sensor parsing/normalization | recorded output of each tool (fixtures written to match documented output formats) | real binaries at the pinned versions; exact CLI flags for Amass v4 (`-o`, `-dir`, `-nocolor`), BBOT 2.x output path, SpiderFoot 4 export endpoint |
-| Pipeline, change detection, findings, risk | 123 automated tests on PostgreSQL 18 | behaviour at 50k+ assets (performance) |
+| Sensor parsing/normalization | recorded output of each engine (fixtures written to match documented output formats) | real binaries at the pinned versions; exact CLI flags for Amass v4 (`-o`, `-dir`, `-nocolor`), BBOT 2.x output path, SpiderFoot 4 export endpoint, ZAP 2.15 API paths, a live Shodan key against a paid plan |
+| Pipeline, change detection, findings, risk | 342 automated tests on PostgreSQL 18 | behaviour at 50k+ assets (performance) |
 | Tenant isolation | RLS tests for every tenant table and API cross-tenant tests | separate BYPASSRLS role hardening (documented, not implemented) |
+| Broker trust boundary (A01) | real Celery workers against a real Valkey 9 using the compose ACL (`tests/integration`) | the ACL under a multi-pool deployment (only `default` is exercised) |
+| Audit remediation (A01–A11) | a regression test per finding; the auditor's reproductions re-run | a re-audit by the reviewer |
+| Engine non-disclosure (ADR-022) | `test_engine_disclosure.py` over scans, profiles, capabilities, findings, assets; a Deep Assessment on the dev stack read end to end | the network tab of a **deployed** stack; errors from engines that have never failed here |
 | API | TestClient suites; OpenAPI UI rendered | load/performance |
-| Web UI | type-check, production build, jsdom smoke tests, login page viewed in a browser, demo login confirmed working by the product owner | authenticated screens not visually reviewed by the builder |
-| Deployment | `docker compose config` | image builds, container start-up, healthchecks, TLS config, SpiderFoot profile — CI `deployment` job will be the first real run |
-| Notifications | webhook signing and Wazuh file output in tests; syslog line format unit-tested | delivery to a real Wazuh manager, SMTP server, Slack/Teams |
+| Web UI | type-check, production build, jsdom smoke tests, and a manual pass by the product owner against a real environment (§11.6, §11.10) | the new Settings → Email delivery, Account → alerts, Integrations → Test and the Start-scan cookie field, in a browser |
+| Deployment | `docker compose config`; CI builds the images | container start-up, healthchecks, TLS config, SpiderFoot/DAST profiles on a real host |
+| Notifications | webhook signing and Wazuh file output in tests; syslog line format unit-tested | delivery to a real Wazuh manager, SMTP server, Slack/Teams — including the new platform mail server and personal alerts |
 | PDF reports | code path only (WeasyPrint absent on the build machine) | PDF rendering inside the platform image |
 
 ## 11.5 Rebrand to the Al-Rasedah design system (18 September 2026)
@@ -180,19 +188,213 @@ Added dynamic application security testing and end-user documentation on the
   verification-status note in §11.4 / docs/SENSORS.md; first live run should confirm the
   ZAP 2.15 API paths and default scan policies.
 - **DAST badge**: findings from `zap_active` are flagged in the UI (findings list + detail).
-  The finding API now exposes the detection engine `source`; `isDast(source)` in
-  `lib/format.ts` drives the copper badge.
+  *(Superseded in §11.10: the API exposed the engine `source` to drive it, which is now a
+  boolean `dast` field — the engine name no longer leaves the backend.)*
 - **User guide**: `frontend/public/user-guide.html` — a single self-contained HTML user
   guide (chapter 7.10), opened by the sidebar **Documentation** link and also suitable for
   hosting on a public website. It is a product document with no source code, paths or
   secrets; developer-facing detail stays in this handbook.
 
-## 11.9 Recommended next steps
+## 11.9 External audit remediation (19–21 September 2026)
 
-1. Run CI (or `docker compose build`) and fix anything the first real image build reveals.
-2. `docker compose run --rm asm-scanner versions`, then Passive Discovery and Standard ASM
-   scans against a domain you own; compare observations with the fixtures and adjust
-   adapters.
-3. Point a Wazuh test manager at the syslog channel and validate decoders/rules with
-   `wazuh-logtest`.
-4. Then the roadmap in [../MILESTONES.md](../MILESTONES.md#known-gaps--next-steps).
+An external reviewer audited the code at `ba9f0a6` and reported 11 findings (6 P1, 5 P2),
+with a reproduction for each. All 11 are fixed, each with the regression test listed in
+chapter 9.3; the auditor's own reproductions now fail to reproduce.
+
+| # | Finding | Fix |
+|---|---|---|
+| A01 | The broker was not a trust boundary: sensor workers published core tasks, shared the platform's account and one key | Results travel as a signed `ResultEnvelope` on `results.<pool>`; per-pool HKDF keys; per-pool Valkey users and ACLs; sensor tasks are `shared=False` and the result consumer registers exactly one task; verified against a real Valkey in `tests/integration` |
+| A02 | Private and derived destinations were actively scanned | `egress_filter` in the runner drops targets resolving to non-public or scope-excluded addresses; the job carries the scope's excluded ranges |
+| A03 | The ZAP context regex matched look-alike hosts, and the credential could leak | Anchored origin regex; the header is scoped to the origin and removed in a `finally`; CRLF refused |
+| A04 | An incomplete run resolved findings that were never tested | Coverage is dropped for partial/failed results at both ends (`runner` and `complete_stage`) |
+| A05 | Verification was enforced only on newly added scope | Checked at scan time on every entry, so an entry that predates the requirement cannot be actively scanned |
+| A06 | Concurrency limits raced under parallel starts | `pg_advisory_xact_lock` held to commit, scan re-read under the lock; a redelivered start is a no-op |
+| A07 | A fast callback could arrive before the dispatch was committed | Stage RUNNING + job binding commit **before** publishing; `dispatched_at` afterwards |
+| A08 | A viewer's API token could enrol the owner's MFA | MFA changes require the account password; a token cannot stand in for it |
+| A09 | Suspended tenants' scans still started | Checked in `try_start` and before every stage; the scan is cancelled, not started |
+| A10 | One ZAP daemon driven by two scans at once | Exclusive lease from the pool `Coordinator` |
+| A11 | Redis visibility timeout shorter than the jobs | Raised above the longest stage budget; per-consumer unacked keys |
+
+Shipped in the same branch, from the product owner's decisions:
+
+- **Shodan works now.** It had been reachable only as one of Subfinder's subdomain sources,
+  which explains "Shodan isn't working" from a paid account — nothing recognizable ever came
+  back. It is now a real passive `ip_enrichment` engine doing host lookups (ADR-020).
+- **Everything is operable from the front end** — mail server and personal alerts in the UI
+  (ADR-021), data-source keys with a Test button, no `.env` editing for day-to-day use.
+- **Unverified findings** get their own view instead of inflating risk (ADR-020).
+- **Authenticated DAST** from the Start-scan modal, per-scan and erased afterwards (ADR-023).
+- **Wildcard scope** (`*.example.com`) accepted as typed (ADR-024).
+- Jira and ServiceNow channels are hidden from the API and UI until they work
+  (`implemented = False`), but stay in the code and in these docs.
+
+## 11.10 Capability naming, error text and scan time (22 September 2026)
+
+Four problems reported from a real environment, all visible in one Pipeline screenshot.
+
+| Reported | Cause | Change |
+|---|---|---|
+| "The assets scan is duplicated" (three "Asset discovery" rows, two "Network ownership") | Not duplicated: three different engines run subdomain discovery and two run IP enrichment, but every row was labelled by its *stage type* | Stages are labelled by capability (ADR-022) — "Passive subdomain discovery", "Certificate transparency", "Deep subdomain enumeration"; "Network ownership enrichment" vs "Internet exposure intelligence" |
+| "It takes waaaaay too long" (a 1h31m stage) | The deep-enumeration budget was 90 minutes in Deep Assessment and 30 in the daily profiles, and that stage mostly repeats what the faster sources already found | 25 / 10 minutes; the broad passive source 30 → 15 |
+| "The errors tell the user which engine we use" | Stage errors were the raw sensor text (`nuclei exit code 1: [FTL] …no templates provided for scan`, `unexpected sensor error: RuntimeError`) | `scans/messages.friendly` maps known failures to advice and scrubs the rest; adapters raise `ConfigurationError` with a product-level sentence. Raw output stays in the worker log |
+| "It's easy to reverse engineer the software from inspecting the network activity" | Engine names in API responses (stages, findings `source`, profile stages, capability schemas, tags, rule-id prefixes) **and** an `X-ASM-Scanner: Exteriq-ASM` header on outgoing probes | Capability labels and opaque `eng_…` tokens everywhere (ADR-022), enforced by `test_engine_disclosure.py`; no product header unless `ASM_SCANNER_IDENTITY` is set, neutral user agent |
+
+Verified against a Deep Assessment on the dev stack: eleven distinctly-named stages, and the
+new messages in place of the raw ones. Note that **stages stored by older scans keep their
+original error text** — only new scans are sanitized.
+
+## 11.11 "I added an admin and they can't see my scans" (22 September 2026)
+
+Reported from the same real environment. Not a permissions bug and not RLS
+misbehaving — RLS was doing exactly its job, confining every query to the tenant of
+the session, and the second administrator was in a different tenant.
+
+They got there through `create-admin --tenant`, which looked the tenant up by exact
+name and **created it when the name did not match**. `"Acme"` for *"Acme Corp"*, a
+stray capital or a trailing space produced a second, empty tenant with the new
+account as its administrator. Nothing in the product contradicted them: the sidebar
+was complete (a tenant admin has every permission), the tenant selector was hidden
+(it needs more than one membership), and each page rendered an empty table.
+
+- `cli._resolve_tenant` refuses a name that does not exist, lists the tenants that
+  do, suggests the near match, and creates one only on `--create-tenant` — or on a
+  deployment that has no tenants at all, so first-run bootstrap is unaffected.
+- `create-admin` now also prints where an **existing** account will actually sign
+  in, when that differs from the tenant just granted. Their default is deliberately
+  not repointed; the note says to use the tenant selector.
+- `components/TenantEmpty.tsx` gives Scans, Inventory, Findings and Changes a real
+  answer in place of a bare empty table — the tenant by name, the other tenants the
+  account belongs to, and where to switch. The dashboard stops greeting a populated
+  deployment as a brand-new one.
+
+Regressions: `tests/backend/test_cli_admin.py` (7) and a `pages.test.tsx` block (6).
+The second cause of this symptom — an account keeping the tenant it already signed
+in to — is ADR-021-adjacent behaviour that stays as it is; it is now visible instead
+of silent.
+
+## 11.12 Idle session timeout (22 September 2026)
+
+Reported as "the app doesn't have a timeout", and correctly: access tokens lasted 15
+minutes, refresh tokens slid for 7 days under a 30-day cap, and `user_sessions.last_used_at`
+was written on every refresh but **never read**. A signed-in browser stayed signed in.
+
+The subtlety is that the obvious server-side check does not work on its own. Several screens
+poll (the dashboard every 60 s, a running scan every 5 s, the unacknowledged-changes badge),
+so an abandoned tab keeps calling the API, keeps refreshing, and keeps `last_used_at` fresh
+indefinitely. "Idle" has to mean *no user*, which only the browser can observe.
+
+- `ASM_SESSION_IDLE_TTL_MINUTES` (default 30, `0` disables). `auth.refresh()` revokes a
+  session idle longer than that (`revoked_reason = "idle"`) — the authoritative check, and
+  the one that stops a refresh cookie replayed days later.
+- `AuthContext` watches pointer, keyboard, wheel, touch and tab focus, and signs out on the
+  same window. `/auth/me` carries `session_idle_minutes` so the policy lives in the
+  deployment, not in the client; API tokens get `0`.
+- The login screen says why the session ended, rather than appearing for no reason.
+
+Regressions: five in `test_api_auth.py` (idle refresh refused and revoked, a session still in
+use renewed, `0` disables, the window reaches the browser, API tokens exempt) and two in
+`pages.test.tsx` on fake timers (signs out after 31 minutes; six 20-minute stretches with a
+keypress between them do not). The UI test needed a bounded wait after advancing the clock —
+the sign-out and its re-render land asynchronously, and asserting immediately passed alone
+but failed in the full file.
+
+## 11.13 Scanning an application on a non-default port (22 September 2026)
+
+"Invalid target: hrp.example.sa:8580" when starting a Web Application Scan. Two problems
+behind one message:
+
+- `create_scan` classified any value containing a colon as an IP address, so `host:port`
+  could never be typed at all. Replaced by `orchestrator.parse_target`, which tries IP first
+  (an IPv6 address is full of colons), then `host:port`, then CIDR, then hostname, and
+  accepts a full URL. The refusal now names the forms that work.
+- Accepting it would not have been enough. Stages select by host, so a `host:port` override
+  matched nothing and every stage would have reported "no authorized targets". `build_targets`
+  now splits an override into hosts and the ports named with them: the host filters the
+  earlier stages as before, and HTTP discovery probes the named port **as given** — the DAST
+  profile sweeps the "web" port set only, so 8580 would never have been found, and the host
+  need not be in inventory yet. Crawling and active scanning then stay on that port and leave
+  the host's other endpoints alone.
+
+Scope is unchanged: the host is authorized exactly as before, so a port on an out-of-scope
+host is still refused. Verified against the running stack with the reported value —
+`hrp.ifmi.sa:8580` is accepted (201), `:99999` is refused with the accepted forms, and an
+out-of-scope host:port is refused as out of scope. 22 regressions in
+`tests/backend/test_target_ports.py`.
+
+## 11.14 DAST against a live DVWA (22 September 2026)
+
+The first run of the web application stages against a real target (a local DVWA, a real
+ZAP 2.17) — everything before this was recorded fixtures. Three defects, none of which
+any unit test could have found.
+
+**The active scanner only ever attacked the site root.** Every ZAP job replaces the
+daemon's session so jobs cannot see each other's traffic (§6.5) — which also destroys the
+*crawl's* site tree before the attack stage runs. `ascan` then recursed over a tree of one
+node. Measured: 298 crawled pages, 14 active-scan observations, and not one parameter of
+the application tested. Fixed by making the crawl's output data the platform owns, as
+ADR-003 requires of every stage: `zap_spider` records its pages on the endpoint asset
+(`crawled_pages`), an adapter declares `wants_crawled_pages`, `build_targets` expands the
+endpoint into those pages for it, and `zap_active` reloads them into the daemon before
+scanning — one context and one recursive scan per origin, not per URL. The same scan then
+ran 87 targets and 1273 observations, and reported its first parameter-based finding
+(CWE-601 on an inner page). Nuclei shares that stage and does *not* declare the flag, so
+its targets are unchanged.
+
+**An authenticated scan that could not authenticate said nothing useful.** ZAP Core omits
+the Replacer add-on, `replacer/action/addRule` returned NO_IMPLEMENTOR, and the crawl ran
+logged out while reporting partial success — one page, 19 header findings. Both stages now
+raise `ConfigurationError`, because claiming to have tested behind a login without doing so
+is the false-coverage failure ADR-002 exists to prevent.
+
+**Every crawled URL collapses into one asset.** An `http_endpoint` is an origin by
+normalization, so 298 pages became one row. Kept deliberately — an ASM inventory should not
+list every URL of an application — but it is why the pages are stored as an attribute.
+
+**Still open:** ZAP reports no SQL injection or XSS on DVWA at `security=low`, even when
+driven directly outside the platform with the rules confirmed loaded and enabled. The
+scanner's own traffic shows the seeded baseline request answering `302` while later payload
+requests answer `200`, which would defeat any response-diffing rule. Next step is ZAP-level:
+seed with redirects followed, assert the baseline is a `200`, and consider ZAP's own session
+management instead of a Replacer header. Also noticed: `attack_strength` in `ZapActiveConfig`
+is accepted and never applied to the daemon.
+
+## 11.15 Threat Center, website screenshots, exposure map (23 September 2026)
+
+Built on the audit-fix branch (after F1–F8), in that order, as three reviewable commits.
+Product docs: [THREAT_CENTER.md](../THREAT_CENTER.md), [SCREENSHOTS.md](../SCREENSHOTS.md),
+[EXPOSURE_MAP.md](../EXPOSURE_MAP.md); decisions ADR-026–028.
+
+**What reused what.** Threat Center checks are ordinary scans (`create_scan` with an internal
+profile and a `stages` override that only internal profiles accept), so scope, quotas,
+concurrency, pools and coverage needed no new code. Screenshots are ordinary sealed sensor
+jobs in the tenant's pool with their own binding in `asm-ingest`. The exposure map reads
+`asset_relationships` and findings; no graph store.
+
+**Problems met.**
+
+| Problem | Cause | Fix |
+|---|---|---|
+| Real Chrome contacted Google services during captures (`update.googleapis.com`, `accounts.google.com`, `clients2.google.com`, …) | branded-browser background features ignore the usual switches; a second `--disable-features` *replaces* the first | one merged feature list; the egress proxy refuses known vendor-service hosts; the proxy records every allowed host and the measurement script prints them. `www.google.com`/`www.gstatic.com` remain (pages use them too) |
+| `docker compose config` rejected the screenshot override | Compose appends `security_opt` and `deploy` limits from override files | the override adds only the seccomp profile, `shm_size` and a PID limit; the base file's `no-new-privileges` and 2 GB cap stay |
+| A parsed version `-1` | the tokenizer skipped the sign | a version must start with a digit, as documented |
+| Exposure map reported hidden neighbours on a cycle | an edge drawn from its other end was not counted as shown | count every drawn edge for both anchors (regression: `test_cycles_terminate_…`) |
+| Changing a map filter blanked the map | the query had no placeholder data | `keepPreviousData` |
+| Catalog edits landing in a tenant's audit chain | `audit.record(tenant_id=None)` falls back to the request's tenant | `platform=True` writes to the platform chain |
+
+**Verification status.**
+
+| Area | Verified | Not verified |
+|---|---|---|
+| All three features' logic, RLS, isolation, bounds | 473 backend/sensor tests (471 + the 2 broker tests) on PostgreSQL 18 with a non-superuser, non-BYPASSRLS role; 56 UI tests; broker ACL tests on Valkey | — |
+| Screenshot browser flags, sandbox, destination refusals | real Google Chrome 153 on Windows 11 through the real adapter and proxy against a local fixture (`measure_screenshots.py`, `browser-selftest` equivalent) | Alpine Chromium in the scanner image; the derived seccomp profile and user namespaces on a Linux host; `setpriv` parent-death behaviour; the reaper on a real `/proc` |
+| Migrations | upgrade → downgrade 0007 → upgrade → downgrade 0006 → upgrade | on a production-sized database |
+| Resource use | Windows lab numbers for captures; synthetic 5 000-host org for evaluation and the map | the deployed image, broker queue delay, S3 latency, concurrency |
+| Threat Center checks | through the pipeline with recorded engine output | the detection engine's `-id` filter at the pinned version with real templates |
+
+## 11.16 Recommended next steps
+
+1. Work through the manual pass in [chapter 9.8](09-testing.md#98-the-manual-pass) on a
+   deployed stack — that is the only verification left that matters, and §11.4 says exactly
+   what it would cover.
+2. Fix what the first real image build and the first real engine versions reveal.
+3. Then the roadmap in [../MILESTONES.md](../MILESTONES.md#known-gaps--next-steps).

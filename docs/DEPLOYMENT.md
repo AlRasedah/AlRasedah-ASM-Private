@@ -71,16 +71,48 @@ The most common first-deploy failures:
 
 ## 4. Email
 
-Set `ASM_SMTP_HOST`, `ASM_SMTP_PORT`, credentials and `ASM_SMTP_FROM`. Without SMTP,
-password resets and user invitations fall back to one-time links shown to administrators,
-and email notification channels fail visibly in the delivery log.
+Configure the mail server in the web interface: **Settings → Email delivery** (platform
+administrators), which also sends a test message. The settings are stored encrypted in the
+database, take effect immediately (no restart) and override the environment.
+
+`ASM_SMTP_HOST`, `ASM_SMTP_PORT`, credentials and `ASM_SMTP_FROM` remain as a bootstrap
+default — useful when you want mail working before anyone signs in. Without either,
+password resets and invitations fall back to one-time links shown to administrators, and
+email deliveries fail visibly in the delivery log.
+
+Users switch on alerts to their own login address under **Your account → Email alerts**
+(on by default for high and critical changes); no mail-server access is needed for that.
 
 ## 5. Sensors
 
 - **Pools**: `tenants.worker_pool` (default `default`) routes a tenant's sensor jobs to queue
-  `scanners.<pool>`. Run additional sensor workers for dedicated pools:
-  `ASM_SENSOR_QUEUES=scanners.bank-a docker compose up -d --scale asm-scanner=2`, or add a
-  second service with a different `ASM_SENSOR_QUEUES`.
+  `scanners.<pool>`; results come back on `results.<pool>`. A pool is also a trust boundary
+  (its own broker user and key — see ARCHITECTURE.md §2), so tenants that must not share
+  scanners get their own pool — and with `ASM_SCANNER_ISOLATION=per_tenant` (the default)
+  the platform **refuses to dispatch** a scan whose pool another tenant also uses, rather
+  than trusting that an operator read this section. `cli scanner-pool <pool>` prints the
+  whole block below ready to paste. To add pool `bank-a` by hand:
+  1. Copy the redis service's `--user scanner-default …` block in `docker-compose.yml`,
+     replacing every `default` with `bank-a` (queue, bookkeeping and binding keys,
+     `asm.pool.bank-a.*`, `*.asm-bank-a.pidbox`, `&/0.asm-bank-a.pidbox`) and giving it its
+     own password variable.
+  2. Add a scanner service like `asm-scanner` with `ASM_SENSOR_POOL: bank-a`, the new broker
+     user in `ASM_CELERY_BROKER_URL`, and `ASM_SCANNER_TRANSPORT_KEY` set to the output of
+     `docker compose run --rm asm-api cli scanner-pool-key bank-a`. Never give sensor
+     containers the platform's `ASM_SCANNER_TRANSPORT_KEY` or `ASM_REDIS_PASSWORD`.
+  3. Add the pool to `ASM_WORKER_POOLS` (e.g. `default,bank-a`) and restart `asm-ingest`.
+  4. If the pool runs DAST, give it its own ZAP daemon (`ASM_ZAP_URL`).
+- **Egress firewall (required for untrusted scope)**: the platform refuses to actively scan
+  non-public addresses, and sensors re-check every resolved destination just before
+  connecting, but a hostname can change its DNS answer between that check and the tool's own
+  lookup. Enforce the rule at the network layer too: drop traffic from the `egress` network
+  of scanner/ZAP containers to loopback, RFC 1918, link-local (incl. `169.254.169.254`
+  metadata), CGNAT and your own infrastructure — e.g. rules in the host's `DOCKER-USER`
+  iptables chain, or a cloud security group on a dedicated scanning host.
+  `ASM_ALLOW_NON_PUBLIC_SCOPE` / `ASM_SCANNER_ALLOW_NON_PUBLIC` are for labs only.
+- **Broker redelivery**: `ASM_BROKER_VISIBILITY_TIMEOUT` (default 6 h) must exceed
+  `ASM_STAGE_TIMEOUT_SECONDS` + 900 s and be the same for every service (the platform refuses
+  to start otherwise). Sensor workers also ignore a redelivered job they already claimed.
 - **Placement**: sensors only need the broker and internet egress. They can run on separate
   hosts/regions (e.g. a dedicated scanning egress IP that customers allow-list) with
   `ASM_CELERY_BROKER_URL` pointing at the broker over a private network or TLS tunnel.
@@ -101,15 +133,71 @@ and email notification channels fail visibly in the delivery log.
   service is started with). This enables the `zap_spider` (web crawling + passive scanning)
   and `zap_active` (active vulnerability scanning) engines and the built-in **Web Application
   Scan (DAST)** profile. Active scanning is intrusive: it only runs against scope with
-  active-scanning authorization, and ZAP is confined per target to the authorized origin.
+  active-scanning authorization, and ZAP is confined per target to exactly the authorized
+  origin (anchored regex, no seeding redirects). One job uses a daemon at a time (a
+  pool-wide lease) in a fresh session that is wiped afterwards, so parallel DAST stages queue
+  for the daemon; deploy one daemon per pool for tenant isolation and throughput.
   For **authenticated scanning**, store a `zap_auth` credential (Integrations → Data-source
   API keys) — a logged-in session cookie (default header `Cookie`, e.g.
   `PHPSESSID=…; security=low`) or a bearer token (set the stage's `auth_header_name` to
   `Authorization`). ZAP then crawls and attacks as that user; the secret is injected only on
   the authorized origin.
-- **Egress identification**: the web and vulnerability sensors send
-  `X-ASM-Scanner: Exteriq-ASM` by default (`identify_scanner` in profiles) so customers can
-  recognise authorized scanning in their logs.
+- **Egress identification**: scans send **no identifying header by default**, and the
+  platform's own API calls use a neutral user agent, so traffic does not advertise the
+  product or the engines behind it. Set `ASM_SCANNER_IDENTITY` when a customer's SOC should
+  recognise authorized scanning — a value (`acme-pentest` → `X-Scanner: acme-pentest`) or a
+  complete header line (`X-Audit: ticket-4711`). `ASM_SCANNER_USER_AGENT` overrides the user
+  agent. Profiles can still switch the header off per stage (`identify_scanner`).
+
+## 5b. Website screenshots (optional)
+
+Screenshots run in each tenant's **own scanner** (the pool's scanner service) with a pinned
+Chromium. Nothing is offered to tenants until a platform administrator enables it in the UI,
+and that should happen only after the self-test below passes. Product behavior, limits and
+measurements: [SCREENSHOTS.md](SCREENSHOTS.md).
+
+1. **Host prerequisite — unprivileged user namespaces.** Chromium's sandbox needs them.
+   Debian-family kernels: `sysctl kernel.unprivileged_userns_clone=1`. Ubuntu 23.10+: also
+   `kernel.apparmor_restrict_unprivileged_userns=0`, or an AppArmor profile allowing
+   `userns` for `/usr/lib/chromium/chromium`.
+2. **Seccomp profile.** Docker's default profile refuses the sandbox's namespace syscalls to a
+   container without `CAP_SYS_ADMIN` (the scanner has no capabilities at all). Derive a
+   profile from *your engine's* default that adds exactly `clone`, `unshare`, `setns` and
+   `chroot`:
+   ```bash
+   curl -fsSLo default.json https://raw.githubusercontent.com/moby/moby/v<your docker version>/profiles/seccomp/default.json
+   python scripts/make_browser_seccomp.py default.json > docker/scanner/seccomp-browser.json
+   ```
+   Do **not** use `seccomp=unconfined`, and never add `--no-sandbox` anywhere: the adapter
+   refuses to run the browser without its sandbox.
+3. **Pin and build.** Choose the exact `chromium` package version for the scanner's Alpine
+   base (`docker run --rm python:3.12-alpine sh -c 'apk update >/dev/null && apk policy chromium'`)
+   and build with the override file; the build fails without a version:
+   ```bash
+   export ASM_CHROMIUM_VERSION=<exact version>
+   docker compose -f docker-compose.yml -f docker-compose.screenshots.yml build asm-scanner
+   docker compose -f docker-compose.yml -f docker-compose.screenshots.yml up -d asm-scanner
+   ```
+   Repeat the override's block for every per-tenant scanner service (`asm-scanner-<pool>`).
+   The override adds the seccomp profile (`no-new-privileges` stays), 256 MB `/dev/shm` and
+   a PID limit; the base file's 2 CPU / 2 GB cap still applies.
+4. **Self-test** (no network needed): prints JSON and exits non-zero on failure.
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.screenshots.yml run --rm asm-scanner browser-selftest
+   ```
+   `"ok": true` means the pinned browser started **with its sandbox** and produced an image.
+   "sandbox is unavailable" means steps 1–2 are not in effect.
+5. **Measure** on the deployed image (optional, recommended before raising limits):
+   `... run --rm asm-scanner python /opt/asm/measure_screenshots.py --runs 10`. It also lists
+   every external destination the browser contacted.
+6. **Enable**: Settings → *Website screenshots — platform* → tick "The scanners have the
+   screenshot browser". Keep "Active captures, whole deployment" at 1 on small hosts; each
+   concurrent capture needs about 0.6 GB on its scanner (see the measurements).
+
+Screenshots use the existing object storage (`asm-storage` volume or S3) under
+`tenants/<id>/screenshots/`, and the existing egress firewall recommendation applies to the
+scanner unchanged. To withdraw the feature, untick it; images are removed by retention or
+with the organization.
 
 ## 6. In-Kingdom / air-gapped operation
 
@@ -147,8 +235,10 @@ the storage volume, start the stack.
 - `ASM_ENCRYPTION_KEYS=k2:<new>,k1:<old>` — new secrets use `k2`, old ones still decrypt.
   Re-save credentials (or re-run a rotation job) before removing `k1`.
 - `ASM_SECRET_KEY` rotation signs everyone out (JWTs and hashed refresh/reset tokens).
-- `ASM_SCANNER_TRANSPORT_KEY` must be identical on platform and sensor containers; rotate
-  both together while no scans are running.
+- `ASM_SCANNER_TRANSPORT_KEY` is the platform's master key; each pool's sensor containers get
+  only their derived pool key (`ASM_SCANNER_POOL_KEY` for `default`, `cli scanner-pool-key
+  <pool>` for others). Rotate the master key while no scans are running, then re-derive and
+  redeploy every pool key (`python scripts/generate_env.py` refreshes the default one).
 
 ## 9. Upgrades
 
@@ -156,7 +246,65 @@ the storage volume, start the stack.
 git pull && docker compose build && docker compose up -d   # asm-migrate applies migrations first
 ```
 
+Your data is in Docker **volumes** (`pg-data`, `asm-storage`, …), not in the checkout, so
+pulling, rebuilding and restarting never touches it. `docker compose down` is safe;
+**`docker compose down -v` deletes every volume** and is the one command that loses data.
+Take the §7 backup before any upgrade anyway, and let running scans finish first.
+
 Read release notes for tool version changes (new detection behaviour can change findings).
+
+**Upgrading to tenant-isolated scanners.** `ASM_SCANNER_ISOLATION` now defaults to
+`per_tenant`: a tenant whose scanner pool is shared with another tenant cannot scan, and
+the scan is cancelled with a message naming the fix. A single-tenant deployment is
+unaffected — one tenant alone on `default` shares with nobody. Adding a second customer
+does require a pool for them:
+
+```bash
+docker compose run --rm asm-api cli scanner-pool t-globex
+```
+
+That prints the broker password, the Valkey ACL block, the derived transport key and the
+scanner service (including its own ZAP daemon, since a ZAP session is global state). Add
+the pool to `ASM_WORKER_POOLS` so `asm-ingest` consumes its results. An in-house
+deployment where every tenant is the same organization can set
+`ASM_SCANNER_ISOLATION=shared` instead — deliberately, and knowing what it gives up.
+
+Tenant-managed **file exports** now write to `ASM_INTEGRATION_EXPORT_DIR/<tenant-id>/`;
+point each collector's `localfile` at its tenant's directory.
+
+**Upgrading to the Threat Center / screenshots / exposure map release (migrations 0008,
+0009).** Take the §7 backup, then the usual three commands: `asm-migrate` applies both
+migrations and `bootstrap` adds the internal Threat Center check profile. Nothing changes for
+existing scans, profiles, findings, integrations or notification preferences, and no new
+environment variable is required. New and visible afterwards:
+- **Threat Center** in the sidebar, empty until a platform administrator publishes an
+  advisory (Threat Center → Manage advisories). Publishing matches every tenant's inventory
+  in the background and may send one "advisory may affect assets" alert per organization.
+- **Exposure map** in the sidebar and on asset pages; read-only, no configuration.
+- **Website screenshots** stay **off** — see §5b; tenants see why until you enable them.
+- New beat tasks: `asm.core.threat_evaluate` (daily 04:40 UTC), `asm.core.screenshot_dispatch`
+  (every minute), `asm.core.screenshot_schedule` (daily 02:30 UTC). They run in the existing
+  `asm-scheduler`/`asm-worker`; `asm-ingest` now also accepts screenshot results.
+
+Rollback: `alembic downgrade 0007` removes the new tables (catalog, assessments, capture
+records — export first if needed); stored screenshot images are not deleted by a downgrade
+(`tenants/*/screenshots/` in the object store).
+
+**Upgrading within the current release line** (capability naming, idle sessions): nothing to
+do beyond the three commands. No migration was added, and every new setting has a default —
+`ASM_SESSION_IDLE_TTL_MINUTES` (30), `ASM_SCANNER_IDENTITY` (empty), `ASM_SCANNER_USER_AGENT`.
+Expect two visible changes: anyone idle longer than the timeout is signed out once, and
+stages recorded by *older* scans keep their original error text (only new scans are
+sanitized).
+
+**Upgrading to the sensor trust-boundary release (migration 0003).** Run
+`python scripts/generate_env.py` first: it adds `ASM_SCANNER_POOL_KEY` (derived from your
+existing master key) and `ASM_SCANNER_REDIS_PASSWORD`, and drops the obsolete
+`ASM_SENSOR_QUEUES` (a scanner container now serves one pool, `ASM_SENSOR_POOL`). Let running
+scans finish first: in-flight results from the old pipeline are not accepted and those stages
+are failed by the watchdog. Redis must be recreated to pick up the ACL users
+(`docker compose up -d --force-recreate redis`), and the new `asm-ingest` service must run.
+MFA enrollment now asks for the account password.
 
 ## 10. Operations
 

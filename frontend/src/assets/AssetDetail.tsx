@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Save } from "lucide-react";
 import { api } from "@/api/client";
@@ -9,15 +9,18 @@ import {
   Card, Empty, ErrorBox, Field, JsonView, Loading, PageHead, Pagination, RiskScore, SeverityBadge, StatusBadge, Tabs,
 } from "@/components/ui";
 import { Timeline } from "@/components/Timeline";
+import ExposureGraph from "@/exposure/ExposureGraph";
+import Screenshots from "./Screenshots";
 import { APPROVAL_STATES, ASSET_TYPE_LABELS, fmtDate, fmtDay, label, timeAgo } from "@/lib/format";
 
-type Tab = "overview" | "relationships" | "dns" | "ports" | "web" | "tech" | "certs" | "findings" | "timeline" | "raw";
+type Tab = "overview" | "relationships" | "dns" | "ports" | "web" | "tech" | "certs" | "screenshots" | "exposure" | "findings" | "timeline" | "raw";
 
 const HOSTNAME = ["root_domain", "domain", "subdomain"];
 
 export default function AssetDetail() {
   const { id } = useParams();
   const [tab, setTab] = useState<Tab>("overview");
+  const navigate = useNavigate();
   const asset = useQuery({ queryKey: ["asset", id], queryFn: () => api<TAsset>(`/assets/${id}`) });
   useEffect(() => setTab("overview"), [id]);
 
@@ -34,6 +37,8 @@ export default function AssetDetail() {
   if (HOSTNAME.includes(a.asset_type) || a.asset_type === "ip_address") tabs.push({ id: "web", label: "Web endpoints" });
   if (a.asset_type === "http_endpoint") tabs.push({ id: "tech", label: "Technologies" });
   if (a.asset_type === "http_endpoint" || a.asset_type === "certificate") tabs.push({ id: "certs", label: "Certificates" });
+  if (a.asset_type === "http_endpoint" || a.asset_type === "web_application") tabs.push({ id: "screenshots", label: "Screenshots" });
+  if (!["technology", "certificate", "cloud_resource", "asn"].includes(a.asset_type)) tabs.push({ id: "exposure", label: "Exposure map" });
   tabs.push({ id: "findings", label: `Findings (${a.open_findings})` }, { id: "timeline", label: "Timeline" },
             { id: "raw", label: "Raw observations" });
 
@@ -56,6 +61,8 @@ export default function AssetDetail() {
       {tab === "web" && <RelatedTable items={[...rel("serves")]} empty="No web endpoints observed." />}
       {tab === "tech" && <Technologies items={rel("uses_technology")} />}
       {tab === "certs" && <Certificates a={a} />}
+      {tab === "screenshots" && <Screenshots assetId={a.id} />}
+      {tab === "exposure" && <ExposureGraph key={a.id} assetId={a.id} onRecenter={(id) => navigate(`/assets/${id}`)} />}
       {tab === "findings" && <AssetFindings assetId={a.id} />}
       {tab === "timeline" && <AssetTimeline assetId={a.id} />}
       {tab === "raw" && <RawObservations assetId={a.id} />}
@@ -265,7 +272,7 @@ function RawObservations({ assetId }: { assetId: string }) {
   return (
     <div className="stack">
       {q.data.items.map((o) => (
-        <Card key={o.id} title={o.source_label ?? o.source} hint={fmtDate(o.observed_at)}
+        <Card key={o.id} title={o.source_label ?? "Scan"} hint={fmtDate(o.observed_at)}
               right={o.scan_id && <Link to={`/scans/${o.scan_id}`} className="small">scan</Link>}>
           {Object.keys(o.data).length ? <JsonView value={o.data} /> : <span className="muted">Seen (no attributes)</span>}
         </Card>

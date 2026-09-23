@@ -17,11 +17,15 @@ update_templates() {
 case "$role" in
   worker)
     update_templates
+    # One container serves exactly one worker pool (ASM_SENSOR_POOL): its broker
+    # user, queue and key are all per pool. Gossip/mingle/heartbeats are off because
+    # a pool's broker user may only use its own pool's control channel.
     exec celery -A asm_sensors.worker worker \
-      -Q "${ASM_SENSOR_QUEUES:-scanners.default}" \
+      -Q "scanners.${ASM_SENSOR_POOL:-default}" \
       --concurrency "${ASM_SENSOR_CONCURRENCY:-2}" \
       --loglevel "${ASM_LOG_LEVEL:-INFO}" \
-      --hostname "sensor@%h" "$@"
+      --without-gossip --without-mingle --without-heartbeat \
+      --hostname "sensor-${ASM_SENSOR_POOL:-default}@%h" "$@"
     ;;
   update-templates)
     update_templates
@@ -29,6 +33,16 @@ case "$role" in
   versions)
     for b in subfinder dnsx httpx naabu nuclei; do printf '%s: ' "$b"; "$b" -version 2>&1 | tail -n 1; done
     printf 'amass: '; amass -version 2>&1 | tail -n 1
+    if [ -x "${ASM_BIN_CHROMIUM:-/usr/bin/chromium-browser}" ]; then
+      printf 'screenshot browser: '; "${ASM_BIN_CHROMIUM:-/usr/bin/chromium-browser}" --version 2>&1 | tail -n 1
+    else
+      echo "screenshot browser: not installed"
+    fi
+    ;;
+  browser-selftest)
+    # Website screenshots: can this container start the pinned browser with its sandbox?
+    # Prints JSON and exits non-zero when not. Needs no network.
+    exec python -m asm_sensors.adapters.screenshot
     ;;
   *)
     exec "$role" "$@"

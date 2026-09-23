@@ -26,8 +26,8 @@ def snapshot_organization(db: Session, org: Organization) -> MetricSnapshot:
     unknown = db.scalar(base.where(Asset.status == AssetStatus.ACTIVE,
                                    Asset.approval_status.in_([s.value for s in SHADOW_IT_STATES]))) or 0
     sev_rows = db.execute(select(Finding.severity, func.count()).where(
-        Finding.organization_id == org.id, Finding.status.in_([s.value for s in OPEN_FINDING_STATES]))
-        .group_by(Finding.severity)).all()
+        Finding.organization_id == org.id, Finding.status.in_([s.value for s in OPEN_FINDING_STATES]),
+        Finding.unverified.is_(False)).group_by(Finding.severity)).all()
     snap = db.execute(select(MetricSnapshot).where(MetricSnapshot.organization_id == org.id,
                                                    MetricSnapshot.day == today)).scalar_one_or_none()
     if snap is None:

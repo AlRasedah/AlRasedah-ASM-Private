@@ -6,7 +6,7 @@ import { ErrorBox, Field } from "@/components/ui";
 import { api } from "@/api/client";
 
 export default function Login() {
-  const { me, login, verifyMfa } = useAuth();
+  const { me, login, verifyMfa, endedReason } = useAuth();
   const nav = useNavigate();
   const loc = useLocation() as { state?: { from?: string } };
   const [email, setEmail] = useState("");
@@ -50,6 +50,7 @@ export default function Login() {
         <Brand />
         <h2>{forgot ? "Reset your password" : mfaToken ? "Two-factor verification" : "Sign in"}</h2>
         {message && <div className="info-box">{message}</div>}
+        {!message && !mfaToken && endedReason && <div className="info-box">{endedReason}</div>}
         <ErrorBox error={error} />
         {!mfaToken && (
           <Field label="Email">

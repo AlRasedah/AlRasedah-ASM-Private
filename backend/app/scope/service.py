@@ -39,10 +39,35 @@ MAX_IPV4_PREFIX = 16
 MAX_IPV6_PREFIX = 48
 
 
+WILDCARD = "*."
+
+
+def parse_domain(value: str) -> tuple[str, bool]:
+    """Split a domain entry into ``(hostname, wildcard)``.
+
+    ``*.example.com`` is the way scope is usually written down (bug-bounty
+    programmes, penetration-test authorizations), so it is accepted as a first
+    class input and means "this domain and everything under it":
+    ``("example.com", True)``. The wildcard must be the whole first label —
+    ``a.*.example.com`` and ``*example.com`` are refused rather than guessed at.
+    """
+    v = value.strip().lower().rstrip(".")
+    if "*" not in v:
+        return v, False
+    if not v.startswith(WILDCARD) or "*" in v[len(WILDCARD):]:
+        raise ValidationFailed(f"'{value}' is not a valid wildcard. Write it as *.example.com — the wildcard can "
+                               "only replace the first label.")
+    host = v[len(WILDCARD):]
+    if not host:
+        raise ValidationFailed("Enter a domain after the wildcard, for example *.example.com")
+    return host, True
+
+
 def normalize_entry(entry_type: ScopeEntryType, value: str) -> str:
     v = value.strip()
     if entry_type == ScopeEntryType.DOMAIN:
-        host = normalize_hostname(v.removeprefix("*."))
+        candidate, _wildcard = parse_domain(v)
+        host = normalize_hostname(candidate)
         if not host:
             raise ValidationFailed(f"'{value}' is not a valid domain name")
         if registrable_domain(host) is None:
@@ -77,6 +102,7 @@ def load_checker(db: Session, organization: Organization) -> ScopeChecker:
         rules=[ScopeRule.from_entry(e) for e in entries],
         require_verification=bool(ts["scanning"].get("require_scope_verification")),
         derived_ip_scanning=bool(os_.get("derived_ip_scanning", True)),
+        allow_non_public=get_settings().allow_non_public_scope,
     )
 
 
@@ -92,11 +118,24 @@ def add_entry(db: Session, *, tenant_id: uuid.UUID, organization_id: uuid.UUID, 
     org = db.get(Organization, organization_id)
     if org is None:
         raise NotFound("Organization not found")
+    if entry_type == ScopeEntryType.DOMAIN and parse_domain(value)[1]:
+        include_subdomains = True  # "*.example.com" says so explicitly
     norm = normalize_entry(entry_type, value)
     dup = db.execute(select(ScopeEntry).where(
         ScopeEntry.organization_id == organization_id, ScopeEntry.entry_type == entry_type,
         ScopeEntry.value == norm, ScopeEntry.is_exclusion == is_exclusion)).scalar_one_or_none()
     if dup:
+        # Pasting "example.com" and "*.example.com" together is a normal way to write
+        # scope: widen the existing entry instead of refusing the second line.
+        if include_subdomains and not dup.include_subdomains and entry_type == ScopeEntryType.DOMAIN:
+            before = _entry_snapshot(dup)
+            dup.include_subdomains = True
+            db.flush()
+            prev, new = audit.diff(before, _entry_snapshot(dup))
+            audit.record(db, Action.SCOPE_UPDATED, tenant_id=tenant_id, object_type="scope_entry", object_id=dup.id,
+                         previous=prev, new=new)
+            sync_scope_assets(db, org)
+            return dup
         raise Conflict(f"{norm} is already in scope")
     tenant = db.get(Tenant, tenant_id)
     require_verification = bool(tenant_settings(tenant)["scanning"].get("require_scope_verification"))
@@ -106,7 +145,7 @@ def add_entry(db: Session, *, tenant_id: uuid.UUID, organization_id: uuid.UUID, 
         is_exclusion=is_exclusion, allow_active_scanning=allow_active_scanning and not is_exclusion, notes=notes,
         created_by=user_id,
         verification_status=(VerificationStatus.UNVERIFIED if require_verification and not is_exclusion
-                             and entry_type == ScopeEntryType.DOMAIN else VerificationStatus.NOT_REQUIRED),
+                             else VerificationStatus.NOT_REQUIRED),
         verification_token=secrets.token_urlsafe(24) if entry_type == ScopeEntryType.DOMAIN else None,
     )
     db.add(entry)
@@ -213,6 +252,43 @@ def rescope_assets(db: Session, org: Organization) -> int:
 
 
 # ------------------------------------------------------------ verification
+def apply_verification_policy(db: Session, tenant_id: uuid.UUID) -> int:
+    """Re-classify inclusion entries after verification became mandatory.
+
+    Entries recorded as ``not_required`` while verification was off were never
+    proven; they become ``unverified`` so the UI asks for proof. (The checker
+    already treats only ``verified`` as proof; this keeps the displayed state
+    honest.) Returns the number of entries changed.
+    """
+    tenant = db.get(Tenant, tenant_id)
+    if not tenant_settings(tenant)["scanning"].get("require_scope_verification"):
+        return 0
+    rows = db.execute(select(ScopeEntry).where(
+        ScopeEntry.tenant_id == tenant_id, ScopeEntry.is_exclusion.is_(False),
+        ScopeEntry.verification_status == VerificationStatus.NOT_REQUIRED)).scalars().all()
+    for e in rows:
+        e.verification_status = VerificationStatus.UNVERIFIED
+    db.flush()
+    return len(rows)
+
+
+def approve_entry(db: Session, entry_id: uuid.UUID) -> ScopeEntry:
+    """Platform-administrator approval of an IP/CIDR inclusion (they have no DNS proof)."""
+    entry = db.get(ScopeEntry, entry_id)
+    if entry is None:
+        raise NotFound("Scope entry not found")
+    if entry.entry_type == ScopeEntryType.DOMAIN:
+        raise ValidationFailed("Domains are verified with a DNS TXT record, not by approval")
+    if entry.is_exclusion:
+        raise ValidationFailed("Exclusions do not need approval")
+    entry.verification_status = VerificationStatus.VERIFIED
+    entry.verified_at = datetime.now(UTC)
+    audit.record(db, Action.SCOPE_VERIFIED, tenant_id=entry.tenant_id, object_type="scope_entry", object_id=entry.id,
+                 new={"value": entry.value, "method": "platform_admin_approval"})
+    db.flush()
+    return entry
+
+
 def verification_instructions(entry: ScopeEntry) -> dict[str, str]:
     return {"record_type": "TXT", "name": f"{VERIFY_PREFIX}.{entry.value}",
             "value": f"{VERIFY_VALUE}{entry.verification_token}"}

@@ -78,19 +78,31 @@ overwrite each other in React Router 6.
 | `/inventory` | `assets/Inventory.tsx` | filters, sortable table, bulk update modal, CSV export; defaults to primary asset types |
 | `/assets/:id` | `assets/AssetDetail.tsx` | tabs depend on asset type: overview (attributes, risk factors, ownership form), relationships, DNS, ports & services, web endpoints, technologies, certificates, findings, timeline, raw observations |
 | `/shadow-it` | `assets/ShadowIT.tsx` | unverified/unknown/unauthorized active assets with one-click classification |
-| `/findings`, `/findings/:id` | `findings/` | prioritized list; detail with workflow (transitions mirror the backend), activity log, evidence, references. A **DAST** badge (`isDast(source)` in `lib/format.ts`, driven by the finding's `source` field) marks findings dynamically confirmed by active web scanning |
+| `/findings`, `/findings/:id` | `findings/` | prioritized list; detail with workflow (transitions mirror the backend), activity log, evidence, references. A **DAST** badge (the finding's boolean `dast` field) marks findings dynamically confirmed by active web scanning. A second tab lists **unverified** findings — third-party reports awaiting confirmation (ADR-020) — which are excluded from the main list and from risk |
+| `/threats`, `/threats/:id` | `threats/ThreatCenter.tsx`, `ThreatDetail.tsx` | advisories with this tenant's counts and assessment freshness; detail with KPIs (filters on click), affected products, KEV/EPSS, references (`rel="noopener noreferrer nofollow"`), matched assets with evidence, linked findings, owner, last check and remediation (modal, `findings:write`); **Check selected assets** only with `scans:run` and an approved check. Assessment words and hints live in `ASSESSMENT_LABELS` (`lib/format.ts`) — "not detected" always says it is not proof of safety |
+| `/threats/catalog` | `threats/ThreatCatalog.tsx` | platform admins (`intel:admin`): advisory editor (structured affected-product/version-range form, approved check picker), publish/archive/restore with confirmation, approved-check allowlist |
+| `/assets/:id` → Screenshots tab | `assets/Screenshots.tsx` | web endpoints only: latest image fetched as a blob through the API (object URL, revoked on unmount — there is no public image URL), metadata, last 10 attempts with state; **Capture screenshot** (`scans:run`), cancel, delete (`assets:write`); polls every 3 s while a capture is queued/running; when the feature is off it shows the server's reason instead of the button |
+| `/settings` → Website screenshots | `pages/ScreenshotSettings.tsx` | tenant card (enable + cadence, saved with the page; disabled with the platform's reason when unavailable; usage vs limits) and the platform-admin policy card (`tenants:admin`) |
+| `/exposure-map`, `/assets/:id` → Exposure map tab | `exposure/ExposureMapPage.tsx`, `exposure/ExposureGraph.tsx` | one organization at a time (explicit choice when "All organizations" is selected); optional start asset (search, "Start here"); SVG with columns in chain order (domains → IPs → ports/services → web → context → findings), line style by freshness, dashed nodes for third-party-only or inactive, "+N" for hidden neighbours; side panel explains a node or a line; **Expand** merges one node's neighbours (≤ 600 nodes client-side); filters refetch with `keepPreviousData` so the map does not blank. No graph library |
 | `/changes` | `pages/Changes.tsx` | event feed, acknowledge |
-| `/scans`, `/scans/:id` | `scans/Scans.tsx`, `ScanDetail.tsx` | start scan modal (profile description, active warning, optional targets); pipeline stages, scan changes, authorization log |
-| `/scan-profiles` | `scans/Profiles.tsx` | built-in/custom profiles (JSON stage editor validated server-side), schedules |
-| `/organizations`, `/organizations/:id` | `pages/` | scope entries (bulk add, exclusions, active permission, ownership verification), scanning policy, scope checker |
-| `/reports`, `/integrations`, `/users`, `/settings`, `/audit`, `/account`, `/platform` | `pages/` | as named |
+| `/scans`, `/scans/:id` | `scans/Scans.tsx`, `ScanDetail.tsx` | start scan modal (profile description, active warning, optional targets, and — when the profile has a stage whose capability `accepts_login` — a session-cookie field for authenticated crawling, ADR-023); pipeline stages named by capability, scan changes, authorization log |
+| `/scan-profiles` | `scans/Profiles.tsx` | built-in/custom profiles (JSON stage editor validated server-side), schedules. Stages identify their engine by the opaque `eng_…` token the API returned; the editor round-trips it untouched |
+| `/organizations`, `/organizations/:id` | `pages/` | scope entries (bulk add incl. `*.example.com`, exclusions, active permission, ownership verification or platform-admin approval), scanning policy, scope checker |
+| `/integrations` | `pages/Integrations.tsx` | notification channels, and **data-source API keys** grouped by what they do, each with a **Test** button. This is the one place third-party names are shown on purpose — the customer buys those keys |
+| `/settings` | `pages/Settings.tsx` | tenant settings, plus the platform-admin **Email delivery** card (mail server + test send) that overrides `ASM_SMTP_*` (ADR-021) |
+| `/account` | `pages/Account.tsx` | profile, password, MFA (password required), and **personal alerts** to the login address — on by default for high/critical |
+| `/reports`, `/users`, `/audit`, `/platform` | `pages/` | as named |
 | `/login`, `/reset-password` | `pages/` | public |
 
 Pages are lazy-loaded in `App.tsx` (initial bundle ≈ 243 KB, 78 KB gzipped).
 
-Terminology: the UI speaks in platform terms (stage labels like "Web service
-fingerprinting", "Detection source: Vulnerability detection"); engine names appear only in
-the advanced profile view and raw observations.
+Terminology: the UI speaks in capabilities, never engines — "Certificate transparency",
+"Deep subdomain enumeration", "Detection source: Vulnerability detection". The API sends no
+engine name at all (ADR-022), so there is nothing to hide in the client and nothing to leak
+through the network tab; when a component needs an engine identifier it uses the opaque
+token. The exception is Integrations, which names the data sources whose keys the customer
+supplies. If you are about to write a tool's name into a component, that string belongs in
+the adapter's `display_name` instead.
 
 ## 7.8 Styling (`styles.css`) — the Al-Rasedah design system
 
@@ -181,7 +193,8 @@ change the other.
 `src/test/pages.test.tsx` renders every route inside the real `App` with `vi.mock` replacing
 `api()` by `mockApi()` (`src/test/fixtures.ts`), asserts expected text, and fails on React
 errors logged to the console. Adding a page = add a fixture for its endpoints and a row in
-the `pages` table. `npm test` runs in ~2 s.
+the `pages` table. 27 tests, ~3 s. Note that the first run on a cold machine occasionally
+fails on the dashboard and passes on rerun — a known flake, not a regression.
 
 ## 7.10 User guide (offline documentation)
 

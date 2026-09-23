@@ -36,6 +36,24 @@ automatically.
 with a passive/active switch override it (Amass `mode`, SpiderFoot `use_case`, BBOT
 `passive_only`).
 
+Two results-level flags matter as much as the observations:
+
+- `SensorResult.historical` — this run reports another database's *record* of the target, not
+  a live observation (today `shodan`). Ingestion then adds knowledge but never refreshes
+  `last_seen`, reactivates an asset or closes anything (ADR-020).
+- coverage — dropped automatically for any run that was partial or failed (chapter 4.5).
+
+**Failures the user will read.** When a required setting or binary is missing, raise
+`ConfigurationError` with a sentence written for the product ("The web application scanner is
+not enabled in this deployment"), not a bare `RuntimeError` and not the tool's own message.
+The platform maps errors through `app/scans/messages.friendly` (chapter 4.11); an unmapped
+message degrades to "<capability> did not finish successfully", which helps nobody.
+
+**Identity on the wire** (`identity.py`). Any adapter making HTTP requests takes its headers
+from `user_agent(ctx.settings)` and `identity_header(ctx.settings)`: a neutral user agent,
+and no product header at all unless the deployment sets `ASM_SCANNER_IDENTITY` (ADR-022).
+Never hardcode a header or a user agent in an adapter.
+
 ## 6.3 Execution safety (`execution.run_process`)
 
 - `asyncio.create_subprocess_exec` (no shell), every argument a `str` without NUL.
@@ -96,8 +114,29 @@ the constraints you applied.** Passive discovery tools declare none.
   exclusions); `-ni` (no out-of-band callbacks), `-omit-raw`, `-duc`; info `tech` results
   become technology observations; findings map to the most specific asset (endpoint →
   host:port on a known IP → hostname); finding coverage mirrors the severities/tags used.
+- **shodan** — `ip_enrichment`, passive: the only host contacted is `api.shodan.io`
+  (`GET /shodan/host/<ip>` per authorized IP, the same call Nmap's `shodan-api` script makes;
+  `/api-info` validates the key). It exists because Shodan was previously reachable only as
+  one of Subfinder's subdomain sources, which produced nothing an operator could recognize.
+  Ports, services, certificates, reverse-DNS names and the hosting ASN become observations
+  dated with *Shodan's* timestamp; `vulns` become findings tagged `exposure-intelligence` and
+  marked unverified. The result is `historical=True` and declares `FindingCoverage` only over
+  its own tag, so it can resolve its own stale reports and nothing else. The key is a tenant
+  credential and travels as a query parameter (Shodan accepts nothing else), so errors record
+  the status code and never the URL.
+- **screenshot** — not a scan stage (`stage_types` is empty, so profiles cannot contain it and
+  the engines endpoint does not list it); the platform's screenshot service sends exactly one
+  URL per job. It overrides `run()` because the pipeline hooks do not fit one capture:
+  pool lease → reap stale browsers → start `EgressProxy` → preflight redirects through the
+  proxy → Chromium with a fresh profile, no resolver, UDP off, sandbox on
+  (`FORBIDDEN_FLAGS` is a tripwire) → PNG checks → a `ScreenshotImage` on the result
+  (`SensorResult.screenshots`, max one). Outcomes (`stats.outcome`: succeeded, failed,
+  blocked, timeout, unavailable) drive the platform's status. Tests drive it with
+  `tests/sensors/fake_browser.py`, a stand-in that honours the same flags; the real flags were
+  exercised against Chrome 153 (docs/SCREENSHOTS.md, measurements).
 - **spiderfoot** — driven over its web API from a separate container; the URL is deployment
   configuration (not user input, avoiding SSRF); only the `passive` use case is non-active.
+  Absent configuration raises `ConfigurationError`, so the user is told it is not enabled.
 - **bbot** — GPL-3.0, optional and executed only as a program; output read from the scan
   directory's `output.json`.
 - **zap_spider / zap_active** — OWASP ZAP's DAST capabilities (the ZAP proxy's spider, AJAX
@@ -115,9 +154,22 @@ the constraints you applied.** Passive discovery tools declare none.
   rule id; ZAP's `High` risk is the ceiling (it never becomes `critical`). Both emit
   `FindingCoverage` over the scanned endpoints so a fixed issue auto-resolves, and both are
   scope-safe: the scanners run `inScopeOnly`/`subtreeOnly` and never leave the host.
+  The per-target context regex is **anchored** (`^https?://host(:port)?/`) so a look-alike
+  host (`example.com.evil.net`) can never be crawled, and because one ZAP daemon holds global
+  state, both adapters take an exclusive lease from the pool `Coordinator` — two scans never
+  drive the same instance at once.
+  **The crawl's pages reach the attack through the database, not the daemon.** Each job
+  replaces the ZAP session (isolation), which also drops the site tree the crawl built, so
+  `zap_spider` records its pages on the endpoint asset (`crawled_pages`); `zap_active` sets
+  `wants_crawled_pages`, receives them as targets, and reloads them before scanning — one
+  context and one recursive `ascan` per origin. Without that the scanner attacks the site
+  root alone and never tests a request parameter (chapter 11.14).
   **Authenticated scanning** uses the `zap_auth` credential provider (`credential_providers`),
-  so the tenant's session secret is sealed and delivered through the normal credential channel
-  (`ctx.credentials`, `auth_secret()`). When present, each target adds a ZAP Replacer rule
+  so the session secret is sealed and delivered through the normal credential channel
+  (`ctx.credentials`, `auth_secret()`). It can come from a stored tenant credential or from
+  the cookie typed into the Start-scan modal, which is encrypted per scan
+  (`scans.auth_secret_encrypted`, AAD `scan:<id>:auth`) and erased when the scan ends
+  (ADR-023). When present, each target adds a ZAP Replacer rule
   (`replacer/action/addRule`, `matchType=REQ_HEADER`) that injects the header
   (`auth_header_name`, default `Cookie`) into every request whose URL matches the origin regex,
   then removes it in a `finally`. The `url`-scoping keeps the secret on the authorized origin

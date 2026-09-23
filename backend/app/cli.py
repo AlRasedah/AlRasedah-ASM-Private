@@ -2,6 +2,8 @@
 
     python -m app.cli bootstrap                 # plans, built-in profiles, first admin (idempotent)
     python -m app.cli generate-keys             # print fresh secrets for .env
+    python -m app.cli scanner-pool-key <pool>   # the key a worker pool's sensor containers receive
+    python -m app.cli scanner-pool <pool>       # everything to give a tenant its own scanner
     python -m app.cli create-admin --email ... --tenant "Acme"
     python -m app.cli intel-import --kev kev.json --epss epss_scores-current.csv.gz
     python -m app.cli intel-refresh
@@ -18,14 +20,73 @@ import os
 import secrets
 import sys
 import uuid
+from typing import TYPE_CHECKING
 
 from app.core.crypto import generate_key
+
+if TYPE_CHECKING:  # imports stay lazy at runtime: the CLI must start without loading the ORM
+    from sqlalchemy.orm import Session
+
+    from app.models import Tenant
 
 
 def cmd_generate_keys(_: argparse.Namespace) -> None:
     print(f"ASM_SECRET_KEY={secrets.token_urlsafe(48)}")
     print(f"ASM_ENCRYPTION_KEYS=k1:{generate_key()}")
     print(f"ASM_SCANNER_TRANSPORT_KEY={generate_key()}")
+
+
+def cmd_scanner_pool_key(a: argparse.Namespace) -> None:
+    """Print a worker pool's key (the only key that pool's sensor workers receive)."""
+    from asm_sensors.jobs import encode_key
+
+    from app.core.crypto import pool_transport_key
+
+    print(f"ASM_SCANNER_TRANSPORT_KEY={encode_key(pool_transport_key(a.pool))}   # for the '{a.pool}' sensor workers")
+
+
+def cmd_scanner_pool(a: argparse.Namespace) -> None:
+    """Everything needed to give a tenant its own scanner: key, broker user, ACL, service.
+
+    A pool is a trust domain, so each tenant that must not share scanners needs its
+    own workers, its own broker account and its own derived key. Printing the whole
+    block keeps the three in step — a pool provisioned by hand with a mismatched key
+    fails at result verification, long after the mistake.
+    """
+    from asm_sensors.jobs import encode_key
+
+    from app.core.crypto import pool_transport_key
+
+    pool = a.pool
+    password = secrets.token_urlsafe(32)
+    queues = [f"scanners.{pool}", f"results.{pool}"]
+    print(f"# --- scanner pool '{pool}' ------------------------------------------------")
+    print("# 1. .env (platform):")
+    print(f"#    add '{pool}' to ASM_WORKER_POOLS, so asm-ingest consumes results.{pool}")
+    print(f"ASM_SCANNER_REDIS_PASSWORD_{pool.upper().replace('-', '_')}={password}")
+    print("\n# 2. docker-compose.yml — redis command, a copy of the scanner-default block:")
+    print(f'              "--user", "scanner-{pool}", "on", ">{password}",')
+    print('              "resetkeys", "resetchannels",')
+    for q in queues:
+        print(f'              "~{q}", "~_kombu.binding.{q}",')
+    print(f'              "~unacked.scanners.{pool}", "~unacked_index.scanners.{pool}", '
+          f'"~unacked_mutex.scanners.{pool}",')
+    print(f'              "~asm.pool.{pool}.*", "&/0.asm-{pool}.pidbox", "~*.asm-{pool}.pidbox",')
+    print(f'              "~_kombu.binding.asm-{pool}.pidbox",')
+    print('              "+@read", "+@write", "+@connection", "+ping", "+client|setinfo", "-@dangerous",')
+    print("\n# 3. docker-compose.yml — the scanner service for this pool:")
+    print(f"""  asm-scanner-{pool}:
+    <<: *scanner
+    environment:
+      <<: *scanner-env
+      ASM_SENSOR_POOL: {pool}
+      ASM_CELERY_BROKER_URL: redis://scanner-{pool}:{password}@redis:6379/0
+      ASM_SCANNER_TRANSPORT_KEY: {encode_key(pool_transport_key(pool))}
+      # Its own DAST daemon: a ZAP session is global state shared by whoever uses it.
+      ASM_ZAP_URL: http://zap-{pool}:8090""")
+    print("\n# 4. Point the tenant at it (Platform -> Tenants, or set tenants.worker_pool to")
+    print(f"#    {pool!r} for that tenant). A tenant created after this pool exists already")
+    print("#    carries its own pool name, so there is usually nothing to change.")
 
 
 def cmd_bootstrap(_: argparse.Namespace) -> None:
@@ -37,6 +98,36 @@ def cmd_bootstrap(_: argparse.Namespace) -> None:
     print("bootstrap complete")
 
 
+def _resolve_tenant(db: Session, name: str, create: bool) -> Tenant:
+    """The tenant named `name`, or a clear refusal.
+
+    `--tenant` used to be a get-or-create, so a name that did not match exactly
+    ("Acme" for "Acme Corp", a stray capital, a trailing space) silently built a
+    second, empty tenant and put the new admin in it. They could then sign in,
+    see every menu, and find no scans, no assets and nothing explaining why.
+    An unknown name is now an error unless it is the first tenant of a fresh
+    deployment or the caller asked for one with --create-tenant.
+    """
+    from sqlalchemy import func, select
+
+    from app.models import Tenant
+    from app.tenants.service import create_tenant
+
+    tenant = db.execute(select(Tenant).where(Tenant.name == name)).scalar_one_or_none()
+    if tenant is not None:
+        return tenant
+    existing = list(db.execute(select(Tenant.name).order_by(Tenant.name)).scalars().all())
+    if create or not existing:
+        return create_tenant(db, name)
+    near = db.execute(select(Tenant.name).where(func.lower(func.trim(Tenant.name)) == name.strip().lower())).scalars().first()
+    hint = f"\nDid you mean --tenant {near!r}?" if near else ""
+    raise SystemExit(
+        f"No tenant is named {name!r}.{hint}\n"
+        f"Existing tenants: {', '.join(repr(n) for n in existing)}\n"
+        "Use one of those names, or pass --create-tenant to start a new (empty) tenant."
+    )
+
+
 def cmd_create_admin(a: argparse.Namespace) -> None:
     from sqlalchemy import select
 
@@ -44,12 +135,10 @@ def cmd_create_admin(a: argparse.Namespace) -> None:
     from app.db.session import system_session
     from app.models import Tenant, TenantMembership, User
     from app.models.enums import Role
-    from app.tenants.service import create_tenant
 
     password = a.password or os.environ.get("ASM_ADMIN_PASSWORD") or getpass.getpass("Password: ")
     with system_session() as db:
-        tenant = db.execute(select(Tenant).where(Tenant.name == a.tenant)).scalar_one_or_none() \
-            or create_tenant(db, a.tenant)
+        tenant = _resolve_tenant(db, a.tenant, a.create_tenant)
         email = normalize_email(a.email)
         user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
         if user is None:
@@ -60,7 +149,14 @@ def cmd_create_admin(a: argparse.Namespace) -> None:
         if not db.execute(select(TenantMembership).where(TenantMembership.tenant_id == tenant.id,
                                                          TenantMembership.user_id == user.id)).scalar_one_or_none():
             db.add(TenantMembership(tenant_id=tenant.id, user_id=user.id, role=Role.TENANT_ADMIN))
+        # An existing account keeps the tenant it already defaults to, so say where this
+        # sign-in will actually land — the other half of "the new admin sees nothing".
+        elsewhere = user.default_tenant_id and user.default_tenant_id != tenant.id
         db.commit()
+        if elsewhere:
+            other = db.get(Tenant, user.default_tenant_id)
+            print(f"note: {email} already signs in to tenant '{other.name if other else user.default_tenant_id}'. "
+                  f"They can switch to '{tenant.name}' from the tenant selector in the top bar.")
     print(f"admin {email} ready in tenant '{a.tenant}'")
 
 
@@ -112,9 +208,17 @@ def main(argv: list[str] | None = None) -> None:
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("generate-keys").set_defaults(fn=cmd_generate_keys)
     sub.add_parser("bootstrap").set_defaults(fn=cmd_bootstrap)
+    k = sub.add_parser("scanner-pool-key")
+    k.add_argument("pool", nargs="?", default="default")
+    k.set_defaults(fn=cmd_scanner_pool_key)
+    sp = sub.add_parser("scanner-pool", help="provision a tenant-exclusive scanner pool")
+    sp.add_argument("pool")
+    sp.set_defaults(fn=cmd_scanner_pool)
     c = sub.add_parser("create-admin")
     c.add_argument("--email", required=True)
     c.add_argument("--tenant", default="Default")
+    c.add_argument("--create-tenant", action="store_true",
+                   help="start a new, empty tenant when --tenant names one that does not exist")
     c.add_argument("--name", default="Administrator")
     c.add_argument("--password")
     c.add_argument("--platform-admin", action="store_true")

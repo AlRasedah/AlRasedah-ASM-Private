@@ -55,6 +55,10 @@ class NotificationDelivery(UUIDPk, TenantScoped, Base):
     event_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("asset_events.id", ondelete="CASCADE"), index=True)
     policy_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("notification_policies.id", ondelete="SET NULL"))
     integration_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("integrations.id", ondelete="CASCADE"))
+    # Set instead of `integration_id` for a personal alert: the member it was mailed to,
+    # at their login address. Personal mail needs a durable row like any other delivery,
+    # or a momentary SMTP failure loses a high-severity alert with nothing to retry.
+    recipient_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     status: Mapped[DeliveryStatus] = enum_column(DeliveryStatus, default=DeliveryStatus.PENDING)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     last_error: Mapped[str | None] = mapped_column(Text)

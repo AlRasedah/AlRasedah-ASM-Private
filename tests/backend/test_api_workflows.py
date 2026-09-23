@@ -226,11 +226,20 @@ def test_notifications_webhook_and_wazuh(ctx, monkeypatch, tmp_path):
     titles = [e["title"] for msg in sent for e in ([msg["body"]] if "title" in msg["body"] else msg["body"]["events"])]
     assert any("5900/tcp" in t and "VNC" in t for t in titles), titles
     assert all(msg["body"]["severity"] in ("high", "critical") for msg in sent if "severity" in msg["body"])
-    lines = (tmp_path / "asm.json").read_text().splitlines()
+    # Exports live under the owning tenant, so two customers choosing the same file
+    # name never share one (see tests/backend/test_export_isolation.py).
+    exported = list(tmp_path.glob("*/asm.json"))
+    assert len(exported) == 1, f"expected one tenant directory, got {list(tmp_path.iterdir())}"
+    lines = exported[0].read_text().splitlines()
     doc = json.loads(lines[0])
     assert doc["source"] == "exteriq-asm" and doc["severity"] in ("high", "critical") and doc["event_type"]
     deliveries = c.get("/api/v1/integrations/deliveries", headers=admin).json()
-    assert deliveries and all(d["status"] == "sent" for d in deliveries)
+    to_integrations = [d for d in deliveries if d["integration_id"]]
+    assert to_integrations and all(d["status"] == "sent" for d in to_integrations)
+    # Personal alerts are recorded too, so a failure is retryable rather than lost;
+    # this deployment has no mail server, so they are skipped rather than failed.
+    personal = [d for d in deliveries if not d["integration_id"]]
+    assert personal and all(d["status"] == "skipped" for d in personal)
 
 
 def test_wazuh_syslog_line_format():

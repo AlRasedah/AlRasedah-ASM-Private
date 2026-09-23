@@ -22,6 +22,8 @@ export interface Me {
   role: string;
   permissions: string[];
   memberships: { tenant: TenantRef; role: string }[];
+  /** Idle minutes before the session signs itself out; 0 = no idle timeout. */
+  session_idle_minutes: number;
 }
 
 export interface Organization {
@@ -141,7 +143,6 @@ export interface AssetEvent {
 export interface Observation {
   id: number;
   scan_id: string | null;
-  source: string;
   source_label: string | null;
   observed_at: string;
   data: Record<string, unknown>;
@@ -168,8 +169,11 @@ export interface Finding {
   tags: string[];
   false_positive: boolean;
   location: string | null;
-  source: string;
   source_label: string | null;
+  /** Confirmed by active web application testing. */
+  dast: boolean;
+  /** Reported by an external database and not verified against the live service. */
+  unverified: boolean;
   asset: AssetRef | null;
 }
 
@@ -228,8 +232,8 @@ export interface Stage {
   id: string;
   position: number;
   stage_type: string;
+  /** Capability label; the engine behind it is not exposed by the API. */
   label: string;
-  engine: string;
   status: string;
   is_active: boolean;
   target_count: number;
@@ -271,12 +275,15 @@ export interface ScopeDecision {
 
 export interface ProfileStage {
   stage: string;
+  /** Opaque capability token (deployment-specific), round-tripped when editing a profile. */
   engine: string;
   config: Record<string, unknown>;
   enabled: boolean;
   optional: boolean;
   active: boolean;
   label: string | null;
+  /** This stage can use a sign-in cookie/token supplied when starting a scan. */
+  accepts_login?: boolean;
 }
 
 export interface ScanProfile {
@@ -297,6 +304,9 @@ export interface Schedule {
   profile_id: string;
   name: string;
   cron: string;
+  /** The cron expression in words, e.g. "Every Sunday at 09:00". */
+  description: string;
+  recurrence: { frequency: string; hour: number; minute: number; weekday: number | null; day: number | null } | null;
   timezone: string;
   enabled: boolean;
   next_run_at: string | null;
@@ -448,4 +458,235 @@ export interface Facets {
   owners: { value: string; count: number }[];
   business_units: { value: string; count: number }[];
   tags: { value: string; count: number }[];
+}
+
+// ------------------------------------------------------------------ Threat Center
+export interface ThreatCounts {
+  affected: number;
+  confirmed: number;
+  not_detected: number;
+  inconclusive: number;
+  unchecked: number;
+  check_pending: number;
+  reported_unverified: number;
+  version_unknown: number;
+  not_affected_version: number;
+  no_longer_observed: number;
+  remediated: number;
+}
+
+export interface AdvisorySummary {
+  id: string;
+  slug: string;
+  title: string;
+  severity: string;
+  cves: string[];
+  status: "draft" | "published" | "archived";
+  published_version: number | null;
+  source_published_at: string | null;
+  source_updated_at: string | null;
+  version_published_at: string | null;
+  counts: ThreatCounts;
+  last_evaluated_at: string | null;
+  evaluated_version: number | null;
+  stale: boolean;
+  has_check: boolean;
+}
+
+export interface CheckRun {
+  id: string;
+  organization_id: string;
+  advisory_version: number;
+  check_key: string;
+  scan_id: string | null;
+  asset_ids: string[];
+  status: "queued" | "running" | "completed" | "inconclusive" | "cancelled";
+  created_at: string;
+  finished_at: string | null;
+  summary: { detected?: number; not_detected?: number; inconclusive?: number; reason?: string };
+}
+
+export interface AffectedProduct {
+  vendor?: string | null;
+  product: string;
+  match_names: string[];
+  versions: { introduced?: string | null; fixed?: string | null; last_affected?: string | null }[];
+}
+
+export interface AdvisoryDetail extends AdvisorySummary {
+  summary: string;
+  remediation: string;
+  references: string[];
+  affected_products: AffectedProduct[];
+  intel: { cve: string; kev: boolean; kev_due_date: string | null; epss_score: number | null; cvss_score: number | null }[];
+  check: { key: string; name: string; description: string | null } | null;
+  check_runs: CheckRun[];
+}
+
+export interface MatchEvidence {
+  product: string;
+  vendor?: string | null;
+  matched_name: string;
+  version: string | null;
+  source: string;
+  verdict: string;
+  reason: string;
+  observed_at: string | null;
+  third_party: boolean;
+}
+
+export interface ThreatMatch {
+  id: string;
+  organization_id: string;
+  asset: AssetRef | null;
+  owner: string | null;
+  business_unit: string | null;
+  basis: "product" | "finding" | "third_party";
+  match_status: string;
+  assessment: string;
+  evidence: { observations?: MatchEvidence[]; reason?: string; third_party_only?: boolean };
+  findings: { id: string; title: string; severity: string; status: string; unverified: boolean }[];
+  check_outcome: string;
+  check_detail: string | null;
+  checked_at: string | null;
+  remediation_status: string;
+  assigned_to: string | null;
+  remediation_note: string | null;
+  first_matched_at: string;
+  last_evaluated_at: string;
+  advisory_version: number;
+}
+
+export interface AdvisoryContent {
+  title: string;
+  summary: string;
+  severity: string;
+  cves: string[];
+  references: string[];
+  affected: AffectedProduct[];
+  remediation: string;
+  check_keys: string[];
+  source_published_at: string | null;
+  source_updated_at: string | null;
+}
+
+export interface AdvisoryAdmin {
+  id: string;
+  slug: string;
+  title: string;
+  severity: string;
+  status: "draft" | "published" | "archived";
+  published_version: number | null;
+  version_published_at: string | null;
+  updated_at: string;
+  has_draft: boolean;
+  draft: AdvisoryContent | null;
+  draft_version: number | null;
+  published: AdvisoryContent | null;
+  versions: { version: number; state: string; published_at: string | null; created_at: string }[];
+}
+
+export interface ApprovedCheck {
+  key: string;
+  name: string;
+  description: string | null;
+  kind: string;
+  template_id: string;
+  enabled: boolean;
+  updated_at: string;
+}
+
+// -------------------------------------------------------------- Website screenshots
+export interface ScreenshotStatus {
+  available: boolean;
+  enabled: boolean;
+  cadence: string | null;
+  reason: string | null;
+  usage: { stored_bytes: number; captures_today: number; active: number };
+  limits: { per_tenant_daily: number; per_tenant_queued: number; retention_per_endpoint: number; storage_quota_mb: number;
+    timeout_seconds: number; viewport_width: number; viewport_height: number };
+}
+
+export interface ScreenshotCapture {
+  id: string;
+  asset_id: string;
+  status: "queued" | "running" | "succeeded" | "failed" | "blocked" | "cancelled";
+  trigger: string;
+  error: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  captured_at: string | null;
+  final_url: string | null;
+  page_title: string | null;
+  http_status: number | null;
+  size: number | null;
+  width: number | null;
+  height: number | null;
+  sha256: string | null;
+  has_image: boolean;
+}
+
+export interface ScreenshotPolicy {
+  available: boolean;
+  max_concurrent: number;
+  per_tenant_daily: number;
+  per_tenant_queued: number;
+  retention_per_endpoint: number;
+  storage_quota_mb: number;
+  failed_retention_days: number;
+  timeout_seconds: number;
+  viewport_width: number;
+  viewport_height: number;
+  max_image_kb: number;
+}
+
+// ------------------------------------------------------------------ Exposure map
+export interface ExposureNode {
+  id: string;
+  kind: "asset" | "finding";
+  type: string;
+  label: string;
+  status: string;
+  scope_status?: string;
+  risk_score?: number;
+  open_findings?: number;
+  severity?: string;
+  unverified?: boolean;
+  finding_id?: string;
+  third_party_only?: boolean;
+  first_seen: string;
+  last_seen: string;
+  depth: number;
+  hidden: Record<string, number>;
+  more_beyond_depth?: boolean;
+}
+
+export interface ExposureEdge {
+  id: string;
+  source: string;
+  target: string;
+  relation: string;
+  meaning: string;
+  active: boolean;
+  evidence: string;
+  source_label: string;
+  first_seen: string;
+  last_seen: string;
+  age_days: number;
+  freshness: "current" | "stale" | "inactive" | "historical" | "unverified";
+}
+
+export interface ExposureMap {
+  organization: { id: string; name: string };
+  root_ids: string[];
+  expanded: string | null;
+  nodes: ExposureNode[];
+  edges: ExposureEdge[];
+  truncated: boolean;
+  truncation_reasons: string[];
+  limits: { depth: number; max_nodes: number; max_edges: number; per_node: number; time_budget_ms: number };
+  elapsed_ms: number;
+  notice: string;
+  cached?: boolean;
 }

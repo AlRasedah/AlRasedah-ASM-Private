@@ -26,10 +26,11 @@ from ...base import (
     ScannerAdapter,
     StageType,
     iter_json_lines,
-    read_output_file,
+    tool_output,
     write_targets_file,
 )
 from ...execution import minimal_env, resolve_binary, run_process
+from ...identity import identity_header
 from ...observations import (
     AssetRef,
     FindingCategory,
@@ -43,7 +44,7 @@ from ...observations import (
 from ...registry import register
 from ...targets import Target, TargetKind, split_host_port
 from .._common import ObservationSet, clean_hostname, clean_ip, port_value
-from ..httpx import SCANNER_HEADER, endpoint_base
+from ..httpx import endpoint_base
 
 _TOKEN = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
 SAFE_EXCLUDED_TAGS = ["dos", "fuzz", "fuzzing", "intrusive", "bruteforce", "brute-force", "default-login", "osint"]
@@ -137,7 +138,8 @@ class NucleiAdapter(ScannerAdapter):
     binaries = ("nuclei",)
     config_model = NucleiConfig
 
-    def build_argv(self, binary: str, tfile: str, out: str, cfg: NucleiConfig, templates_dir: str | None) -> list[str]:
+    def build_argv(self, binary: str, tfile: str, out: str, cfg: NucleiConfig, templates_dir: str | None,
+                   identity: str | None = None) -> list[str]:
         argv = [binary, "-l", tfile, "-jsonl", "-o", out, "-silent", "-nc", "-duc", "-omit-raw",
                 "-severity", ",".join(s.value for s in cfg.severities),
                 "-rl", str(cfg.rate_limit), "-c", str(cfg.concurrency), "-bs", str(cfg.bulk_size),
@@ -152,20 +154,22 @@ class NucleiAdapter(ScannerAdapter):
             argv += ["-id", ",".join(cfg.template_ids)]
         if not cfg.interactsh:
             argv.append("-ni")
-        if cfg.identify_scanner:
-            argv += ["-H", SCANNER_HEADER]
+        # Only identifies the scan when the deployment configured an identity.
+        if cfg.identify_scanner and identity:
+            argv += ["-H", identity]
         return argv
 
     async def execute(self, targets: list[Target], config: NucleiConfig, ctx: ExecutionContext) -> RawOutput:  # type: ignore[override]
         binary = resolve_binary("nuclei", self.binaries)
         tfile = write_targets_file(ctx.workdir, targets)
         out = ctx.workdir / "nuclei.jsonl"
-        argv = self.build_argv(binary, str(tfile), str(out), config, ctx.settings.get("nuclei_templates_dir"))
+        argv = self.build_argv(binary, str(tfile), str(out), config, ctx.settings.get("nuclei_templates_dir"),
+                               identity_header(ctx.settings))
         proc = await run_process(argv, timeout=ctx.timeout_seconds, cwd=str(ctx.workdir),
                                  env=minimal_env(home=str(ctx.settings.get("nuclei_home") or ctx.workdir)),
                                  max_output_bytes=ctx.max_output_bytes)
-        data = read_output_file(out, ctx.max_output_bytes) or proc.stdout
-        return RawOutput(process=proc, files={"nuclei.jsonl": data})
+        data, truncated = tool_output(out, proc, ctx.max_output_bytes)
+        return RawOutput(process=proc, files={"nuclei.jsonl": data}, truncated=truncated)
 
     async def parse_results(self, raw: RawOutput) -> list[dict[str, Any]]:
         return list(iter_json_lines(raw.primary))

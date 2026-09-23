@@ -243,6 +243,14 @@ def refresh(db: Session, raw_refresh: str) -> SessionTokens:
         raise Unauthorized("Session expired")
     if session.revoked_at or session.expires_at <= now or session.absolute_expires_at <= now:
         raise Unauthorized("Session expired")
+    # Idle timeout. The browser signs itself out on real inactivity; this is the backstop
+    # for a client that does not, and for a stolen refresh cookie replayed later.
+    if s.session_idle_ttl_minutes and session.last_used_at \
+            and now - session.last_used_at > timedelta(minutes=s.session_idle_ttl_minutes):
+        session.revoked_at = now
+        session.revoked_reason = "idle"
+        db.commit()
+        raise Unauthorized("Session expired")
     user = db.get(User, session.user_id)
     if not user or not user.is_active:
         raise Unauthorized("Session expired")
@@ -351,10 +359,12 @@ def reset_password(db: Session, raw_token: str, new_password: str) -> None:
 
 
 # ---------------------------------------------------------------------- MFA
-def mfa_begin_setup(db: Session, user_id: uuid.UUID) -> tuple[str, str]:
+def mfa_begin_setup(db: Session, user_id: uuid.UUID, password: str) -> tuple[str, str]:
     user = db.get(User, user_id)
     if user is None:
         raise Unauthorized("Unknown user")
+    if not verify_password(password, user.password_hash):
+        raise Unauthorized("Password is incorrect")
     if user.mfa_enabled:
         raise ValidationFailed("MFA is already enabled")
     secret = pyotp.random_base32()

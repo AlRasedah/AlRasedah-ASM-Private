@@ -9,13 +9,11 @@ import { Card, Confirm, Empty, ErrorBox, Field, Loading, Modal, PageHead, Status
 import { EVENT_LABELS, SEVERITIES, fmtDate, label, timeAgo } from "@/lib/format";
 
 const TYPE_HELP: Record<string, string> = {
-  email: "Email digest of matching changes to a list of recipients (uses the platform SMTP relay).",
+  email: "Email digest of matching changes to a list of recipients. For alerts to your own login address, use your account page instead.",
   webhook: "JSON POST to your endpoint. Set a signing secret to receive an HMAC-SHA256 signature (X-ASM-Signature).",
-  wazuh: "Send structured JSON events to Wazuh via syslog, an HTTP receiver, or a JSON file read by a Wazuh agent.",
+  wazuh: "Send structured JSON events to Wazuh. Syslog over TCP is the tested path; a Wazuh agent can also read the JSON file.",
   slack: "Slack incoming webhook (store the webhook URL as the secret).",
-  teams: "Microsoft Teams workflow / incoming webhook (store the URL as the secret).",
-  jira: "Planned.",
-  servicenow: "Planned.",
+  teams: "Microsoft Teams: create a Workflows webhook (\"Post to a channel when a webhook request is received\") and store the URL as the secret.",
 };
 
 export default function Integrations() {
@@ -250,44 +248,85 @@ function Deliveries() {
   );
 }
 
+interface Provider {
+  provider: string; used_by: string[]; label: string; description: string; group: string; group_label: string;
+  key_format: string; paid: boolean; url: string | null; testable: boolean;
+}
+
 function Credentials() {
   const { can } = useAuth();
   const qc = useQueryClient();
-  const providers = useQuery({ queryKey: ["providers"], queryFn: () => api<{ provider: string; used_by: string[] }[]>("/credentials/providers") });
+  const providers = useQuery({ queryKey: ["providers"], queryFn: () => api<Provider[]>("/credentials/providers") });
   const creds = useQuery({ queryKey: ["credentials"], queryFn: () => api<{ id: string; provider: string; last_four: string | null; updated_at: string }[]>("/credentials") });
   const [provider, setProvider] = useState("");
   const [value, setValue] = useState("");
   const [deleting, setDeleting] = useState<{ id: string; provider: string } | null>(null);
+  const [checked, setChecked] = useState<{ provider: string; ok: boolean; msg: string } | null>(null);
   const save = useMutation({
     mutationFn: () => api(`/credentials/${provider}`, { method: "PUT", body: { value } }),
     onSuccess: () => { setValue(""); qc.invalidateQueries({ queryKey: ["credentials"] }); },
   });
   const del = useMutation({ mutationFn: (id: string) => api(`/credentials/${id}`, { method: "DELETE" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["credentials"] }) });
+  const check = useMutation({
+    mutationFn: (p: string) => api<{ message: string }>(`/credentials/${p}/test`, { method: "POST" }),
+    onSuccess: (r, p) => setChecked({ provider: p, ok: true, msg: r.message }),
+    onError: (e, p) => setChecked({ provider: p, ok: false, msg: (e as Error).message }),
+  });
+  const meta = (key: string) => providers.data?.find((p) => p.provider === key);
+  const selected = meta(provider);
+  // One section per kind of source, so the list explains itself.
+  const groups = (providers.data ?? []).reduce<Record<string, Provider[]>>((acc, p) => {
+    (acc[p.group_label] ??= []).push(p);
+    return acc;
+  }, {});
   return (
     <div className="grid cols-3">
-      <Card title="Stored keys" className="span-2" flush>
-        {!creds.data?.length ? <Empty>No data-source keys. Passive discovery still works with free sources.</Empty> : (
-          <table className="data"><thead><tr><th>Provider</th><th>Key</th><th>Updated</th><th /></tr></thead>
+      <Card title="Stored keys" className="span-2" flush
+            hint="each key lets the platform ask one more source about your attack surface">
+        {!creds.data?.length ? <Empty>No data-source keys yet. Discovery still works with the free sources.</Empty> : (
+          <table className="data"><thead><tr><th>Source</th><th>Key</th><th>Used by</th><th>Updated</th><th /></tr></thead>
             <tbody>{creds.data.map((c) => (
-              <tr key={c.id}><td>{c.provider}</td><td className="mono">{c.last_four ? `••••${c.last_four}` : "••••"}</td>
+              <tr key={c.id}>
+                <td className="cell-main">{meta(c.provider)?.label ?? c.provider}
+                  <div className="cell-sub">{meta(c.provider)?.description}</div>
+                  {checked?.provider === c.provider && <div className="small" style={{ color: checked.ok ? "var(--success)" : "var(--sev-critical-text)" }}>{checked.msg}</div>}</td>
+                <td className="mono">{c.last_four ? `••••${c.last_four}` : "••••"}</td>
+                <td className="small muted">{meta(c.provider)?.used_by.join(", ")}</td>
                 <td className="small">{fmtDate(c.updated_at)}</td>
-                <td>{can("credentials:write") && <button className="btn sm danger" onClick={() => setDeleting(c)} aria-label="Delete key" title="Delete"><Trash2 /></button>}</td></tr>
+                <td style={{ whiteSpace: "nowrap" }}>
+                  {meta(c.provider)?.testable && can("credentials:write") &&
+                    <button className="btn sm" disabled={check.isPending} onClick={() => check.mutate(c.provider)}
+                            title="Check this key against the provider">Test</button>}
+                  {can("credentials:write") && <button className="btn sm danger" style={{ marginInlineStart: 6 }}
+                    onClick={() => setDeleting(c)} aria-label="Delete key" title="Delete"><Trash2 /></button>}</td></tr>
             ))}</tbody></table>
         )}
       </Card>
-      {deleting && <Confirm danger text={<>Delete the stored <strong>{deleting.provider}</strong> API key? Sensors that use it fall back to free sources until a new key is saved. The key cannot be recovered.</>}
+      {deleting && <Confirm danger text={<>Delete the stored <strong>{meta(deleting.provider)?.label ?? deleting.provider}</strong> API key? Sensors that use it fall back to free sources until a new key is saved. The key cannot be recovered.</>}
                             onClose={() => setDeleting(null)} onConfirm={() => del.mutate(deleting.id)} />}
       {can("credentials:write") && (
         <Card title="Add or replace a key">
           <div className="form">
             <ErrorBox error={save.error} />
-            <Field label="Provider"><select value={provider} onChange={(e) => setProvider(e.target.value)}>
+            <Field label="Source"><select value={provider} onChange={(e) => { setProvider(e.target.value); setChecked(null); }}>
               <option value="">Select…</option>
-              {providers.data?.map((p) => <option key={p.provider} value={p.provider}>{p.provider}</option>)}</select></Field>
-            <Field label="API key"><input type="password" autoComplete="off" value={value} onChange={(e) => setValue(e.target.value)} /></Field>
+              {Object.entries(groups).map(([group, items]) => (
+                <optgroup key={group} label={group}>
+                  {items.map((p) => <option key={p.provider} value={p.provider}>{p.label}{p.paid ? " (paid)" : ""}</option>)}
+                </optgroup>
+              ))}</select></Field>
+            {selected && <div className="info-box small">
+              {selected.description}
+              <div style={{ marginTop: 4 }}>Used by: {selected.used_by.join(", ")}</div>
+              {selected.url && <div><a href={selected.url} target="_blank" rel="noopener noreferrer">Where to get this key</a></div>}
+            </div>}
+            <Field label={selected ? `Key (${selected.key_format})` : "API key"}>
+              <input type="password" autoComplete="off" placeholder={selected?.key_format}
+                     value={value} onChange={(e) => setValue(e.target.value)} /></Field>
             <button className="btn primary" disabled={!provider || value.length < 4} onClick={() => save.mutate()}><KeyRound /> Save encrypted</button>
-            <div className="small muted">Keys are encrypted at rest (AES-256-GCM), never shown again, and delivered to sensors in sealed envelopes.</div>
+            <div className="small muted">Keys are encrypted at rest (AES-256-GCM), never shown again, and delivered to
+              sensors in sealed envelopes. See the <a href="/user-guide.html#integrations" target="_blank" rel="noopener noreferrer">user guide</a> for what each source adds.</div>
           </div>
         </Card>
       )}

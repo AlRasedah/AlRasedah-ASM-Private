@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     access_token_ttl_minutes: int = 15
     refresh_token_ttl_days: int = 7
     session_absolute_ttl_days: int = 30
+    # Sign a session out after this long without the user doing anything. The browser
+    # enforces it on real interaction (pointer, keyboard, tab focus) because an open tab
+    # polls by itself; the server enforces it on `last_used_at` so a client that does not
+    # cooperate cannot keep a session alive. 0 disables it.
+    session_idle_ttl_minutes: int = 30
     mfa_challenge_ttl_minutes: int = 5
     password_reset_ttl_minutes: int = 30
     password_min_length: int = 12
@@ -83,12 +88,29 @@ class Settings(BaseSettings):
     # "inline": sensors run in the calling process (development/tests only).
     sensor_mode: Literal["celery", "inline"] = "celery"
     sensor_queue_prefix: str = "scanners"
+    # Worker pools whose result queues (results.<pool>) the result consumer serves.
+    worker_pools: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["default"])
+    # A worker pool is a trust domain: its workers hold that pool's broker credentials
+    # and transport key, so a compromised scanner reaches every job in the pool. With
+    # "per_tenant" (the default) the platform refuses to dispatch a tenant's scan to a
+    # pool another tenant also uses — mutually untrusted customers must not share
+    # scanners. "shared" permits it, for a single-tenant or in-house deployment where
+    # every tenant is the same organization.
+    scanner_isolation: Literal["per_tenant", "shared"] = "per_tenant"
     max_concurrent_scans_global: int = 10
     scanner_max_rate: int = 2000
     stage_timeout_seconds: int = 4 * 3600
+    # Redis redelivers an unacknowledged message after this long, so it must exceed
+    # the longest sensor job (stage timeout + time-limit grace). Every app sharing
+    # the broker (platform and sensor workers) must use the same value.
+    broker_visibility_timeout: int = 6 * 3600
     max_targets_per_stage: int = 50_000
-    # Lab/testing only: accept private/reserved addresses in scope entries.
+    # Lab/testing only: accept private/reserved addresses in scope entries and as
+    # active-scan destinations (including addresses in-scope hostnames resolve to).
     allow_non_public_scope: bool = False
+    # Platform floor for DNS ownership verification: when true every tenant must
+    # verify domain scope before active scanning, whatever its own setting says.
+    require_scope_verification: bool = False
     raw_output_retention_days: int = 30
     observation_retention_days: int = 365
 
@@ -102,12 +124,27 @@ class Settings(BaseSettings):
     intel_nvd_api_url: str = "https://services.nvd.nist.gov/rest/json/cves/2.0"
     intel_refresh_enabled: bool = True
 
-    @field_validator("cors_origins", mode="before")
+    @field_validator("cors_origins", "worker_pools", mode="before")
     @classmethod
-    def _split_origins(cls, v: object) -> object:
+    def _split_list(cls, v: object) -> object:
         if isinstance(v, str):
             return [o.strip() for o in v.split(",") if o.strip()]
         return v
+
+    @field_validator("worker_pools")
+    @classmethod
+    def _valid_pools(cls, v: list[str]) -> list[str]:
+        from asm_sensors.jobs import validate_pool
+
+        return [validate_pool(p) for p in v] or ["default"]
+
+    @model_validator(mode="after")
+    def _visibility_covers_jobs(self) -> Settings:
+        # Sensor tasks run for up to stage_timeout + 300s (hard time limit).
+        if self.broker_visibility_timeout < self.stage_timeout_seconds + 900:
+            raise ValueError("ASM_BROKER_VISIBILITY_TIMEOUT must exceed ASM_STAGE_TIMEOUT_SECONDS by at least 900 "
+                             "seconds, or long sensor jobs are redelivered while still running")
+        return self
 
     @model_validator(mode="after")
     def _refuse_placeholders_in_production(self) -> Settings:

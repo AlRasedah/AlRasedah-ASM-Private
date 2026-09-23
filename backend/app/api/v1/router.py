@@ -5,18 +5,21 @@ from . import (
     auth,
     dashboard,
     events,
+    exposure,
     findings,
     integrations,
     organizations,
     reports,
     scans,
     scopes,
+    screenshots,
     settings,
     tenants,
+    threats,
     users,
 )
 
 api_router = APIRouter()
 for module in (auth, organizations, scopes, assets, findings, scans, events, dashboard, reports, integrations, users,
-               tenants, settings):
+               tenants, settings, threats, screenshots, exposure):
     api_router.include_router(module.router)

@@ -53,7 +53,7 @@ class TenantUpdate(Input):
     name: str | None = Field(default=None, min_length=2, max_length=200)
     status: TenantStatus | None = None
     plan_code: str | None = None
-    worker_pool: str | None = Field(default=None, pattern=r"^[a-z0-9-]{1,64}$")
+    worker_pool: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9-]{0,62}$")
 
 
 # -------------------------------------------------------------------- users

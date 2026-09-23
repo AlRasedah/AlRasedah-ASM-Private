@@ -129,7 +129,7 @@ class TestRunSemantics:
     async def test_missing_binary_is_a_clean_failure(self, monkeypatch):
         monkeypatch.setenv("PATH", "")
         job = SensorJob(job_id="j", tenant_id="t", scan_id="s", stage_id="st", adapter="naabu",
-                        targets=[Target(kind="ip", value="192.0.2.1")])
+                        targets=[Target(kind="ip", value="8.8.8.8")])
         res = await execute_job(job)
         assert res.status == "failed" and "not installed" in res.errors[0]
 

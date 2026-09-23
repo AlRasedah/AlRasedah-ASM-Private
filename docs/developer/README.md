@@ -17,7 +17,7 @@ deployment, security, risk, change detection, Wazuh, API).
 | 6 | [Sensor framework](06-sensors.md) | Before touching or adding a scanner adapter |
 | 7 | [Frontend](07-frontend.md) | Before touching the web UI (§7.8: the Al-Rasedah design system) |
 | 8 | [Recipes: extending the platform](08-recipes.md) | When adding an endpoint, event type, detection rule, channel, report, page… |
-| 9 | [Testing](09-testing.md) | Before opening a pull request |
+| 9 | [Testing](09-testing.md) | Before opening a pull request (§9.8: the manual pass, for release testing) |
 | 10 | [Design decisions (ADR log)](10-design-decisions.md) | When you wonder "why is it like this?" |
 | 11 | [Build log: how the app was made](11-build-log.md) | History, problems met during the build, verification status, open items |
 
@@ -49,4 +49,6 @@ Row-Level Security keeps tenants apart underneath all of it.
 6. **Record, don't overwrite.** Assets are deactivated, not deleted; findings are resolved,
    not deleted; the audit log is append-only.
 7. **Every state change a human makes is audited** (`app.services.audit.record`).
-8. Add a test with every behaviour change; the suites run in ~25 s.
+8. **Name the capability, never the engine**, in anything that can reach a browser — labels,
+   errors, tags, schema titles, rule ids (chapter 4.11, ADR-022).
+9. Add a test with every behaviour change; the suites run in about a minute.

@@ -115,6 +115,16 @@ may have none) → if MFA enabled return a 5-minute MFA challenge JWT, otherwise
   session is revoked and `auth.refresh_token_reuse` is audited.
 - Sessions have a sliding expiry (`ASM_REFRESH_TOKEN_TTL_DAYS`) capped by an absolute
   lifetime (`ASM_SESSION_ABSOLUTE_TTL_DAYS`).
+- **Idle timeout** (`ASM_SESSION_IDLE_TTL_MINUTES`, default 30, `0` disables). Enforced in
+  two places because neither is sufficient alone:
+  - `refresh()` revokes a session whose `last_used_at` is older than the window
+    (`revoked_reason = "idle"`). This is the authoritative check — a client that ignores
+    the policy, or a refresh cookie replayed days later, still fails here.
+  - The SPA signs itself out on **real interaction** (pointer, keyboard, wheel, touch, tab
+    focus — `AuthContext`), because several pages poll on a timer: an open tab would keep
+    calling `/auth/refresh` and `last_used_at` would never go stale. `/auth/me` returns
+    `session_idle_minutes` so the browser uses the deployment's number rather than its own.
+    API tokens get `0`: an unattended integration has no one to be idle.
 - `get_principal` checks the session row on **every request**, so logout, password change,
   role change and deactivation take effect immediately (not after token expiry).
 
@@ -193,8 +203,10 @@ migration needed.
 - `services/secrets.put_secret` stores tenant secrets with AAD `secret:<tenant>:<name>` so
   a ciphertext copied to another row/tenant fails authentication.
 - Scanner credentials are decrypted just before dispatch and **sealed** into the
-  `SensorJob` with `ASM_SCANNER_TRANSPORT_KEY` (AES-GCM, AAD = job id) so they never sit in
-  the broker in clear text.
+  `SensorJob` with the tenant's worker-pool key (`crypto.pool_transport_key(pool)`, HKDF from
+  `ASM_SCANNER_TRANSPORT_KEY`; AES-GCM, AAD = job id) so they never sit in the broker in clear
+  text and only that pool's workers can open them. The same pool key authenticates the
+  pool's result envelopes.
 - The API never returns secret values (only `last_four`, `has_secret`).
 
 ## 3.9 Background work from the API
@@ -206,7 +218,7 @@ dispatch.start_scan(tenant_id, scan_id)   # Celery: send_task("asm.core.start_sc
 dispatch.recompute_risk(tenant_id, org_id)
 dispatch.generate_report(tenant_id, report_id)
 dispatch.dispatch_notifications()
-dispatch.revoke(task_ids)
+dispatch.revoke([(task_id, pool), ...])   # on each pool's own control channel (asm-<pool>)
 ```
 
 In `ASM_SENSOR_MODE=inline` these run synchronously in the request (tests and development);

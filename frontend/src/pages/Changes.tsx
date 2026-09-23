@@ -6,6 +6,7 @@ import { useAuth } from "@/auth/AuthContext";
 import { useOrg } from "@/auth/OrgContext";
 import { Timeline } from "@/components/Timeline";
 import { Card, Empty, ErrorBox, Loading, PageHead, Pagination } from "@/components/ui";
+import { useTenantEmpty } from "@/components/TenantEmpty";
 import { EVENT_LABELS, SEVERITIES } from "@/lib/format";
 import { useFilters } from "@/lib/useFilters";
 
@@ -15,6 +16,7 @@ export default function Changes() {
   const f = useFilters<Key>(["event_type"]);
   const { orgId } = useOrg();
   const { can } = useAuth();
+  const tenantEmpty = useTenantEmpty();
   const qc = useQueryClient();
   const query = { ...f.query, organization_id: orgId, page: f.page, page_size: 50 };
   const q = useQuery({ queryKey: ["events", query], queryFn: () => api<Page<AssetEvent>>("/events", { query }), refetchInterval: 30_000 });
@@ -56,7 +58,7 @@ export default function Changes() {
         </div>
         <ErrorBox error={ack.error} />
         {q.isLoading ? <Loading /> : q.error ? <div className="card-body"><ErrorBox error={q.error} /></div> :
-          !q.data!.items.length ? <Empty>No changes match. The first scan of an organization is recorded as a baseline and hidden by default.</Empty> : (
+          !q.data!.items.length ? (tenantEmpty ?? <Empty>No changes match. The first scan of an organization is recorded as a baseline and hidden by default.</Empty>) : (
             <>
               <Timeline events={q.data!.items} showAsset onAck={can("events:ack") ? (id) => ack.mutate([id]) : undefined} />
               <Pagination page={f.page} pageSize={50} total={q.data!.total} onPage={f.setPage} />

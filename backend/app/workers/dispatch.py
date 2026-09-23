@@ -77,13 +77,34 @@ def refresh_intel() -> None:
     _send("asm.core.refresh_intel")
 
 
-def revoke(task_ids: list[str]) -> None:
-    if not task_ids or _inline():
-        return
-    from app.workers.celery_app import celery_app
+def evaluate_advisory(advisory_id: uuid.UUID | None) -> None:
+    """Match one published advisory (or all of them, with None) against every tenant's inventory."""
+    if _inline():
+        from app.threats.jobs import evaluate_everywhere
 
-    for tid in task_ids:
+        evaluate_everywhere(advisory_id)
+        return
+    _send("asm.core.threat_evaluate", str(advisory_id) if advisory_id else "")
+
+
+def dispatch_screenshots() -> None:
+    """Start queued website captures (inline: run them now)."""
+    if _inline():
+        from app.screenshots.jobs import dispatch
+
+        dispatch()
+        return
+    _send("asm.core.screenshot_dispatch")
+
+
+def revoke(tasks: list[tuple[str, str]]) -> None:
+    """Stop running sensor jobs: ``(task_id, worker_pool)`` pairs, sent on each pool's control channel."""
+    if not tasks or _inline():
+        return
+    from app.workers.celery_app import pool_control
+
+    for tid, pool in tasks:
         try:
-            celery_app.control.revoke(tid, terminate=True, signal="SIGTERM")
+            pool_control(pool).control.revoke(tid, terminate=True, signal="SIGTERM")
         except Exception:  # noqa: BLE001
-            log.warning("could not revoke task %s", tid)
+            log.warning("could not revoke task %s in pool %s", tid, pool)

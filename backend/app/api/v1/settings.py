@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
@@ -12,13 +12,16 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app import __version__
-from app.api.deps import Paging, Principal, get_db, get_system_db, require
+from app.api.deps import Paging, Principal, get_db, get_principal, get_system_db, require
 from app.auth.permissions import Permission
 from app.core.config import get_settings
-from app.core.errors import NotFound
-from app.models import AuditLog, IntelFeedState, Organization, Tenant, VulnIntel
+from app.core.errors import NotFound, ValidationFailed
+from app.integrations import notifications
+from app.models import AuditLog, IntelFeedState, Organization, Tenant, User, UserAlertPreference, VulnIntel
+from app.models.enums import Severity
 from app.schemas.common import ORM, Input, Message, Page, paginate
-from app.services import audit
+from app.scope import service as scope_service
+from app.services import audit, platform_settings
 from app.services.audit import Action
 from app.tenants.settings import DEFAULT_TENANT_SETTINGS, deep_merge, tenant_settings
 from app.workers import dispatch
@@ -79,6 +82,11 @@ class DetectionRules(Input):
     certificate_expiry_days: int | None = Field(default=None, ge=1, le=365)
 
 
+class Screenshots(Input):
+    enabled: bool | None = None
+    cadence: Literal["manual", "weekly"] | None = None
+
+
 class Branding(Input):
     name: str | None = Field(default=None, max_length=100)
     primary_color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
@@ -90,6 +98,7 @@ class SettingsUpdate(Input):
     scanning: Scanning | None = None
     detection_rules: DetectionRules | None = None
     branding: Branding | None = None
+    screenshots: Screenshots | None = None
 
 
 @router.get("/settings", tags=["settings"])
@@ -109,11 +118,117 @@ def update_tenant_settings(body: SettingsUpdate, principal: Principal = Depends(
     tenant.settings = deep_merge(before, body.model_dump(exclude_none=True, mode="json"))
     audit.record(db, Action.SETTINGS_CHANGED, tenant_id=tenant.id, object_type="tenant_settings", object_id=tenant.id,
                  previous=before, new=tenant.settings)
+    db.flush()
+    # Turning verification on must not grandfather scope that was never proven.
+    scope_service.apply_verification_policy(db, tenant.id)
     db.commit()
     if body.risk is not None:
         for (org_id,) in db.execute(select(Organization.id).where(Organization.tenant_id == tenant.id)):
             dispatch.recompute_risk(tenant.id, org_id)
     return {"effective": tenant_settings(tenant), "overrides": tenant.settings}
+
+
+# ------------------------------------------------------- email delivery (platform)
+class EmailSettingsIn(Input):
+    host: str = Field(max_length=255)
+    port: int = Field(default=587, ge=1, le=65535)
+    username: str | None = Field(default=None, max_length=255)
+    # Omit to keep the stored password; send "" to remove it.
+    password: str | None = Field(default=None, max_length=512)
+    sender: str = Field(max_length=320)
+    starttls: bool = True
+    ssl: bool = False
+
+
+@router.get("/settings/email", tags=["settings"])
+def get_email_settings(_: Principal = Depends(require(Permission.TENANTS_ADMIN)),
+                       db: Session = Depends(get_system_db)) -> dict[str, Any]:
+    """Mail server used for password resets, invitations and alerts (platform administrators)."""
+    return platform_settings.email_status(db)
+
+
+@router.put("/settings/email", tags=["settings"])
+def update_email_settings(body: EmailSettingsIn, principal: Principal = Depends(require(Permission.TENANTS_ADMIN)),
+                          db: Session = Depends(get_system_db)) -> dict[str, Any]:
+    before = platform_settings.email_status(db)
+    platform_settings.set_email(db, body.model_dump(exclude={"password"}), body.password,
+                                clear_password=body.password == "", user_id=principal.user_id)
+    after = platform_settings.email_status(db)
+    audit.record(db, Action.SETTINGS_CHANGED, tenant_id=principal.tenant_id, object_type="platform_email",
+                 previous={k: before[k] for k in ("host", "port", "sender", "username")},
+                 new={k: after[k] for k in ("host", "port", "sender", "username")})
+    db.commit()
+    return after
+
+
+@router.post("/settings/email/test", response_model=Message, tags=["settings"])
+def test_email_settings(principal: Principal = Depends(require(Permission.TENANTS_ADMIN)),
+                        db: Session = Depends(get_system_db)) -> Message:
+    """Send a test message to the signed-in administrator with the saved settings."""
+    from app.integrations.mailer import MailNotConfigured, send_email
+    from app.models import User
+
+    user = db.get(User, principal.user_id)
+    assert user is not None
+    s = get_settings()
+    try:
+        send_email([user.email], f"{s.app_name}: test message",
+                   "Email delivery works. This message was sent from Settings → Email delivery.")
+    except MailNotConfigured as exc:
+        raise ValidationFailed(str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - surface the reason, not a stack trace
+        raise ValidationFailed(f"The mail server refused the message: {type(exc).__name__}") from exc
+    return Message(message=f"Test message sent to {user.email}")
+
+
+# ------------------------------------------------------- personal alerts (per user)
+class MyAlertsIn(Input):
+    enabled: bool = True
+    min_severity: Severity = Severity.HIGH
+    event_types: list[str] = Field(default_factory=list, max_length=40)
+    organization_ids: list[uuid.UUID] = Field(default_factory=list, max_length=100)
+    include_baseline: bool = False
+
+
+def _my_alerts(db: Session, principal: Principal) -> dict[str, Any]:
+    tid = principal.require_tenant()
+    row = db.execute(select(UserAlertPreference).where(UserAlertPreference.tenant_id == tid,
+                                                       UserAlertPreference.user_id == principal.user_id)
+                     ).scalar_one_or_none()
+    user = db.get(User, principal.user_id)
+    base = {"email": user.email if user else None,
+            "email_configured": platform_settings.email_status(db)["configured"]}
+    if row is None:  # no choice made yet: the default (high and critical)
+        return {**base, **{k: (v.value if isinstance(v, Severity) else v)
+                           for k, v in notifications.DEFAULT_ALERTS.items()}, "is_default": True}
+    return {**base, "enabled": row.enabled, "min_severity": row.min_severity.value,
+            "event_types": row.event_types, "organization_ids": [str(o) for o in row.organization_ids],
+            "include_baseline": row.include_baseline, "is_default": False}
+
+
+@router.get("/settings/my-alerts", tags=["settings"])
+def get_my_alerts(principal: Principal = Depends(get_principal),
+                  db: Session = Depends(get_system_db)) -> dict[str, Any]:
+    """What this user receives at their own login address."""
+    return _my_alerts(db, principal)
+
+
+@router.put("/settings/my-alerts", tags=["settings"])
+def update_my_alerts(body: MyAlertsIn, principal: Principal = Depends(get_principal),
+                     db: Session = Depends(get_system_db)) -> dict[str, Any]:
+    tid = principal.require_tenant()
+    row = db.execute(select(UserAlertPreference).where(UserAlertPreference.tenant_id == tid,
+                                                       UserAlertPreference.user_id == principal.user_id)
+                     ).scalar_one_or_none()
+    if row is None:
+        row = UserAlertPreference(tenant_id=tid, user_id=principal.user_id)
+        db.add(row)
+    row.enabled, row.min_severity = body.enabled, body.min_severity
+    row.event_types = [e[:64] for e in body.event_types]
+    row.organization_ids = body.organization_ids
+    row.include_baseline = body.include_baseline
+    db.commit()
+    return _my_alerts(db, principal)
 
 
 # ------------------------------------------------------------------ audit

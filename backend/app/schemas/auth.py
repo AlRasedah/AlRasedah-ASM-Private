@@ -53,6 +53,9 @@ class MeResponse(BaseModel):
     role: Role
     permissions: list[str]
     memberships: list[Membership]
+    # How long the browser may sit idle before signing itself out; 0 means no idle
+    # timeout. The deployment sets it, so the client never invents its own policy.
+    session_idle_minutes: int = 0
 
 
 class SwitchTenantRequest(Input):
@@ -71,6 +74,11 @@ class ResetPasswordRequest(Input):
 class ChangePasswordRequest(Input):
     current_password: str = Field(max_length=256)
     new_password: str = Field(min_length=1, max_length=256)
+
+
+class MfaSetupRequest(Input):
+    # Re-authentication: enrolling an authenticator requires the current password.
+    password: str = Field(max_length=256)
 
 
 class MfaSetupResponse(BaseModel):

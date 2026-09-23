@@ -131,6 +131,15 @@ def purge_retention() -> dict[str, int]:
             AssetObservation.observed_at < now - timedelta(days=s.observation_retention_days)))
         removed["observations"] = res.rowcount or 0
         db.commit()
+        tenant_ids = list(db.execute(select(Tenant.id)).scalars())
+    # Website screenshots: every tenant, suspended ones included (their storage still counts).
+    from app.screenshots.service import apply_retention
+
+    for tid in tenant_ids:
+        with new_session(tid) as tdb:
+            for k, v in apply_retention(tdb, tid, now).items():
+                removed[k] = removed.get(k, 0) + v
+            tdb.commit()
     return removed
 
 

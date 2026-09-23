@@ -178,6 +178,9 @@
     <a href="#findings">10. Findings</a>
     <a href="#changes">11. Changes &amp; alerts</a>
     <a href="#dast">12. Web app testing (DAST)</a>
+    <a href="#threats">12a. Threat Center</a>
+    <a href="#screenshots">12b. Website screenshots</a>
+    <a href="#exposure">12c. Exposure map</a>
     <div class="toc-group">Reporting &amp; config</div>
     <a href="#reports">13. Reports</a>
     <a href="#integrations">14. Integrations &amp; notifications</a>
@@ -241,6 +244,9 @@
         <li>Forgot your password? Use <b>Reset password</b> on the sign-in page; you will receive an email with a reset link.</li>
       </ol>
       <div class="tip"><b>Tip:</b> Turn on two-factor authentication for your own account under <a href="#account">Your account</a>. Administrators can require it and can reset it for other users.</div>
+      <p><b>You are signed out automatically</b> after a period without activity — 30 minutes unless your administrator
+        changed it. The sign-in page tells you when that is why you are back there. Leaving a screen open does not count
+        as activity, so an unattended workstation does not stay signed in.</p>
 
       <h3>Finding your way around</h3>
       <p>The left <b>sidebar</b> is your main menu. The top bar has two important selectors:</p>
@@ -292,11 +298,17 @@
         <li>Under <b>Authorized scope</b>, choose <b>Add</b> and enter your root domains, IP addresses or CIDR ranges — one per line.</li>
         <li>Decide whether to <b>permit active scanning</b> for these entries (port discovery, web fingerprinting, crawling and vulnerability testing). Leave it off for passive-only monitoring.</li>
       </ol>
+      <p><b>Wildcards.</b> Authorizations are usually written as <code>*.example.com</code>, so that form is accepted:
+      it is stored as <code>example.com</code> with <em>subdomains included</em>, covering the domain and everything
+      under it. <code>*.dev.example.com</code> works the same way for a branch of the tree, and wildcards can be used
+      for exclusions too. Pasting both <code>example.com</code> and <code>*.example.com</code> is fine — the second line
+      widens the first entry instead of being rejected as a duplicate. The wildcard can only replace the first label,
+      so <code>a.*.example.com</code> and <code>*example.com</code> are refused rather than guessed at.</p>
       <div class="warn-box"><b>Only add assets your organization owns or is explicitly authorized to test.</b> Every addition is recorded in the audit log.</div>
 
       <h3>Per-entry options</h3>
       <ul>
-        <li><b>Subdomains</b> — for a domain entry, choose whether subdomains are included.</li>
+        <li><b>Subdomains</b> — for a domain entry, choose whether subdomains are included (a <code>*.</code> entry sets this for you).</li>
         <li><b>Active scanning</b> — toggle whether that entry may be contacted actively.</li>
         <li><b>Ownership</b> — verify you control a domain by publishing a DNS TXT record (below).</li>
       </ul>
@@ -305,6 +317,12 @@
       <p>Click the ownership badge next to a domain to open the verification dialog. Publish the shown DNS <code>TXT</code>
       record at your DNS provider, then choose <b>Check now</b>. DNS changes can take time to propagate. Your administrator
       can make verification <em>mandatory</em> before any domain is actively scanned (see <a href="#settings">Settings</a>).</p>
+      <p>IP addresses and ranges have no DNS record to publish, so when verification is mandatory a <b>platform
+      administrator approves</b> them instead, with the <b>Approve</b> button next to the entry. Entries that were added
+      while verification was switched off are not treated as proven: they show as unverified until verified or approved.</p>
+      <div class="note">Non-public addresses — loopback, private networks, link-local (including cloud metadata
+      addresses) and carrier-grade NAT — are never actively scanned, even when a name in your scope resolves to one.
+      They still appear in the inventory, which is useful: an internal address in public DNS is worth knowing about.</div>
 
       <h3>Exclusions</h3>
       <p>Add <b>exclusions</b> for anything that must never be actively scanned (e.g. a sensitive host or a range you do not
@@ -343,7 +361,10 @@
       <ol class="steps">
         <li>Open <b>Scans</b> and choose <b>New scan</b> (or <b>Run a scan</b> from the dashboard).</li>
         <li>Pick the <b>organization</b> and a <b>profile</b>. The dialog lists the stages and warns if the profile sends active traffic.</li>
-        <li>Optionally <b>limit to specific targets</b> (a few hosts or IPs) instead of the whole scope.</li>
+        <li>Optionally <b>limit to specific targets</b> instead of the whole scope: hostnames, IP addresses, or
+          <code>host:port</code> for an application on a non-standard port (<code>app.example.com:8580</code>).
+          Naming a port scans exactly that port — useful when the application does not sit on 80 or 443 — and leaves
+          the host's other ports alone. Targets must still be inside your authorized scope.</li>
         <li>Choose <b>Start scan</b>. You are taken to the scan’s detail page, which refreshes live.</li>
       </ol>
       <div class="tip"><b>First scan:</b> an organization’s first successful scan is its <b>baseline</b>. It builds the initial inventory and its changes are recorded but not alerted.</div>
@@ -356,11 +377,19 @@
         <li>KPI tiles show new assets, changes, new/resolved findings and assets that went gone/closed.</li>
         <li>You can <b>cancel</b> a running scan.</li>
       </ul>
-      <div class="note">If a stage finds no authorized targets it is <b>skipped</b>. If a required tool is unavailable the stage <b>fails</b>; optional stages are skipped instead. A scan is <em>partial</em> if some stages failed, <em>completed</em> if all succeeded.</div>
+      <div class="note">If a stage finds no authorized targets it is <b>skipped</b>. If a required tool is unavailable the stage <b>fails</b>; optional stages are skipped instead. A scan is <em>partial</em> if some stages failed, <em>completed</em> if all succeeded.
+      A partial stage still records everything it found, but it never closes ports, retires assets or resolves findings —
+      it cannot prove something is gone when it did not finish looking.</div>
+      <div class="note">If a tenant is suspended, its queued and running scans are cancelled; nothing further is scanned
+      until it is active again.</div>
 
       <h3>Scheduling</h3>
-      <p>On the <b>Scan profiles</b> screen you can create <b>schedules</b> that run a profile against an organization on a
-      cron expression in a chosen timezone — for example nightly Standard ASM, weekly Deep Assessment.</p>
+      <p>On the <b>Scan profiles</b> screen, <b>Schedule</b> on any profile sets it to run by itself. Choose how often
+      (every day, every week, every month), the day, and the time in your timezone — for example
+      <em>every Sunday at 09:00</em>. The schedules table shows each one in the same words, so you can check at a glance
+      when a scan will next run.</p>
+      <p>Days 29–31 are not offered for monthly schedules: a scan set for the 31st would skip every short month. If you
+      need a cadence the chooser cannot express (say, every six hours), the API accepts a cron expression directly.</p>
     </section>
 
     <section id="inventory">
@@ -407,8 +436,17 @@
         <span class="pill crit">critical</span> <span class="pill high">high</span> <span class="pill med">medium</span>
         <span class="pill low">low</span> <span class="pill info">info</span> — severity;
         &nbsp;<span class="pill kev">KEV</span> — listed in CISA’s Known Exploited Vulnerabilities catalog;
-        &nbsp;<span class="pill dast">DAST</span> — <b>dynamically confirmed by active web-application scanning</b> (see <a href="#dast">§12</a>), as opposed to passively observed.
+        &nbsp;<span class="pill dast">DAST</span> — <b>dynamically confirmed by active web-application scanning</b> (see <a href="#dast">§12</a>), as opposed to passively observed;
+        &nbsp;<span class="pill">unverified</span> — reported by an external database, not tested (see below).
       </p>
+      <h3>Confirmed findings vs. reported, unverified</h3>
+      <p>The two buttons above the list separate what was <em>tested</em> from what was only <em>reported</em>:</p>
+      <ul>
+        <li><b>Confirmed findings</b> (the default) — issues a scanner actually observed on your asset.</li>
+        <li><b>Reported, unverified</b> — issues an external database such as Shodan associates with the service
+        <em>version</em> it saw. Nobody tested them, so they may be wrong (a backported patch, for example). They do not
+        affect risk scores, reports or alerts. When a scan confirms one, it appears under Confirmed findings.</li>
+      </ul>
       <h3>Finding detail &amp; workflow</h3>
       <p>Open a finding to see its description, remediation guidance, evidence, references, CVE/CWE, CVSS and EPSS scores,
       and a full explanation of its risk score. Analysts can:</p>
@@ -417,7 +455,9 @@
         <li><b>Assign</b> the finding to a user and add <b>comments</b>; all activity is timestamped.</li>
         <li><b>Accept the risk</b> (with justification and an optional expiry date) — a separate permission.</li>
       </ul>
-      <div class="note">Findings resolve automatically. When a later scan that fully re-tested an asset no longer sees the issue, the finding is marked <b>remediated</b> and a “vulnerability resolved” change is recorded. If it comes back, it reopens.</div>
+      <div class="note">Findings resolve automatically. When a later scan that fully re-tested an asset no longer sees the issue, the finding is marked <b>remediated</b> and a “vulnerability resolved” change is recorded. If it comes back, it reopens.
+      A scan that did not finish cleanly (errors, a timeout, output cut short) never resolves anything — it is marked
+      <b>partial</b> and cannot vouch for what it did not see.</div>
     </section>
 
     <section id="changes">
@@ -448,8 +488,35 @@
       <ol class="steps">
         <li>Make sure the target web applications are inside an <a href="#scope">authorized scope</a> that <b>permits active scanning</b>. Active testing is intrusive.</li>
         <li>Start a scan with the built-in <b>Web Application Scan (DAST)</b> profile (or a custom profile that includes the crawling and active-scanning stages).</li>
+        <li>If the application listens on a port other than 80 or 443, put <code>host:port</code> in
+          <b>Limit to specific targets</b> — for example <code>app.example.com:8580</code>. The profile's own port
+          sweep only covers common web ports, so without this the application may never be found.</li>
         <li>Watch progress on the scan’s <b>Pipeline</b> tab; results appear as assets (crawled endpoints) and <a href="#findings">findings</a>.</li>
       </ol>
+
+      <h3>Testing behind a login</h3>
+      <p>Most of an application is only reachable after signing in. In the <b>Start a scan</b> dialog, a profile with web
+      application stages offers <b>Sign in with a session cookie</b>:</p>
+      <ol class="steps">
+        <li>Sign in to the application in your browser as the user you want the scan to act as (a test account with the
+        rights you want exercised — not a personal administrator account).</li>
+        <li>Copy the session cookie from your browser’s developer tools (for example
+        <code>PHPSESSID=abc123; security=low</code>), or switch the selector to <b>Authorization</b> and paste a token
+        such as <code>Bearer eyJhbGci…</code>.</li>
+        <li>Start the scan. The crawler and the active scanner send that header with every request to the authorized
+        origin, so they see the application as that signed-in user.</li>
+      </ol>
+      <div class="note">The value is used for <b>this scan only</b>: it is stored encrypted, sent only to the authorized
+      origin (never to any other host, even after a redirect), and erased when the scan finishes or is cancelled. It is
+      never shown again in the interface or the API. The scan list marks such scans as authenticated.</div>
+      <div class="warn-box">Sessions expire, and scanning as a signed-in user is more intrusive: the scanner can reach
+      forms and actions an anonymous visitor cannot. Start the scan soon after copying the cookie, use a test account,
+      and prefer a staging environment for the first run. For recurring authenticated scans, store the credential once
+      under <a href="#integrations">Integrations → Data-source API keys</a> (<code>zap_auth</code>) instead; a value
+      given in the dialog overrides it for that scan.</div>
+      <div class="note">The web application scanner works on one job at a time, so a DAST stage may wait briefly while
+      another scan finishes with it. Each job gets a clean scanner session, and testing stays on exactly the authorized
+      site — a redirect to another host is never followed.</div>
 
       <h3>The DAST badge</h3>
       <p>Findings confirmed by the active scanner are flagged with a <span class="pill dast">DAST</span> badge in the findings
@@ -460,6 +527,59 @@
       against scope that permits active scanning, and it stays strictly on the authorized host. The DAST engine is an
       optional component; if your deployment does not have it enabled, those stages are skipped. Ask your administrator if
       the <b>Web Application Scan (DAST)</b> profile is available in your environment.</div>
+    </section>
+
+    <section id="threats">
+      <h2>12a. Threat Center<a class="anchor" href="#threats">#</a></h2>
+      <p>When a serious vulnerability is announced, the <b>Threat Center</b> shows which of your assets may be affected,
+      which have been checked, and what remains open. Advisories are written by your platform team and matched automatically
+      against the inventory your scans have already recorded — publishing an advisory never starts a scan on its own.</p>
+      <ul>
+        <li><b>May be affected</b> counts every asset on the advisory's list. <b>Confirmed</b> means a verified finding exists.
+        <b>Checked — not detected</b> means a completed check found nothing; it is <em>not</em> proof the asset is safe.
+        <b>Inconclusive</b> means the check failed, was blocked, timed out or could not reach the asset.</li>
+        <li><b>Potentially affected</b> and <b>Version unknown</b> come from product and version names only; banners can be wrong
+        and fixes can be back-ported, so these are never shown as confirmed. <b>Reported, unverified</b> means only a
+        third-party exposure database reported it.</li>
+        <li>Open an advisory to see each asset's <b>evidence</b> (what was seen and why it counts), linked findings, owner and
+        remediation guidance. <b>Export CSV</b> downloads the list.</li>
+        <li>Analysts can tick assets and choose <b>Check selected assets</b> when an approved check exists. It runs as a normal scan:
+        your authorized scope, active-scanning permission, quotas and scheduling all apply, and it appears under Scans.</li>
+        <li><b>Remediation</b> (open, in progress, resolved, accepted risk, not applicable) is your team's own workflow and is kept
+        separate from what scans report.</li>
+      </ul>
+      <p>Platform administrators manage advisories and the list of approved checks under <b>Threat Center → Manage advisories</b>:
+      drafts are invisible to tenants until published, and archiving keeps each tenant's history.</p>
+    </section>
+
+    <section id="screenshots">
+      <h2>12b. Website screenshots<a class="anchor" href="#screenshots">#</a></h2>
+      <p>A screenshot shows what a web endpoint looked like to an anonymous visitor, so you can recognise an application
+      — a VPN portal, a login page, a default install — without opening it. It is a picture, <em>not</em> evidence of a vulnerability.</p>
+      <ul>
+        <li>Open a <b>web endpoint</b> in the inventory and choose the <b>Screenshots</b> tab to see the latest image, when it was
+        taken, the page title and the address it loaded, plus the last ten attempts.</li>
+        <li><b>Capture screenshot</b> (analysts and administrators) visits the page once from your scanner. It needs the same
+        active-scanning authorization in scope as web fingerprinting. States: waiting, capturing, succeeded, failed, blocked
+        (not allowed by scope or policy) and cancelled. A failed attempt never removes the previous image.</li>
+        <li>Tenant administrators turn screenshots on under <b>Settings → Website screenshots</b> and choose on-request or weekly.
+        If your platform has not enabled the capability yet, the page says so.</li>
+        <li>Only the latest captures per endpoint are kept (two by default), within your tenant's storage quota.</li>
+      </ul>
+    </section>
+
+    <section id="exposure">
+      <h2>12c. Exposure map<a class="anchor" href="#exposure">#</a></h2>
+      <p>The <b>Exposure map</b> draws what your scans observed: domains, the addresses they resolve to, the ports and services on
+      those addresses, the web applications they serve, and the findings recorded on them. It shows one organization at a time,
+      starting from its domains or from any asset you pick (also available as a tab on each asset).</p>
+      <ul>
+        <li>Click a <b>line</b> to see what it means, which capability observed it, when, and whether it is current, stale,
+        no longer observed, or only reported by a third-party database.</li>
+        <li>Click a <b>node</b> for its details. A "+N" means more relationships exist; <b>Expand</b> loads them. Large maps are
+        trimmed and say so.</li>
+        <li>The map is <em>not</em> an attack-path analysis: a line never means one asset can be used to reach another.</li>
+      </ul>
     </section>
 
     <section id="reports">
@@ -483,18 +603,28 @@
 
     <section id="integrations">
       <h2>14. Integrations &amp; notifications<a class="anchor" href="#integrations">#</a></h2>
-      <p>Deliver changes to the tools your team already uses. The <b>Integrations</b> screen has four tabs.</p>
+      <p>There are <b>two different kinds</b> of integration, and mixing them up is easy:</p>
+      <table>
+        <tr><th>Kind</th><th>Direction</th><th>Where</th></tr>
+        <tr><td><b>Data-source API keys</b></td><td>The platform <em>reads from</em> them to discover more of your
+          attack surface</td><td>Integrations → Data-source API keys</td></tr>
+        <tr><td><b>Channels</b></td><td>The platform <em>sends</em> alerts to them</td><td>Integrations → Channels</td></tr>
+      </table>
       <h3>Channels</h3>
       <table>
         <tr><th>Channel</th><th>Use</th></tr>
-        <tr><td><b>Email</b></td><td>Email digest of matching changes to a list of recipients.</td></tr>
+        <tr><td><b>Email</b></td><td>Email digest of matching changes to a list of recipients. For alerts to
+          <em>your own</em> login address, use <a href="#account">Your account</a> instead — no setup needed.</td></tr>
         <tr><td><b>Webhook</b></td><td>JSON POST to your endpoint; set a signing secret to receive an HMAC-SHA256 signature.</td></tr>
-        <tr><td><b>Wazuh (SIEM)</b></td><td>Structured events to Wazuh via syslog, an HTTP receiver, or a JSON file read by a Wazuh agent.</td></tr>
+        <tr><td><b>Wazuh (SIEM)</b></td><td>Structured events to Wazuh. Syslog over TCP is the tested path; a Wazuh agent
+          can also read the JSON file the platform writes.</td></tr>
         <tr><td><b>Slack</b></td><td>Slack incoming webhook.</td></tr>
-        <tr><td><b>Microsoft Teams</b></td><td>Teams workflow / incoming webhook.</td></tr>
+        <tr><td><b>Microsoft Teams</b></td><td>Teams <b>Workflows</b> webhook (“Post to a channel when a webhook request
+          is received”). The retired Office 365 connector URLs no longer work.</td></tr>
       </table>
       <p>Add a channel, <b>Test</b> it, and enable/disable it. Secrets (signing keys, webhook URLs) are stored securely and
-      never shown again.</p>
+      never shown again. Email channels need a mail server, which a platform administrator sets in
+      <a href="#settings">Settings → Email delivery</a>.</p>
       <h3>Alert policies</h3>
       <p>A policy decides <em>which</em> changes go to <em>which</em> channels: set a <b>minimum severity</b>, restrict to
       certain <b>change types</b> and <b>organizations</b>, choose the destination channels, optionally <b>throttle</b>
@@ -503,8 +633,45 @@
       <h3>Delivery log</h3>
       <p>See recent notification attempts, their status, attempts and any error. Failed deliveries are retried automatically.</p>
       <h3>Data-source API keys</h3>
-      <p>Passive discovery works out of the box with free sources. To enrich it, administrators can store third-party
-      data-source API keys here. Keys are encrypted at rest, never displayed again, and delivered to scanners securely.</p>
+      <p>Discovery works out of the box with free sources. Each key you add lets the platform ask <em>one more
+      database</em> about your attack surface — mostly for subdomains nobody documented. Keys are encrypted at rest,
+      never displayed again, and delivered to scanners in sealed envelopes. The <b>Test</b> button (where supported)
+      checks a key against the provider so a wrong key is not discovered mid-scan.</p>
+      <table>
+        <tr><th>Group</th><th>What these add</th><th>Sources</th></tr>
+        <tr><td><b>Certificate transparency</b></td><td>Every public TLS certificate is logged; searching those logs
+          reveals names like <code>vpn.example.com</code> the moment a certificate is issued.</td>
+          <td>Cert Spotter, <b>Facebook</b>, Censys</td></tr>
+        <tr><td><b>DNS &amp; WHOIS history</b></td><td>Names that pointed at your infrastructure in the past, and
+          ownership records.</td><td>SecurityTrails, DNSDB, DNSRepo, Robtex, AlienVault OTX, WhoisXML API</td></tr>
+        <tr><td><b>Internet scan data</b></td><td>What is exposed on the internet and where.</td>
+          <td><b>Shodan</b>, BinaryEdge, Netlas, LeakIX, FullHunt</td></tr>
+        <tr><td><b>Code &amp; leak search</b></td><td>Hostnames leaked in public code, pastes and breaches.</td>
+          <td>GitHub, Intelligence X</td></tr>
+        <tr><td><b>Subdomain datasets</b></td><td>Curated collections of known subdomains.</td>
+          <td>Chaos, VirusTotal, RedHunt Labs, C99, BufferOver</td></tr>
+        <tr><td><b>Regional engines</b></td><td>Scan engines whose coverage is mainly China-hosted assets.</td>
+          <td>FOFA, Hunter (Qianxin), Quake, ZoomEye, Chinaz, ThreatBook</td></tr>
+        <tr><td><b>Scanner credentials</b></td><td>Not a data source: the session cookie or token the web application
+          scanner uses to test pages behind a login.</td><td>Web application login (<code>zap_auth</code>)</td></tr>
+      </table>
+      <div class="note"><b>Why is Facebook in this list?</b> It is not social media. Facebook runs a public
+      <em>certificate transparency</em> search, and searching it for your domain finds subdomains that appear in issued
+      certificates. It needs a free Facebook <em>developer app</em> (key format <code>APP_ID:APP_SECRET</code>), not a
+      Facebook page or account.</div>
+      <p><b>Good keys to start with:</b> SecurityTrails, Censys, Shodan, VirusTotal, GitHub, Chaos and a certificate
+      source (Cert Spotter or Facebook). The regional engines only help if you have assets hosted in China.</p>
+      <p><b>Key formats matter.</b> Some providers need two parts — for example <code>APP_ID:APP_SECRET</code>
+      (Facebook), <code>API_ID:SECRET</code> (Censys) or <code>HOST:KEY</code> (Intelligence X, ZoomEye). The form shows
+      the expected format for the source you pick; a key in the wrong format is ignored by the source.</p>
+      <h3>Shodan: more than subdomains</h3>
+      <p>With a Shodan key stored, scans also look up every authorized IP address in Shodan's database and record what
+      it last saw there: open ports, service products and versions, TLS certificates, reverse DNS names, the hosting
+      network — and the CVEs Shodan associates with those versions. This is <b>passive</b>: the platform queries Shodan,
+      never your hosts, so it also covers scope where active scanning is not authorized.</p>
+      <p>Because that data is historical, it is used carefully: it adds what is new but never marks an asset as “seen
+      now”, never revives an inactive asset and never closes anything. Shodan's CVEs appear under
+      <b>Findings → Reported, unverified</b> and stay out of risk scores, reports and alerts until a scan confirms them.</p>
     </section>
 
     <section id="settings">
@@ -512,7 +679,13 @@
       <p>Tenant-wide policies (administrators). Changes apply to all organizations in the tenant.</p>
       <ul>
         <li><b>Asset lifecycle</b> — how many consecutive scans can miss an asset before it is considered gone, per asset type, and how long to keep assets that are never seen again.</li>
-        <li><b>Scanning governance</b> — require DNS ownership verification before any domain is actively scanned.</li>
+        <li><b>Scanning governance</b> — require proof of ownership before anything is actively scanned. Only real proof
+        counts: a DNS TXT record for domains, or a platform administrator's <b>Approve</b> for IP ranges. Entries added
+        while the setting was off are marked unverified when you switch it on. Your platform may enforce this for every
+        tenant, in which case it cannot be switched off here.</li>
+        <li><b>Email delivery</b> (platform administrators) — the mail server used for password resets, invitations and
+        alert emails: host, port, username, password, sender address and TLS. <b>Send test email</b> checks it
+        immediately. No server access or restart is needed, and this replaces the deployment's environment settings.</li>
         <li><b>Risk scoring weights</b> — tune the points added for each risk factor and the score thresholds for each risk level. Saving recomputes scores.</li>
         <li><b>Built-in detection rules</b> — enable/disable checks for risky ports, management interfaces, certificate problems, weak TLS and exposed API documentation, and set the certificate-expiry warning window.</li>
         <li><b>Report branding</b> — set the brand name and accent colour used on generated reports.</li>
@@ -530,8 +703,14 @@
       <h2>17. Your account<a class="anchor" href="#account">#</a></h2>
       <ul>
         <li><b>Change password</b> — changing it signs you out of all sessions.</li>
-        <li><b>Two-factor authentication</b> — set up a TOTP authenticator app, then verify a code to enable it. Disabling requires your password and a current code.</li>
-        <li><b>API tokens</b> — create tokens for automation (SIEM, SOAR, CI). A token never exceeds your own role; copy it when created because it is shown only once; revoke it anytime.</li>
+        <li><b>Two-factor authentication</b> — confirm your password, set up a TOTP authenticator app, then verify a code
+        to enable it. Disabling requires your password and a current code.</li>
+        <li><b>Email alerts</b> — have changes emailed to your own login address. This is on by default for high and
+        critical changes; you can raise or lower the severity, include the first (baseline) scan, or switch it off. You
+        never type an address: it is always the address you sign in with, and you only receive events from the tenant
+        you belong to. If no mail server is configured yet, your choice is saved and used as soon as one is.</li>
+        <li><b>API tokens</b> — create tokens for automation (SIEM, SOAR, CI). A token never exceeds your own role; copy it when created because it is shown only once; revoke it anytime.
+        For safety, API tokens cannot change account security: password, two-factor and token management need a normal sign-in.</li>
       </ul>
     </section>
 
