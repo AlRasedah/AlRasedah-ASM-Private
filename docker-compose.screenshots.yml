@@ -10,6 +10,9 @@
 # every per-tenant scanner service (asm-scanner-<pool>) you run.
 services:
   asm-scanner:
+    # Its own tag: with the base file's tag, a plain `docker compose build` would silently
+    # replace this image with one that has no browser (and the reverse).
+    image: ${ASM_IMAGE_REGISTRY:-alrasedah}/asm-scanner:${ASM_VERSION:-0.1.0}-screenshots
     build:
       args:
         INSTALL_SCREENSHOT_BROWSER: "true"

@@ -99,7 +99,7 @@ def origin():
 def fake_browser(monkeypatch):
     """Run the stand-in instead of Chromium, with the adapter's real argument list."""
     real = ScreenshotAdapter.browser_argv
-    monkeypatch.setattr(shot, "resolve_binary", lambda name, allowed: "chromium")
+    monkeypatch.setattr(shot, "browser_binary", lambda: "chromium")
 
     def argv(self, binary, *a, **kw):  # noqa: ANN001
         full = real(self, binary, *a, **kw)
@@ -497,3 +497,29 @@ def test_browser_background_services_are_refused_and_features_are_one_list(tmp_p
     decisions = asyncio.run(check())
     assert [d[1] for d in decisions[:3]] == ["browser background service"] * 3
     assert decisions[3][0] is not None  # an ordinary public CDN is still allowed
+
+
+def test_the_browser_is_found_under_either_package_name(monkeypatch, tmp_path):
+    """Alpine has shipped the binary as chromium and as chromium-browser; a configured path
+    that does not exist must not hide an installed browser, nor crash the self-test."""
+    from asm_sensors.execution import BinaryNotFound
+
+    monkeypatch.setenv("ASM_BIN_CHROMIUM", str(tmp_path / "missing" / "chromium-browser"))
+    found = {"chromium": None, "chromium-browser": "/usr/bin/chromium-browser"}
+    monkeypatch.setattr(shot.shutil, "which", lambda name: found.get(name))
+    assert shot.browser_binary() == "/usr/bin/chromium-browser"
+    found = {"chromium": "/usr/bin/chromium", "chromium-browser": None}
+    monkeypatch.setattr(shot.shutil, "which", lambda name: found.get(name))
+    assert shot.browser_binary() == "/usr/bin/chromium"
+    real = tmp_path / "my-chromium"
+    real.write_text("#!/bin/sh\n")
+    real.chmod(0o755)
+    monkeypatch.setenv("ASM_BIN_CHROMIUM", str(real))
+    if os.access(real, os.X_OK):  # an explicit, existing path wins
+        assert shot.browser_binary() == str(real)
+    monkeypatch.delenv("ASM_BIN_CHROMIUM")
+    monkeypatch.setattr(shot.shutil, "which", lambda name: None)
+    with pytest.raises(BinaryNotFound, match="not installed"):
+        shot.browser_binary()
+    result = asyncio.run(shot.selftest())
+    assert result["ok"] is False and "not installed" in result["error"]

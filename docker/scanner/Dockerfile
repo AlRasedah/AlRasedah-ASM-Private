@@ -37,7 +37,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 \
     ASM_BIN_HTTPX=/opt/asm/bin/httpx \
     ASM_NUCLEI_TEMPLATES_DIR=/data/nuclei-templates \
     ASM_NUCLEI_HOME=/data/nuclei-home \
-    ASM_BIN_CHROMIUM=/usr/bin/chromium-browser \
     HOME=/data/home
 
 RUN apk add --no-cache libpcap ca-certificates tini bind-tools \
@@ -47,6 +46,10 @@ RUN apk add --no-cache libpcap ca-certificates tini bind-tools \
         exit 1; \
       fi; \
       apk add --no-cache "chromium=${CHROMIUM_VERSION}" font-noto font-noto-arabic util-linux-misc; \
+      # The package has shipped the binary as chromium and as chromium-browser; the adapter
+      # finds either. Fail the build here rather than at the first capture if neither exists.
+      command -v chromium >/dev/null || command -v chromium-browser >/dev/null \
+        || { echo "chromium was installed but provides neither chromium nor chromium-browser" >&2; exit 1; }; \
     fi \
  && addgroup -S -g 10002 sensor && adduser -S -D -H -u 10002 -G sensor -h /data/home -s /sbin/nologin sensor
 
