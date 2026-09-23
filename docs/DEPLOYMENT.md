@@ -157,27 +157,53 @@ and that should happen only after the self-test below passes. Product behavior, 
 measurements: [SCREENSHOTS.md](SCREENSHOTS.md).
 
 1. **Host prerequisite — unprivileged user namespaces.** Chromium's sandbox needs them.
-   Debian-family kernels: `sysctl kernel.unprivileged_userns_clone=1`. Ubuntu 23.10+: also
-   `kernel.apparmor_restrict_unprivileged_userns=0`, or an AppArmor profile allowing
-   `userns` for `/usr/lib/chromium/chromium`.
+   Check the current values (a key your kernel does not have is reported as unknown — that
+   one does not apply):
+   ```bash
+   sysctl kernel.apparmor_restrict_unprivileged_userns kernel.unprivileged_userns_clone
+   ```
+   Debian-family kernels need `kernel.unprivileged_userns_clone=1`; Ubuntu 23.10+ also needs
+   `kernel.apparmor_restrict_unprivileged_userns=0` (or an AppArmor profile allowing `userns`
+   for `/usr/lib/chromium/chromium`). Set them persistently, so they survive a reboot:
+   ```bash
+   printf 'kernel.apparmor_restrict_unprivileged_userns=0\nkernel.unprivileged_userns_clone=1\n' \
+     > /etc/sysctl.d/99-asm-browser.conf && sysctl --system
+   ```
+   This relaxes a host-wide hardening default; it is what lets the browser keep its own
+   sandbox, which the platform insists on.
 2. **Seccomp profile.** Docker's default profile refuses the sandbox's namespace syscalls to a
    container without `CAP_SYS_ADMIN` (the scanner has no capabilities at all). Derive a
    profile from *your engine's* default that adds exactly `clone`, `unshare`, `setns` and
-   `chroot`:
+   `chroot`. Docker 29 renamed its release tags (`docker-v29.x.y`) and moved the file, so this
+   picks the right source for the installed engine:
    ```bash
-   curl -fsSLo default.json https://raw.githubusercontent.com/moby/moby/v<your docker version>/profiles/seccomp/default.json
-   python scripts/make_browser_seccomp.py default.json > docker/scanner/seccomp-browser.json
+   V=$(docker version --format '{{.Server.Version}}')
+   if [ "${V%%.*}" -ge 29 ]; then
+     U="https://raw.githubusercontent.com/moby/moby/docker-v$V/vendor/github.com/moby/profiles/seccomp/default.json"
+   else
+     U="https://raw.githubusercontent.com/moby/moby/v$V/profiles/seccomp/default.json"
+   fi
+   curl -fsSLo /tmp/default.json "$U"
+   python3 scripts/make_browser_seccomp.py /tmp/default.json > docker/scanner/seccomp-browser.json
    ```
+   A 404 means the version string did not match a release tag (e.g. a distribution-patched
+   engine); use the nearest upstream release of the same major version.
    Do **not** use `seccomp=unconfined`, and never add `--no-sandbox` anywhere: the adapter
    refuses to run the browser without its sandbox.
 3. **Pin and build.** Choose the exact `chromium` package version for the scanner's Alpine
    base (`docker run --rm python:3.12-alpine sh -c 'apk update >/dev/null && apk policy chromium'`)
-   and build with the override file; the build fails without a version:
+   and record it in `.env`, so every later build uses the same one (the build fails without
+   it):
    ```bash
-   export ASM_CHROMIUM_VERSION=<exact version>
+   echo 'ASM_CHROMIUM_VERSION=<exact version>' >> .env
    docker compose -f docker-compose.yml -f docker-compose.screenshots.yml build asm-scanner
    docker compose -f docker-compose.yml -f docker-compose.screenshots.yml up -d asm-scanner
    ```
+   **From now on, always pass both files** when building or starting the scanner, including
+   during upgrades (§9). A plain `docker compose up -d` recreates the scanner from
+   `docker-compose.yml` alone — without the browser — and captures then fail with "not
+   installed". To avoid typing it, put `COMPOSE_FILE=docker-compose.yml:docker-compose.screenshots.yml`
+   in `.env`; plain `docker compose` commands then include the override.
    Repeat the override's block for every per-tenant scanner service (`asm-scanner-<pool>`).
    The override adds the seccomp profile (`no-new-privileges` stays), 256 MB `/dev/shm` and
    a PID limit; the base file's 2 CPU / 2 GB cap still applies.
@@ -245,6 +271,19 @@ the storage volume, start the stack.
 ```bash
 git pull && docker compose build && docker compose up -d   # asm-migrate applies migrations first
 ```
+
+Upgrade from `main`. A checkout that was cloned with a single branch (for example a feature
+branch, `git clone --branch <name> --single-branch`) does not know `main`: `git checkout main`
+fails with "pathspec 'main' did not match". Add it once, then switch:
+
+```bash
+git remote set-branches --add origin main
+git fetch origin
+git checkout -b main --track origin/main
+```
+
+If website screenshots are enabled (§5b), build and start with both compose files, or set
+`COMPOSE_FILE` in `.env` as described there.
 
 Your data is in Docker **volumes** (`pg-data`, `asm-storage`, …), not in the checkout, so
 pulling, rebuilding and restarting never touches it. `docker compose down` is safe;

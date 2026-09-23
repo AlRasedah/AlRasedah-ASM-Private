@@ -48,7 +48,7 @@ from pydantic import Field, field_validator
 from ...base import AdapterConfig, ConfigurationError, ExecutionContext, RawOutput, ScannerAdapter
 from ...coordination import LeaseUnavailable
 from ...egress_proxy import BLOCK_HEADER, EgressPolicy, EgressProxy
-from ...execution import minimal_env, resolve_binary, run_process
+from ...execution import BinaryNotFound, minimal_env, run_process
 from ...identity import user_agent
 from ...observations import SCREENSHOT_MAX_BYTES, NormalizedOutput, ScreenshotImage, SensorResult
 from ...registry import register
@@ -118,6 +118,23 @@ class ScreenshotConfig(AdapterConfig):
     @classmethod
     def _domains(cls, v: list[str]) -> list[str]:
         return sorted({d.strip().lower().rstrip(".") for d in v if d.strip()})
+
+
+BROWSER_NAMES = ("chromium", "chromium-browser")
+
+
+def browser_binary() -> str:
+    """The installed browser. Distributions have shipped it under both names (Alpine among
+    them), so look for either; ``ASM_BIN_CHROMIUM`` wins only when it names a real file."""
+    override = os.environ.get("ASM_BIN_CHROMIUM")
+    if override and os.path.isfile(override) and os.access(override, os.X_OK):
+        return override
+    for name in BROWSER_NAMES:
+        found = shutil.which(name)
+        if found:
+            return found
+    note = f" (ASM_BIN_CHROMIUM={override} does not exist)" if override else ""
+    raise BinaryNotFound(f"the screenshot browser is not installed in this scanner{note}")
 
 
 def png_dimensions(data: bytes) -> tuple[int, int]:
@@ -243,7 +260,7 @@ class ScreenshotAdapter(ScannerAdapter):
             return self._result(started, "failed", ["exactly one web endpoint per capture"], stats, None)
         url = targets[0].value
         try:
-            binary = resolve_binary("chromium", self.binaries)
+            binary = browser_binary()
         except Exception as exc:  # noqa: BLE001 - reported as configuration, never as a crash
             stats["outcome"] = "unavailable"
             return self._result(started, "failed", [f"ConfigurationError: {exc}"], stats, None)
@@ -408,10 +425,14 @@ async def selftest(timeout: int = 60) -> dict[str, Any]:
 
     out: dict[str, Any] = {"ok": False}
     try:
-        binary = resolve_binary("chromium", ScreenshotAdapter.binaries)
+        binary = browser_binary()
     except Exception as exc:  # noqa: BLE001
         return {**out, "error": f"browser not installed: {exc}"}
-    version = await run_process([binary, "--version"], timeout=30, env=minimal_env(), max_output_bytes=4096)
+    out["binary"] = binary
+    try:
+        version = await run_process([binary, "--version"], timeout=30, env=minimal_env(), max_output_bytes=4096)
+    except OSError as exc:
+        return {**out, "error": f"the browser could not be started: {exc}"}
     out["version"] = version.stdout.decode("utf-8", "replace").strip()[:200]
     with tempfile.TemporaryDirectory(prefix="asm-selftest-") as wd:
         cfg = ScreenshotConfig(viewport_width=320, viewport_height=240, timeout_seconds=15)
@@ -420,7 +441,10 @@ async def selftest(timeout: int = 60) -> dict[str, Any]:
         argv = ScreenshotAdapter().browser_argv(binary, "data:text/html,<h1>self-test</h1>", cfg,
                                                 "http://127.0.0.1:9", Path(wd) / f"{PROFILE_MARKER}selftest",
                                                 png_path, "selftest")
-        proc = await run_process(argv, timeout=timeout, cwd=wd, env=minimal_env(home=wd), max_output_bytes=65536)
+        try:
+            proc = await run_process(argv, timeout=timeout, cwd=wd, env=minimal_env(home=wd), max_output_bytes=65536)
+        except OSError as exc:
+            return {**out, "error": f"the browser could not be started: {exc}"}
         err = proc.stderr.decode("utf-8", "replace")
         if _SANDBOX_ERRORS.search(err):
             return {**out, "error": "the browser sandbox is unavailable in this container", "detail": err[-800:]}

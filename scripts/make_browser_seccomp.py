@@ -8,8 +8,10 @@ CAP_SYS_ADMIN / CAP_SYS_CHROOT — which the scanner deliberately does not. Rath
 than disabling seccomp or the browser sandbox (``--no-sandbox``), this adds exactly
 those syscalls to *your engine's* default profile and changes nothing else.
 
-    # the default profile for your Docker version, e.g. from the moby repository:
-    #   https://github.com/moby/moby/blob/<version>/profiles/seccomp/default.json
+    # the default profile for your Docker version, from the moby repository:
+    #   Docker 29+:  https://raw.githubusercontent.com/moby/moby/docker-v<version>/vendor/github.com/moby/profiles/seccomp/default.json
+    #   Docker ≤ 28: https://raw.githubusercontent.com/moby/moby/v<version>/profiles/seccomp/default.json
+    # (DEPLOYMENT.md §5b has a command that picks the right one.)
     python scripts/make_browser_seccomp.py default.json > docker/scanner/seccomp-browser.json
 
 The host kernel must allow unprivileged user namespaces
