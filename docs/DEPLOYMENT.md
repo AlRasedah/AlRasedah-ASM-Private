@@ -199,6 +199,9 @@ measurements: [SCREENSHOTS.md](SCREENSHOTS.md).
    docker compose -f docker-compose.yml -f docker-compose.screenshots.yml build asm-scanner
    docker compose -f docker-compose.yml -f docker-compose.screenshots.yml up -d asm-scanner
    ```
+   Alpine's repository keeps only the newest build of each package, so a pin eventually stops
+   resolving. The build then fails with `breaks: world[chromium=<old version>]` and prints the
+   version the repository offers; put that version in `ASM_CHROMIUM_VERSION` and build again.
    **From now on, always pass both files** when building or starting the scanner, including
    during upgrades (§9). A plain `docker compose up -d` recreates the scanner from
    `docker-compose.yml` alone — without the browser — and captures then fail with "not
