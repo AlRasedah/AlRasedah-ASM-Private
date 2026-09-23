@@ -230,3 +230,25 @@ tenants and answer "not shared" every time.
 **Alternatives**: per-job ephemeral scanner containers (a smaller boundary still, and the
 direction to take if per-tenant capacity becomes the cost driver); keeping shared pools with
 documentation (rejected — the review's central point).
+
+## ADR-026 Threat Center: curated data, deterministic matching, checks through the scan pipeline
+**Context**: tenants need to know, when a serious vulnerability is announced, which assets
+may be affected, which were checked and what remains open — on limited infrastructure,
+without a new intelligence subscription or a language model.
+**Decision**: a global, versioned catalog curated by platform administrators; advisories are
+validated *data* (names, version ranges, CVEs, prose, links) with no executable field. Tenants
+are assessed by a pure matcher over what fingerprinting already recorded, incrementally
+(scan end, publish, daily). Three axes stay separate on each match — inventory match,
+check outcome, remediation — and the displayed assessment is derived with a fixed order in
+which only a verified finding confirms. A check is an ordinary scan created with an internal,
+unlisted profile whose single stage is built from an allowlisted detection id, so scope,
+active permission, quotas, concurrency, the tenant's pool and coverage rules apply unchanged.
+**Consequences**: no new job system and no new trust boundary; a check can never close an
+unrelated finding because the detection engine's coverage is limited to the check's rule id.
+Matching is only as good as fingerprinting, which the UI states. `create_scan` gained a
+`stages` override that is accepted only for internal profiles (and internal profiles are
+refused without it).
+**Alternatives**: free-form advisory templates (rejected: executable content from the catalog);
+CPE-based matching against NVD (heavier data, needs a subscription/feed pipeline and still
+misses unfingerprinted assets); running checks automatically on publish (rejected: surprise
+traffic against every tenant).

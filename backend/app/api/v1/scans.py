@@ -16,7 +16,7 @@ from app.models import Scan, ScanArtifact, ScanProfile, ScanSchedule, ScopeDecis
 from app.models.enums import DecisionResult, ScanStatus, ScanTrigger, StageType
 from app.scans import engines as engine_identity
 from app.scans import orchestrator, schedules
-from app.scans.profiles import STAGE_LABELS, profile_is_active, stage_time_limit, validate_stages
+from app.scans.profiles import INTERNAL_SLUGS, STAGE_LABELS, profile_is_active, stage_time_limit, validate_stages
 from app.scans.schedules import next_run, validate_timezone
 from app.schemas.common import Message, Page, paginate
 from app.schemas.scans import (
@@ -153,7 +153,8 @@ def _profile_out(p: ScanProfile) -> ProfileOut:
 @router.get("/scan-profiles", response_model=list[ProfileOut], tags=["scan-profiles"])
 def list_profiles(_: Principal = Depends(require(Permission.SCANS_READ)), db: Session = Depends(get_db)) -> list:
     rows = db.execute(select(ScanProfile).order_by(ScanProfile.is_builtin.desc(), ScanProfile.name)).scalars()
-    return [_profile_out(p) for p in rows]
+    # Internal profiles (Threat Center checks) are never offered to people.
+    return [_profile_out(p) for p in rows if not (p.tenant_id is None and p.slug in INTERNAL_SLUGS)]
 
 
 @router.get("/scan-profiles/engines", response_model=list[EngineOut], tags=["scan-profiles"])
@@ -171,7 +172,7 @@ def engines(_: Principal = Depends(require(Permission.SCANS_READ))) -> list:
 def get_profile(profile_id: uuid.UUID, _: Principal = Depends(require(Permission.SCANS_READ)),
                 db: Session = Depends(get_db)) -> ProfileOut:
     p = db.get(ScanProfile, profile_id)
-    if p is None:
+    if p is None or (p.tenant_id is None and p.slug in INTERNAL_SLUGS):
         raise NotFound("Profile not found")
     return _profile_out(p)
 
@@ -261,7 +262,7 @@ def create_schedule(body: ScheduleCreate, principal: Principal = Depends(require
     tid = principal.require_tenant()
     validate_timezone(body.timezone)
     profile = db.get(ScanProfile, body.profile_id)
-    if profile is None:
+    if profile is None or (profile.tenant_id is None and profile.slug in INTERNAL_SLUGS):
         raise NotFound("Profile not found")
     cron = _cron_of(body)
     assert cron is not None  # the schema requires exactly one of repeat/cron

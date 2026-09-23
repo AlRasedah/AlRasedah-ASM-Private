@@ -14,6 +14,7 @@ from .reports import Report
 from .scans import Scan, ScanArtifact, ScanProfile, ScanSchedule, ScanStage, ScopeDecision
 from .scope import ScopeEntry, Secret
 from .tenancy import MetricSnapshot, Organization, Plan, Tenant, UsageRecord
+from .threats import ThreatAdvisory, ThreatAdvisoryVersion, ThreatCampaign, ThreatCheck, ThreatCheckRun, ThreatMatch
 
 __all__ = [
     "Base", "Asset", "AssetObservation", "AssetRelationship", "AuditLog", "ApiToken", "PasswordResetToken",
@@ -21,7 +22,8 @@ __all__ = [
     "NotificationDelivery", "NotificationPolicy", "IntelFeedState", "VulnIntel", "PlatformSetting",
     "UserAlertPreference", "Report", "Scan",
     "ScanArtifact", "ScanProfile", "ScanSchedule", "ScanStage", "ScopeDecision", "ScopeEntry", "Secret",
-    "MetricSnapshot", "Organization", "Plan", "Tenant", "UsageRecord",
+    "MetricSnapshot", "Organization", "Plan", "Tenant", "UsageRecord", "ThreatAdvisory", "ThreatAdvisoryVersion",
+    "ThreatCampaign", "ThreatCheck", "ThreatCheckRun", "ThreatMatch",
 ]
 
 # Tables protected by the standard tenant-isolation RLS policy.
@@ -30,4 +32,9 @@ TENANT_TABLES = [
     "scope_entries", "secrets", "assets", "asset_relationships", "asset_observations", "asset_events",
     "scans", "scan_stages", "scope_decisions", "scan_schedules", "scan_artifacts", "findings",
     "finding_activities", "integrations", "notification_policies", "notification_deliveries", "reports",
+    "threat_campaigns", "threat_matches", "threat_check_runs",
 ]
+
+# Global catalog tables: tenant sessions may read only what is published; only system
+# sessions (platform administrators) may write.
+CATALOG_TABLES = ["threat_advisories", "threat_advisory_versions", "threat_checks"]

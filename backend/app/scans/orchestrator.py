@@ -45,6 +45,7 @@ from app.models.enums import (
 )
 from app.risk.service import recompute_organization
 from app.scans import engines, messages
+from app.scans.profiles import INTERNAL_SLUGS, validate_stages
 from app.scans.targets import build_targets
 from app.scope.service import load_checker
 from app.services import audit
@@ -91,14 +92,22 @@ def parse_target(raw: str) -> Target:
 def create_scan(db: Session, *, tenant_id: uuid.UUID, organization_id: uuid.UUID, profile_id: uuid.UUID,
                 trigger: ScanTrigger = ScanTrigger.MANUAL, requested_by: uuid.UUID | None = None,
                 schedule_id: uuid.UUID | None = None, target_override: list[str] | None = None,
-                auth_secret: str | None = None, auth_header_name: str = "Cookie") -> Scan:
+                auth_secret: str | None = None, auth_header_name: str = "Cookie",
+                stages: list[dict[str, Any]] | None = None) -> Scan:
+    """Create a scan. ``stages`` replaces the profile's stages and is accepted only
+    for an internal profile (a Threat Center check builds its one stage from an
+    approved check); internal profiles cannot be started any other way."""
     org = db.get(Organization, organization_id)
     if org is None or not org.is_active:
         raise NotFound("Organization not found")
     profile = db.get(ScanProfile, profile_id)
     if profile is None or (profile.tenant_id is not None and profile.tenant_id != tenant_id):
         raise NotFound("Scan profile not found")
-    stages = [s for s in profile.stages if s.get("enabled", True)]
+    internal = profile.tenant_id is None and profile.slug in INTERNAL_SLUGS
+    if internal != (stages is not None):
+        raise NotFound("Scan profile not found")
+    stages = [s for s in (validate_stages(stages) if stages is not None else profile.stages)
+              if s.get("enabled", True)]
     if not stages:
         raise ValidationFailed("The selected profile has no enabled stages")
 
@@ -129,8 +138,10 @@ def create_scan(db: Session, *, tenant_id: uuid.UUID, organization_id: uuid.UUID
                 raise ScopeViolation(f"{raw} is outside the authorized scope: {decision.reason}")
             override.append(t.value)
 
-    if db.execute(select(Scan.id).where(Scan.organization_id == organization_id, Scan.profile_id == profile_id,
-                                        Scan.status.in_(ACTIVE_SCAN_STATES)).limit(1)).first():
+    # Internal scans de-duplicate themselves (one active check per advisory and organization).
+    if not internal and db.execute(select(Scan.id).where(
+            Scan.organization_id == organization_id, Scan.profile_id == profile_id,
+            Scan.status.in_(ACTIVE_SCAN_STATES)).limit(1)).first():
         raise Conflict("A scan with this profile is already queued or running for this organization")
     tenants.check_can_start_scan(db, tenant_id)
 
@@ -184,7 +195,22 @@ def _cancel(db: Session, scan: Scan, reason: str | None = None) -> list[RunningT
     audit.record(db, Action.SCAN_CANCELLED, tenant_id=scan.tenant_id, object_type="scan", object_id=scan.id,
                  new={"reason": reason} if reason else None)
     db.flush()
+    _after_scan(db, scan, None)
     return tasks
+
+
+def _after_scan(db: Session, scan: Scan, org: Organization | None) -> None:
+    """Let the Threat Center react to a finished or cancelled scan.
+
+    Runs in a savepoint and swallows its own errors: an assessment problem must never
+    fail a scan, lose its results or block cancellation."""
+    from app.threats import service as threats
+
+    try:
+        with db.begin_nested():
+            threats.on_scan_finished(db, scan, org)
+    except Exception:  # noqa: BLE001
+        log.exception("Threat Center update failed after scan %s", scan.id)
 
 
 def cancel_scan(db: Session, scan_id: uuid.UUID) -> tuple[Scan, list[RunningTask]]:
@@ -517,6 +543,7 @@ def finalize_scan(db: Session, scan: Scan) -> None:
                           details={}, occurred_at=now, is_baseline=scan.is_baseline))
     snapshot_organization(db, org)
     db.flush()
+    _after_scan(db, scan, org)
 
 
 def run_inline(db: Session, scan_id: uuid.UUID, settings: dict[str, Any] | None = None) -> Scan:

@@ -77,6 +77,16 @@ def refresh_intel() -> None:
     _send("asm.core.refresh_intel")
 
 
+def evaluate_advisory(advisory_id: uuid.UUID | None) -> None:
+    """Match one published advisory (or all of them, with None) against every tenant's inventory."""
+    if _inline():
+        from app.threats.jobs import evaluate_everywhere
+
+        evaluate_everywhere(advisory_id)
+        return
+    _send("asm.core.threat_evaluate", str(advisory_id) if advisory_id else "")
+
+
 def revoke(tasks: list[tuple[str, str]]) -> None:
     """Stop running sensor jobs: ``(task_id, worker_pool)`` pairs, sent on each pool's control channel."""
     if not tasks or _inline():

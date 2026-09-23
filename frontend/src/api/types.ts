@@ -459,3 +459,139 @@ export interface Facets {
   business_units: { value: string; count: number }[];
   tags: { value: string; count: number }[];
 }
+
+// ------------------------------------------------------------------ Threat Center
+export interface ThreatCounts {
+  affected: number;
+  confirmed: number;
+  not_detected: number;
+  inconclusive: number;
+  unchecked: number;
+  check_pending: number;
+  reported_unverified: number;
+  version_unknown: number;
+  not_affected_version: number;
+  no_longer_observed: number;
+  remediated: number;
+}
+
+export interface AdvisorySummary {
+  id: string;
+  slug: string;
+  title: string;
+  severity: string;
+  cves: string[];
+  status: "draft" | "published" | "archived";
+  published_version: number | null;
+  source_published_at: string | null;
+  source_updated_at: string | null;
+  version_published_at: string | null;
+  counts: ThreatCounts;
+  last_evaluated_at: string | null;
+  evaluated_version: number | null;
+  stale: boolean;
+  has_check: boolean;
+}
+
+export interface CheckRun {
+  id: string;
+  organization_id: string;
+  advisory_version: number;
+  check_key: string;
+  scan_id: string | null;
+  asset_ids: string[];
+  status: "queued" | "running" | "completed" | "inconclusive" | "cancelled";
+  created_at: string;
+  finished_at: string | null;
+  summary: { detected?: number; not_detected?: number; inconclusive?: number; reason?: string };
+}
+
+export interface AffectedProduct {
+  vendor?: string | null;
+  product: string;
+  match_names: string[];
+  versions: { introduced?: string | null; fixed?: string | null; last_affected?: string | null }[];
+}
+
+export interface AdvisoryDetail extends AdvisorySummary {
+  summary: string;
+  remediation: string;
+  references: string[];
+  affected_products: AffectedProduct[];
+  intel: { cve: string; kev: boolean; kev_due_date: string | null; epss_score: number | null; cvss_score: number | null }[];
+  check: { key: string; name: string; description: string | null } | null;
+  check_runs: CheckRun[];
+}
+
+export interface MatchEvidence {
+  product: string;
+  vendor?: string | null;
+  matched_name: string;
+  version: string | null;
+  source: string;
+  verdict: string;
+  reason: string;
+  observed_at: string | null;
+  third_party: boolean;
+}
+
+export interface ThreatMatch {
+  id: string;
+  organization_id: string;
+  asset: AssetRef | null;
+  owner: string | null;
+  business_unit: string | null;
+  basis: "product" | "finding" | "third_party";
+  match_status: string;
+  assessment: string;
+  evidence: { observations?: MatchEvidence[]; reason?: string; third_party_only?: boolean };
+  findings: { id: string; title: string; severity: string; status: string; unverified: boolean }[];
+  check_outcome: string;
+  check_detail: string | null;
+  checked_at: string | null;
+  remediation_status: string;
+  assigned_to: string | null;
+  remediation_note: string | null;
+  first_matched_at: string;
+  last_evaluated_at: string;
+  advisory_version: number;
+}
+
+export interface AdvisoryContent {
+  title: string;
+  summary: string;
+  severity: string;
+  cves: string[];
+  references: string[];
+  affected: AffectedProduct[];
+  remediation: string;
+  check_keys: string[];
+  source_published_at: string | null;
+  source_updated_at: string | null;
+}
+
+export interface AdvisoryAdmin {
+  id: string;
+  slug: string;
+  title: string;
+  severity: string;
+  status: "draft" | "published" | "archived";
+  published_version: number | null;
+  version_published_at: string | null;
+  updated_at: string;
+  has_draft: boolean;
+  draft: AdvisoryContent | null;
+  draft_version: number | null;
+  published: AdvisoryContent | null;
+  versions: { version: number; state: string; published_at: string | null; created_at: string }[];
+}
+
+export interface ApprovedCheck {
+  key: string;
+  name: string;
+  description: string | null;
+  kind: string;
+  template_id: string;
+  enabled: boolean;
+  updated_at: string;
+}

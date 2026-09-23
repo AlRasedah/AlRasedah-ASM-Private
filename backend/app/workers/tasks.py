@@ -226,6 +226,20 @@ def snapshot_metrics() -> None:
             db.commit()
 
 
+@celery_app.task(shared=False, name="asm.core.threat_evaluate")
+def threat_evaluate(advisory_id: str = "") -> dict:
+    """Match one advisory (or, with no id, every published one) against every tenant.
+
+    Runs on publish and daily as a safety net; per-organization evaluation after each
+    scan happens inside the scan's own finalization."""
+    from app.threats.jobs import evaluate_everywhere
+
+    stats = evaluate_everywhere(uuid.UUID(advisory_id) if advisory_id else None)
+    if stats.get("events"):
+        dispatch_notifications.delay()
+    return stats
+
+
 @celery_app.task(shared=False, name="asm.core.generate_report")
 def generate_report(tenant_id: str, report_id: str) -> None:
     from app.reporting.service import run_report

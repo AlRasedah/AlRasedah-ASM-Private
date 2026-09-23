@@ -63,6 +63,8 @@ celery_app.conf.update(
         "refresh-intel": {"task": "asm.core.refresh_intel", "schedule": crontab(hour=3, minute=5)},
         "recompute-risk": {"task": "asm.core.recompute_all_risk", "schedule": crontab(hour=4, minute=10)},
         "snapshot-metrics": {"task": "asm.core.snapshot_metrics", "schedule": crontab(hour=0, minute=5)},
+        # Safety net for the Threat Center; normal re-evaluation is incremental (scan end, publish).
+        "threat-evaluate": {"task": "asm.core.threat_evaluate", "schedule": crontab(hour=4, minute=40)},
     },
 )
 

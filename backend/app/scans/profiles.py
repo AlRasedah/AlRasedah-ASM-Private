@@ -141,6 +141,23 @@ BUILTIN_PROFILES: list[dict[str, Any]] = [
 ]
 
 
+# Profiles the platform uses internally. They exist as rows so an internal scan has a
+# profile like any other (audit, quotas, history), but they are never listed or
+# offered: a Threat Center check supplies its own single stage, built from an
+# approved check, when it creates the scan (app/threats/service.py).
+THREAT_CHECK_SLUG = "threat-check"
+INTERNAL_PROFILES: list[dict[str, Any]] = [
+    {
+        "slug": THREAT_CHECK_SLUG,
+        "name": "Threat Center check",
+        "description": "Runs one platform-approved detection check against assets selected in the Threat Center.",
+        "stages": [{"stage": "vulnerability_detection", "engine": "nuclei",
+                    "config": {"include_tech_detection": False}}],
+    },
+]
+INTERNAL_SLUGS = frozenset(p["slug"] for p in INTERNAL_PROFILES)
+
+
 def validate_stages(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Validate and canonicalize a profile's stages. Raises ValidationFailed."""
     if not stages:
@@ -196,7 +213,7 @@ def profile_is_active(stages: list[dict[str, Any]]) -> bool:
 
 def ensure_builtin_profiles(db: Session) -> None:
     """Idempotently create/refresh global built-in profiles (system session)."""
-    for spec in BUILTIN_PROFILES:
+    for spec in [*BUILTIN_PROFILES, *INTERNAL_PROFILES]:
         stages = validate_stages(spec["stages"])
         existing = db.execute(
             select(ScanProfile).where(ScanProfile.tenant_id.is_(None), ScanProfile.slug == spec["slug"])

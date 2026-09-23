@@ -101,8 +101,65 @@ export const dashboard = {
   hosting_distribution: [{ provider: "aws", count: 1 }],
 };
 
+const counts = { affected: 3, confirmed: 1, not_detected: 1, inconclusive: 0, unchecked: 1, check_pending: 0,
+  reported_unverified: 0, version_unknown: 0, not_affected_version: 1, no_longer_observed: 0, remediated: 1 };
+
+export const advisory = {
+  id: "adv1", slug: "cve-2099-0001", title: "Example VPN pre-auth RCE", severity: "critical", cves: ["CVE-2099-0001"],
+  status: "published", published_version: 2, source_published_at: earlier, source_updated_at: now,
+  version_published_at: now, counts, last_evaluated_at: now, evaluated_version: 2, stale: false, has_check: true,
+};
+
+export const advisoryDetail = {
+  ...advisory, summary: "A pre-authentication remote code execution in Example VPN.", remediation: "Upgrade to 7.2.5.",
+  references: ["https://vendor.example.org/psirt/2099-0001"],
+  affected_products: [{ vendor: "Example", product: "Example VPN", match_names: ["example vpn"], versions: [{ introduced: "7.0", fixed: "7.2.5" }] }],
+  intel: [{ cve: "CVE-2099-0001", kev: true, kev_due_date: "2026-10-01", epss_score: 0.91, cvss_score: 9.8 }],
+  check: { key: "cve-2099-0001", name: "Example VPN RCE detection", description: null },
+  check_runs: [{ id: "cr1", organization_id: "o1", advisory_version: 2, check_key: "cve-2099-0001", scan_id: "s1",
+    asset_ids: ["a3"], status: "completed", created_at: earlier, finished_at: now, summary: { detected: 1, not_detected: 1, inconclusive: 0 } }],
+};
+
+const evidence = (version: string | null, reason: string) => ({ observations: [{ product: "Example VPN", vendor: "Example",
+  matched_name: "example vpn", version, source: "technology", verdict: "potentially_affected", reason, observed_at: now, third_party: false }] });
+
+export const threatMatches = [
+  { id: "m1", organization_id: "o1", asset: ref("a3", "http_endpoint", "https://vpn.example.com:10443"), owner: "Network team",
+    business_unit: "IT", basis: "product", match_status: "potentially_affected", assessment: "confirmed",
+    evidence: evidence("7.2.1", "version 7.2.1 is inside the affected range (from 7.0, fixed in 7.2.5)"),
+    findings: [{ id: "f1", title: "Fortinet FortiOS - Path Traversal", severity: "critical", status: "new", unverified: false }],
+    check_outcome: "detected", check_detail: "the approved check reported the issue on this asset", checked_at: now,
+    remediation_status: "in_progress", assigned_to: null, remediation_note: null, first_matched_at: earlier, last_evaluated_at: now, advisory_version: 2 },
+  { id: "m2", organization_id: "o1", asset: ref("a5", "http_endpoint", "https://vpn2.example.com"), owner: null, business_unit: null,
+    basis: "product", match_status: "potentially_affected", assessment: "not_detected",
+    evidence: evidence("7.1.0", "version 7.1.0 is inside the affected range (from 7.0, fixed in 7.2.5)"), findings: [],
+    check_outcome: "not_detected", check_detail: "the check completed without detecting the issue. This is not proof the asset is safe",
+    checked_at: now, remediation_status: "open", assigned_to: null, remediation_note: null, first_matched_at: earlier, last_evaluated_at: now, advisory_version: 2 },
+  { id: "m3", organization_id: "o1", asset: ref("a6", "service", "198.51.100.9:443/tcp"), owner: null, business_unit: null,
+    basis: "product", match_status: "version_unknown", assessment: "version_unknown",
+    evidence: evidence(null, "the product was seen but no version was reported"), findings: [],
+    check_outcome: "none", check_detail: null, checked_at: null, remediation_status: "open", assigned_to: null, remediation_note: null,
+    first_matched_at: earlier, last_evaluated_at: now, advisory_version: 2 },
+];
+
+export const advisoryAdmin = {
+  id: "adv1", slug: "cve-2099-0001", title: advisory.title, severity: "critical", status: "published", published_version: 2,
+  version_published_at: now, updated_at: now, has_draft: true, draft_version: 3, versions: [],
+  draft: { title: advisory.title, summary: "x", severity: "critical", cves: ["CVE-2099-0001"], references: [], remediation: "",
+    affected: advisoryDetail.affected_products, check_keys: ["cve-2099-0001"], source_published_at: null, source_updated_at: null },
+  published: null,
+};
+
 export function mockApi(path: string): unknown {
   const routes: [RegExp, unknown][] = [
+    [/^\/threats$/, page([advisory])],
+    [/^\/threats\/[^/]+\/assets$/, page(threatMatches)],
+    [/^\/threats\/[^/]+\/checks$/, advisoryDetail.check_runs],
+    [/^\/threats\/[^/]+$/, advisoryDetail],
+    [/^\/threat-catalog$/, [advisoryAdmin]],
+    [/^\/threat-catalog\/checks$/, [{ key: "cve-2099-0001", name: "Example VPN RCE detection", description: null, kind: "detection_template",
+      template_id: "cve-2099-0001", enabled: true, updated_at: now }]],
+    [/^\/threat-catalog\/[^/]+$/, advisoryAdmin],
     [/^\/auth\/me$/, me],
     [/^\/auth\/api-tokens$/, []],
     [/^\/organizations$/, [org]],

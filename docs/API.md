@@ -45,6 +45,8 @@ complete with `POST /auth/mfa/verify`.
 | `/settings` | get, update (inactivity rules, risk weights, scanning governance, detection rules, branding); `email` get/put + `email/test` (platform admin: the mail server, stored encrypted, overriding `ASM_SMTP_*`); `my-alerts` get/put (this user's own alerts, sent to their login address) |
 | `/audit-logs` | list (each entry has a gapless per-tenant `chain_seq`), verify (sequence, hash links and hashes; returns `reason`) |
 | `/intel` | feeds, `cve/{id}`, refresh (platform admin) |
+| `/threats` | Threat Center (tenant view): list published advisories with this tenant's counts and freshness, get, `{id}/assets` (matches with evidence, linked findings, check outcome, remediation; filter `assessment`), `{id}/assets/export.csv`, `{id}/checks` (POST `{match_ids}`: run the approved check through the scan pipeline; 409 while one is active), `matches/{id}` (PATCH remediation). See [THREAT_CENTER.md](THREAT_CENTER.md) |
+| `/threat-catalog` | (platform admin) advisories incl. drafts, create, `{id}/draft` (PUT), `{id}/publish`, `{id}/archive`, `{id}/restore`, `evaluate`; `checks` list and `checks/{key}` (PUT) — the approved-check allowlist |
 | `/health`, `/health/ready` | liveness / readiness |
 
 ## Example: start a scan and follow it

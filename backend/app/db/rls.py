@@ -83,6 +83,25 @@ def tenants_policy() -> list[str]:
     ]
 
 
+def catalog_policy(table: str, visible: str) -> list[str]:
+    """A global table every tenant may *read* where ``visible`` holds (e.g. published
+    advisories), and that only system sessions — platform administration — may write."""
+    read = f"({BYPASS_EXPR} OR ({visible}))"
+    write = f"({BYPASS_EXPR})"
+    return [
+        f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY",
+        f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY",
+        f"DROP POLICY IF EXISTS catalog_read ON {table}",
+        f"DROP POLICY IF EXISTS catalog_write ON {table}",
+        f"DROP POLICY IF EXISTS catalog_update ON {table}",
+        f"DROP POLICY IF EXISTS catalog_delete ON {table}",
+        f"CREATE POLICY catalog_read ON {table} FOR SELECT USING {read}",
+        f"CREATE POLICY catalog_write ON {table} FOR INSERT WITH CHECK {write}",
+        f"CREATE POLICY catalog_update ON {table} FOR UPDATE USING {write} WITH CHECK {write}",
+        f"CREATE POLICY catalog_delete ON {table} FOR DELETE USING {write}",
+    ]
+
+
 def private_tables_policy(table: str) -> list[str]:
     """Tables only ever touched by system sessions (auth internals)."""
     return [

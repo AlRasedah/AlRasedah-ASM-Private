@@ -77,6 +77,7 @@
 | `scans/orchestrator.py` | `create_scan`, `cancel_scan`, `try_start`, `prepare_next_stage` (authorization + job), `complete_stage` (ingest + rules), `fail_stage`, `finalize_scan`, `run_inline`. |
 | `scans/schedules.py` | Cron/timezone helpers. |
 | `intel/service.py` | KEV, EPSS, NVD fetch/parse/cache, offline import, re-enrichment. |
+| `threats/` | Threat Center: `content.py` (what an advisory may contain — data only), `versions.py` (the documented version rule), `matching.py` (pure product/version matcher), `service.py` (catalog, per-organization evaluation, checks through `create_scan`, remediation, counts), `jobs.py` (cross-tenant evaluation). See [../THREAT_CENTER.md](../THREAT_CENTER.md). |
 | `integrations/channels.py` | Notification channel adapters and their config models; SSRF guard; Wazuh/syslog formatting; shared email formatting. Channels with `implemented = False` (Jira, ServiceNow) stay in the code but are **not offered by the API or UI** until they work. |
 | `scans/engines.py` | Capability labels, opaque per-deployment engine tokens and schema scrubbing — how the product avoids naming its engines in anything a browser sees. |
 | `scans/messages.py` | Sensor errors → advice a user can act on, with no tool names; raw output stays in the worker log. |
@@ -112,6 +113,7 @@ tenants, profiles, audit log and private auth tables). `alembic/env.py` sets
 | `0004_unverified_findings` | `findings.unverified` — third-party CVE reports wait in their own view (ADR-020) |
 | `0005_platform_email` | `platform_settings` (encrypted SMTP password) and `user_alert_preferences` (ADR-021) |
 | `0006_scan_auth_secret` | `scans.auth_secret_encrypted` / `auth_header_name` — the per-scan session secret for authenticated DAST (ADR-023) |
+| `0008_threat_center` | Threat Center: global `threat_advisories`, `threat_advisory_versions`, `threat_checks` (RLS `catalog_read` = published only, `catalog_write` = system sessions only); tenant `threat_campaigns`, `threat_matches`, `threat_check_runs` (standard tenant isolation). One active check run per advisory and organization (partial unique index) |
 | `0007_personal_delivery_rows` | `notification_deliveries.recipient_user_id` — a personal alert gets a durable, retryable row like an integration delivery |
 
 ## `frontend/src`

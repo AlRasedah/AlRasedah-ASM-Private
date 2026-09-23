@@ -99,6 +99,17 @@ Canonical values (`assets.normalized_value`):
 | `platform_settings` | one row (`CHECK id = 1`): `smtp` (host/port/username/sender/starttls/ssl), `smtp_password_ciphertext`, `updated_by`. Platform admins only, system sessions only; overrides `ASM_SMTP_*` (ADR-021) |
 | `user_alert_preferences` | per `(tenant, user)`: `enabled`, `min_severity`, `event_types[]`, `organization_ids[]`, `include_baseline`, `last_sent_at`. No row = enabled for high/critical. Mail goes to the user's **login** address, never a typed one |
 
+### Threat Center
+
+| Table | Scope | Key columns |
+|---|---|---|
+| `threat_advisories` | global (catalog) | `slug` unique, `status` (draft/published/archived), `published_version`, denormalized title/severity/cves of the *published* version, source dates. RLS: tenants read rows with a published version; only system sessions write |
+| `threat_advisory_versions` | global (catalog) | `(advisory_id, version)` unique, `state` draft/published (one draft per advisory, partial unique index), `content` = validated `AdvisoryContent`. RLS: tenants read `state = 'published'` only |
+| `threat_checks` | global (catalog) | the approved-check allowlist: `key` unique, `name`, `kind = 'detection_template'` (check constraint), `template_id`, `enabled` |
+| `threat_campaigns` | tenant | per `(tenant, advisory)`: `evaluated_version`, `last_evaluated_at` (freshness) |
+| `threat_matches` | tenant | unique `(tenant, advisory, asset)`; `basis` (product/finding/third_party), `match_status`, `evidence`, `finding_ids[]` / `unverified_finding_ids[]` (references), `check_outcome` + `check_detail` + `checked_at` + `last_check_run_id`, derived `assessment`, `remediation_status` + `assigned_to` + `remediation_note` |
+| `threat_check_runs` | tenant | one per organization per "Check selected assets": `scan_id`, `asset_ids[]`, `check_key`, `status`, `summary`. Partial unique index: one queued/running run per `(tenant, organization, advisory)` |
+
 ## 5.3 Writing a migration
 
 1. Change or add models under `app/models/` and import new modules in `app/models/__init__.py`.

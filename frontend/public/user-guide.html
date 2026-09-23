@@ -178,6 +178,7 @@
     <a href="#findings">10. Findings</a>
     <a href="#changes">11. Changes &amp; alerts</a>
     <a href="#dast">12. Web app testing (DAST)</a>
+    <a href="#threats">12a. Threat Center</a>
     <div class="toc-group">Reporting &amp; config</div>
     <a href="#reports">13. Reports</a>
     <a href="#integrations">14. Integrations &amp; notifications</a>
@@ -524,6 +525,29 @@
       against scope that permits active scanning, and it stays strictly on the authorized host. The DAST engine is an
       optional component; if your deployment does not have it enabled, those stages are skipped. Ask your administrator if
       the <b>Web Application Scan (DAST)</b> profile is available in your environment.</div>
+    </section>
+
+    <section id="threats">
+      <h2>12a. Threat Center<a class="anchor" href="#threats">#</a></h2>
+      <p>When a serious vulnerability is announced, the <b>Threat Center</b> shows which of your assets may be affected,
+      which have been checked, and what remains open. Advisories are written by your platform team and matched automatically
+      against the inventory your scans have already recorded — publishing an advisory never starts a scan on its own.</p>
+      <ul>
+        <li><b>May be affected</b> counts every asset on the advisory's list. <b>Confirmed</b> means a verified finding exists.
+        <b>Checked — not detected</b> means a completed check found nothing; it is <em>not</em> proof the asset is safe.
+        <b>Inconclusive</b> means the check failed, was blocked, timed out or could not reach the asset.</li>
+        <li><b>Potentially affected</b> and <b>Version unknown</b> come from product and version names only; banners can be wrong
+        and fixes can be back-ported, so these are never shown as confirmed. <b>Reported, unverified</b> means only a
+        third-party exposure database reported it.</li>
+        <li>Open an advisory to see each asset's <b>evidence</b> (what was seen and why it counts), linked findings, owner and
+        remediation guidance. <b>Export CSV</b> downloads the list.</li>
+        <li>Analysts can tick assets and choose <b>Check selected assets</b> when an approved check exists. It runs as a normal scan:
+        your authorized scope, active-scanning permission, quotas and scheduling all apply, and it appears under Scans.</li>
+        <li><b>Remediation</b> (open, in progress, resolved, accepted risk, not applicable) is your team's own workflow and is kept
+        separate from what scans report.</li>
+      </ul>
+      <p>Platform administrators manage advisories and the list of approved checks under <b>Threat Center → Manage advisories</b>:
+      drafts are invisible to tenants until published, and archiving keeps each tenant's history.</p>
     </section>
 
     <section id="reports">
