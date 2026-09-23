@@ -170,19 +170,12 @@ def find_stale_browsers(marker: str = PROFILE_MARKER, proc_root: Path = Path("/p
 
 
 def kill_pids(pids: list[int]) -> int:
-    """Kill each process and, when it leads a group of its own, that whole group.
-
-    Never signals this process's own group: a stray process that shares it would
-    otherwise take the worker down with it."""
     killed = 0
-    own_group = os.getpgrp() if sys.platform != "win32" else None
     for pid in pids:
         try:
             if sys.platform != "win32":
                 try:
-                    group = os.getpgid(pid)
-                    if group != own_group:
-                        os.killpg(group, signal.SIGKILL)
+                    os.killpg(os.getpgid(pid), signal.SIGKILL)
                 except (ProcessLookupError, PermissionError):
                     pass
             os.kill(pid, signal.SIGKILL if sys.platform != "win32" else signal.SIGTERM)

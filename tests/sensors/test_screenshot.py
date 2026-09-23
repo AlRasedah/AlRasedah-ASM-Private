@@ -8,6 +8,7 @@ checked separately (``test_browser_flags_keep_isolation``).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import ipaddress
 import json
 import os
@@ -430,17 +431,43 @@ def test_stale_browsers_are_found_by_marker_only(tmp_path):
     assert find_stale_browsers(proc_root=proc, own_pid=103) == [101]
 
 
-def test_kill_pids_stops_a_real_process():
+def test_kill_pids_stops_a_real_process_but_never_our_own_group():
+    """A stray process that shares the worker's process group dies alone — killing its
+    group would kill the worker (and did kill this test runner once, on Linux CI)."""
     import subprocess
 
-    p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    shared = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:
-        assert kill_pids([p.pid]) == 1
-        p.wait(timeout=10)
-        assert p.returncode is not None
+        assert kill_pids([shared.pid]) == 1
+        shared.wait(timeout=10)
+        assert shared.returncode is not None  # and we are still here to check it
     finally:
-        if p.poll() is None:
-            p.kill()
+        if shared.poll() is None:
+            shared.kill()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="process groups are POSIX")
+def test_kill_pids_takes_a_browsers_whole_group():
+    import subprocess
+
+    # A "browser" in its own session with a child of its own, like Chromium's renderers.
+    leader = subprocess.Popen([sys.executable, "-c", "import subprocess, sys, time; "
+                               "c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+                               "print(c.pid, flush=True); time.sleep(60)"],
+                              stdout=subprocess.PIPE, text=True, start_new_session=True)
+    child = int(leader.stdout.readline())
+    try:
+        assert kill_pids([leader.pid]) == 1
+        leader.wait(timeout=10)
+        for _ in range(100):
+            if not _alive(child):
+                break
+            time.sleep(0.05)
+        assert not _alive(child)
+    finally:
+        for pid in (leader.pid, child):
+            with contextlib.suppress(OSError):
+                os.kill(pid, 9)
 
 
 def test_png_and_url_helpers():
