@@ -15,7 +15,7 @@ from app.core.errors import Conflict, NotFound
 from app.models import Scan, ScanArtifact, ScanProfile, ScanSchedule, ScopeDecision
 from app.models.enums import DecisionResult, ScanStatus, ScanTrigger, StageType
 from app.scans import engines as engine_identity
-from app.scans import orchestrator
+from app.scans import orchestrator, schedules
 from app.scans.profiles import STAGE_LABELS, profile_is_active, stage_time_limit, validate_stages
 from app.scans.schedules import next_run, validate_timezone
 from app.schemas.common import Message, Page, paginate
@@ -27,6 +27,7 @@ from app.schemas.scans import (
     ProfileOut,
     ProfileStage,
     ProfileUpdate,
+    RecurrenceOut,
     ScanCreate,
     ScanDetail,
     ScanOut,
@@ -230,42 +231,62 @@ def delete_profile(profile_id: uuid.UUID, principal: Principal = Depends(require
 
 
 # ------------------------------------------------------------------ schedules
+def _schedule_out(s: ScanSchedule) -> ScheduleOut:
+    """A schedule as words, so no screen has to show a cron expression."""
+    rec = schedules.from_cron(s.cron)
+    return ScheduleOut.model_validate(s).model_copy(update={
+        "description": schedules.describe(s.cron),
+        "recurrence": RecurrenceOut(**vars(rec)) if rec else None,
+    })
+
+
+def _cron_of(body: ScheduleCreate | ScheduleUpdate) -> str | None:
+    if body.repeat is not None:
+        return schedules.to_cron(schedules.Recurrence(**body.repeat.model_dump()))
+    return body.cron
+
+
 @router.get("/schedules", response_model=list[ScheduleOut], tags=["schedules"])
 def list_schedules(organization_id: uuid.UUID | None = None, _: Principal = Depends(require(Permission.SCANS_READ)),
                    db: Session = Depends(get_db)) -> list:
     stmt = select(ScanSchedule).order_by(ScanSchedule.name)
     if organization_id:
         stmt = stmt.where(ScanSchedule.organization_id == organization_id)
-    return list(db.execute(stmt).scalars())
+    return [_schedule_out(s) for s in db.execute(stmt).scalars()]
 
 
 @router.post("/schedules", response_model=ScheduleOut, status_code=201, tags=["schedules"])
 def create_schedule(body: ScheduleCreate, principal: Principal = Depends(require(Permission.SCHEDULES_WRITE)),
-                    db: Session = Depends(get_db)) -> ScanSchedule:
+                    db: Session = Depends(get_db)) -> ScheduleOut:
     tid = principal.require_tenant()
     validate_timezone(body.timezone)
     profile = db.get(ScanProfile, body.profile_id)
     if profile is None:
         raise NotFound("Profile not found")
+    cron = _cron_of(body)
+    assert cron is not None  # the schema requires exactly one of repeat/cron
     s = ScanSchedule(tenant_id=tid, organization_id=body.organization_id, profile_id=body.profile_id, name=body.name,
-                     cron=body.cron, timezone=body.timezone, enabled=body.enabled,
-                     next_run_at=next_run(body.cron, body.timezone) if body.enabled else None,
+                     cron=cron, timezone=body.timezone, enabled=body.enabled,
+                     next_run_at=next_run(cron, body.timezone) if body.enabled else None,
                      created_by=principal.user_id)
     db.add(s)
     db.flush()
     audit.record(db, Action.SCHEDULE_CHANGED, object_type="scan_schedule", object_id=s.id,
-                 new=body.model_dump(mode="json"))
+                 new={**body.model_dump(mode="json", exclude={"repeat"}), "cron": cron,
+                      "schedule": schedules.describe(cron)})
     db.commit()
-    return s
+    return _schedule_out(s)
 
 
 @router.patch("/schedules/{schedule_id}", response_model=ScheduleOut, tags=["schedules"])
 def update_schedule(schedule_id: uuid.UUID, body: ScheduleUpdate,
-                    _: Principal = Depends(require(Permission.SCHEDULES_WRITE)), db: Session = Depends(get_db)) -> ScanSchedule:
+                    _: Principal = Depends(require(Permission.SCHEDULES_WRITE)), db: Session = Depends(get_db)) -> ScheduleOut:
     s = db.get(ScanSchedule, schedule_id)
     if s is None:
         raise NotFound("Schedule not found")
-    changes = body.model_dump(exclude_unset=True)
+    changes = body.model_dump(exclude_unset=True, exclude={"repeat"})
+    if (cron := _cron_of(body)) is not None:
+        changes["cron"] = cron
     if changes.get("timezone"):
         validate_timezone(changes["timezone"])
     before = {k: getattr(s, k) for k in changes}
@@ -274,9 +295,9 @@ def update_schedule(schedule_id: uuid.UUID, body: ScheduleUpdate,
             setattr(s, k, v)
     s.next_run_at = next_run(s.cron, s.timezone) if s.enabled else None
     audit.record(db, Action.SCHEDULE_CHANGED, object_type="scan_schedule", object_id=s.id, previous=before,
-                 new=changes)
+                 new={**changes, "schedule": schedules.describe(s.cron)})
     db.commit()
-    return s
+    return _schedule_out(s)
 
 
 @router.delete("/schedules/{schedule_id}", response_model=Message, tags=["schedules"])

@@ -381,8 +381,12 @@
       until it is active again.</div>
 
       <h3>Scheduling</h3>
-      <p>On the <b>Scan profiles</b> screen you can create <b>schedules</b> that run a profile against an organization on a
-      cron expression in a chosen timezone — for example nightly Standard ASM, weekly Deep Assessment.</p>
+      <p>On the <b>Scan profiles</b> screen, <b>Schedule</b> on any profile sets it to run by itself. Choose how often
+      (every day, every week, every month), the day, and the time in your timezone — for example
+      <em>every Sunday at 09:00</em>. The schedules table shows each one in the same words, so you can check at a glance
+      when a scan will next run.</p>
+      <p>Days 29–31 are not offered for monthly schedules: a scan set for the 31st would skip every short month. If you
+      need a cadence the chooser cannot express (say, every six hours), the API accepts a cron expression directly.</p>
     </section>
 
     <section id="inventory">

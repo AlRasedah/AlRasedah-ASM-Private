@@ -133,7 +133,7 @@ export function mockApi(path: string): unknown {
     [/^\/scans\/[^/]+\/decisions$/, page([{ id: 1, stage_id: "st1", target: "dev-api.example.com", decision: "rejected", reason: "hostname excluded from scope", active: false, created_at: now }])],
     [/^\/scans\/[^/]+$/, scan],
     [/^\/scan-profiles$/, [profile]],
-    [/^\/schedules$/, [{ id: "sch1", organization_id: "o1", profile_id: "p1", name: "Nightly", cron: "0 2 * * *", timezone: "Asia/Riyadh", enabled: true, next_run_at: now, last_run_at: earlier, last_scan_id: "s1" }]],
+    [/^\/schedules$/, [{ id: "sch1", organization_id: "o1", profile_id: "p1", name: "Nightly", cron: "0 2 * * *", description: "Every day at 02:00", recurrence: { frequency: "daily", hour: 2, minute: 0, weekday: null, day: null }, timezone: "Asia/Riyadh", enabled: true, next_run_at: now, last_run_at: earlier, last_scan_id: "s1" }]],
     [/^\/reports$/, page([{ id: "r1", organization_id: "o1", report_type: "executive", report_format: "html", title: "Executive Attack Surface Report",
       status: "completed", size: 20480, error: null, parameters: {}, created_at: now, completed_at: now }])],
     [/^\/integrations$/, [{ id: "i1", name: "Wazuh", integration_type: "wazuh", config: { mode: "syslog", host: "wazuh", port: 514, protocol: "udp" },

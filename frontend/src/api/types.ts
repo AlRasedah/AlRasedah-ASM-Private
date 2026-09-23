@@ -304,6 +304,9 @@ export interface Schedule {
   profile_id: string;
   name: string;
   cron: string;
+  /** The cron expression in words, e.g. "Every Sunday at 09:00". */
+  description: string;
+  recurrence: { frequency: string; hour: number; minute: number; weekday: number | null; day: number | null } | null;
   timezone: string;
   enabled: boolean;
   next_run_at: string | null;

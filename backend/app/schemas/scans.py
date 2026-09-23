@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any, Literal
 
 from croniter import croniter
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.models.enums import DecisionResult, ScanStatus, ScanTrigger, StageStatus, StageType
 
@@ -153,12 +153,34 @@ class EngineOut(BaseModel):
     config_schema: dict[str, Any]
 
 
+class RecurrenceIn(Input):
+    """A schedule in the words people use, instead of a cron expression."""
+
+    frequency: Literal["daily", "weekly", "monthly"]
+    hour: int = Field(ge=0, le=23)
+    minute: int = Field(default=0, ge=0, le=59)
+    weekday: int | None = Field(default=None, ge=0, le=6, description="0 = Sunday; weekly only")
+    day: int | None = Field(default=None, ge=1, le=28, description="day of month; monthly only")
+
+
+class RecurrenceOut(BaseModel):
+    frequency: str
+    hour: int
+    minute: int
+    weekday: int | None = None
+    day: int | None = None
+
+
 class ScheduleOut(ORM):
     id: uuid.UUID
     organization_id: uuid.UUID
     profile_id: uuid.UUID
     name: str
     cron: str
+    # What the cron expression means, for a UI that never shows one: `description` is
+    # always set, `recurrence` only when the schedule is one a person could have built.
+    description: str = ""
+    recurrence: RecurrenceOut | None = None
     timezone: str
     enabled: bool
     next_run_at: datetime | None
@@ -176,18 +198,28 @@ class ScheduleCreate(Input):
     organization_id: uuid.UUID
     profile_id: uuid.UUID
     name: str = Field(min_length=1, max_length=128)
-    cron: str = Field(max_length=64)
+    # Give either: `repeat` is what the interface sends, `cron` the escape hatch for a
+    # cadence the builder cannot express.
+    repeat: RecurrenceIn | None = None
+    cron: str | None = Field(default=None, max_length=64)
     timezone: str = Field(default="Asia/Riyadh", max_length=64)
     enabled: bool = True
 
     @field_validator("cron")
     @classmethod
-    def _cron(cls, v: str) -> str:
-        return _valid_cron(v)
+    def _cron(cls, v: str | None) -> str | None:
+        return _valid_cron(v) if v is not None else v
+
+    @model_validator(mode="after")
+    def _one_of(self) -> ScheduleCreate:
+        if bool(self.repeat) == bool(self.cron):
+            raise ValueError("Give either a repeat (how often to run) or a cron expression, not both")
+        return self
 
 
 class ScheduleUpdate(Input):
     name: str | None = Field(default=None, min_length=1, max_length=128)
+    repeat: RecurrenceIn | None = None
     cron: str | None = Field(default=None, max_length=64)
     timezone: str | None = Field(default=None, max_length=64)
     enabled: bool | None = None
@@ -197,3 +229,9 @@ class ScheduleUpdate(Input):
     @classmethod
     def _cron(cls, v: str | None) -> str | None:
         return _valid_cron(v) if v is not None else v
+
+    @model_validator(mode="after")
+    def _not_both(self) -> ScheduleUpdate:
+        if self.repeat and self.cron:
+            raise ValueError("Give either a repeat (how often to run) or a cron expression, not both")
+        return self

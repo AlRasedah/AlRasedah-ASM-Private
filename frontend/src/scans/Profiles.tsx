@@ -91,15 +91,32 @@ function ProfileEditor({ base, existing, onClose }: { base?: ScanProfile; existi
   );
 }
 
+// Cron numbers days from Sunday, which is also how the week reads here.
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+function describeRepeat(frequency: string, weekday: number, day: number, hour: number, minute: number): string {
+  const at = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+  if (frequency === "daily") return `Every day at ${at}`;
+  if (frequency === "weekly") return `Every ${WEEKDAYS[weekday]} at ${at}`;
+  return `Day ${day} of every month at ${at}`;
+}
+
 function ScheduleEditor({ profile, onClose }: { profile: ScanProfile; onClose: () => void }) {
   const { orgs, orgId } = useOrg();
   const qc = useQueryClient();
   const [org, setOrg] = useState(orgId ?? orgs[0]?.id ?? "");
-  const [cron, setCron] = useState("0 2 * * *");
+  const [frequency, setFrequency] = useState("weekly");
+  const [weekday, setWeekday] = useState(0);
+  const [day, setDay] = useState(1);
+  const [time, setTime] = useState("09:00");
   const [tz, setTz] = useState("Asia/Riyadh");
+  const [hour, minute] = time.split(":").map((n) => Number(n) || 0);
+  const summary = describeRepeat(frequency, weekday, day, hour, minute);
   const m = useMutation({
-    mutationFn: () => api("/schedules", { method: "POST", body: { organization_id: org, profile_id: profile.id,
-      name: `${profile.name} (${cron})`, cron, timezone: tz } }),
+    mutationFn: () => api("/schedules", { method: "POST", body: {
+      organization_id: org, profile_id: profile.id, name: `${profile.name} — ${summary}`, timezone: tz,
+      repeat: { frequency, hour, minute, weekday: frequency === "weekly" ? weekday : null,
+                day: frequency === "monthly" ? day : null } } }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["schedules"] }); onClose(); },
   });
   return (
@@ -110,10 +127,32 @@ function ScheduleEditor({ profile, onClose }: { profile: ScanProfile; onClose: (
         <Field label="Organization"><select value={org} onChange={(e) => setOrg(e.target.value)}>
           {orgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}</select></Field>
         <div className="form-row">
-          <Field label="Cron (minute hour day month weekday)"><input className="mono" value={cron} onChange={(e) => setCron(e.target.value)} /></Field>
-          <Field label="Timezone"><input value={tz} onChange={(e) => setTz(e.target.value)} /></Field>
+          <Field label="Repeat">
+            <select value={frequency} onChange={(e) => setFrequency(e.target.value)}>
+              <option value="daily">Every day</option>
+              <option value="weekly">Every week</option>
+              <option value="monthly">Every month</option>
+            </select>
+          </Field>
+          {frequency === "weekly" && (
+            <Field label="Day">
+              <select value={weekday} onChange={(e) => setWeekday(Number(e.target.value))}>
+                {WEEKDAYS.map((d, i) => <option key={d} value={i}>{d}</option>)}
+              </select>
+            </Field>
+          )}
+          {frequency === "monthly" && (
+            <Field label="Day of month">
+              <select value={day} onChange={(e) => setDay(Number(e.target.value))}>
+                {Array.from({ length: 28 }, (_, i) => i + 1).map((d) => <option key={d} value={d}>{d}</option>)}
+              </select>
+            </Field>
+          )}
+          <Field label="At"><input type="time" value={time} onChange={(e) => setTime(e.target.value)} /></Field>
         </div>
-        <div className="small muted">Examples: <code>0 2 * * *</code> daily at 02:00 · <code>0 */6 * * *</code> every 6 hours · <code>0 3 * * 0</code> weekly.</div>
+        <Field label="Timezone"><input value={tz} onChange={(e) => setTz(e.target.value)} /></Field>
+        <div className="small muted">This scan will run <b>{summary}</b> ({tz}). Days 29–31 are not offered, so the
+          scan never skips a short month.</div>
       </div>
     </Modal>
   );
@@ -138,11 +177,11 @@ function Schedules() {
       <Card title="Schedules" flush right={<span className="muted small"><Plus size={12} /> use "Schedule" on a profile</span>}>
         {!schedules.data?.length ? <Empty>No recurring scans. Continuous monitoring needs at least one schedule.</Empty> : (
           <table className="data">
-            <thead><tr><th>Name</th><th>Organization</th><th>Cron</th><th>Next run</th><th>Last run</th><th>State</th><th /></tr></thead>
+            <thead><tr><th>Name</th><th>Organization</th><th>Runs</th><th>Next run</th><th>Last run</th><th>State</th><th /></tr></thead>
             <tbody>{schedules.data.map((s) => (
               <tr key={s.id}>
                 <td>{s.name}</td><td>{orgName(s.organization_id)}</td>
-                <td className="mono small">{s.cron} <span className="muted">({s.timezone})</span></td>
+                <td className="small">{s.description || s.cron} <span className="muted">({s.timezone})</span></td>
                 <td className="small">{fmtDate(s.next_run_at)}</td><td className="small">{fmtDate(s.last_run_at)}</td>
                 <td><StatusBadge value={s.enabled ? "active" : "inactive"} /></td>
                 <td>{can("schedules:write") && <div className="btn-group">
