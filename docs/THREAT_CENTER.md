@@ -209,3 +209,19 @@ tenant's match or check-run id returns 404. See `tests/backend/test_threat_cente
   finding on the web endpoint while the match is on the service) confirms the endpoint's
   row, not the service's.
 - No automatic advisory authoring or feed import; curation is manual by design.
+
+## Measured cost
+
+Measured on the development workstation (Windows 11, PostgreSQL 18 in WSL, Python 3.13), one
+synthetic organization with 5 000 hostnames, 1 000 IPs, 3 000 ports and 5 000 web endpoints
+(≈ 23 000 relationships), one advisory matching `nginx` in a version range, 23 September 2026:
+
+| Operation | Time | Python peak memory |
+|---|---|---|
+| Read and match 10 000 product observations (no writes) | 0.8 s | 16 MB |
+| First evaluation: 5 000 match rows written, 2 500 potentially affected, 1 event | 5.1 s | 52 MB |
+| Re-evaluation of the same inventory: 0 new matches, still 1 event | 1.6 s | 44 MB |
+
+This runs in the background (scan finalization or the Celery worker), never in a request.
+It grows linearly with matched assets and is capped per advisory and organization (above).
+Not measured: many advisories at once, concurrent evaluations, a production-sized database.

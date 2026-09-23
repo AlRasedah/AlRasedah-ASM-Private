@@ -1,12 +1,12 @@
 # 9. Testing
 
 ```bash
-pytest -q                                   # 342 backend + sensor tests, ~82 s
-cd frontend && npm test && npm run typecheck  # 35 UI tests, ~9 s
+pytest -q                                   # 473 backend + sensor tests, ~3 min
+cd frontend && npm test && npm run typecheck  # 56 UI tests, ~20 s
 cd backend && ruff check app ../workers/asm_sensors
 ```
 
-Two of the 342 are the broker-isolation integration tests; they skip unless a Valkey/Redis
+Two of the 473 are the broker-isolation integration tests; they skip unless a Valkey/Redis
 is reachable (§9.6). `ASM_TEST_ADMIN_URL` is a **psycopg** DSN
 (`postgresql://postgres:postgres@127.0.0.1:55432/postgres`), not a SQLAlchemy URL — a
 `postgresql+psycopg://` value fails to connect and every database test silently *skips*
@@ -80,6 +80,17 @@ each of these is the regression test for a defect that reached a real environmen
 | `tests/sensors/test_identity.py` | unit | no product header unless `ASM_SCANNER_IDENTITY` is set, neutral user agent, CRLF refused in either |
 | `tests/backend/test_target_ports.py` | unit/DB | `host:port` is accepted where a scan is limited to targets (IPv6 still parses as an address, a bad port is still refused, scope still applies), the named port is probed even though the sweep would not reach it, and the host's other ports are left out of the crawl and the attack |
 | `tests/backend/test_cli_admin.py` | DB | `create-admin` refuses a tenant name that does not exist (and suggests the near match) instead of silently creating an empty tenant; first-run bootstrap still works; an existing account keeps the tenant it signs in to and the operator is told (chapter 11.11) |
+
+Added with the Threat Center, website screenshots and the exposure map (chapter 11.15):
+
+| File | Kind | Guards |
+|---|---|---|
+| `tests/backend/test_threat_matching.py` | unit | the version rule (ordering, unparseable = unknown), range semantics, strongest verdict per asset, the assessment order (a product match is never confirmed; third-party stays unverified; failed checks are inconclusive), advisory content refusing commands/templates/download fields, credentialed or non-http references and odd check keys |
+| `tests/backend/test_threat_center.py` | DB/API | catalog is platform-admin only; drafts invisible and the catalog unwritable from tenant sessions (RLS); inventory matches never confirmed; versions outside/unknown; verified findings confirm, Shodan reports do not; repeated evaluation creates no duplicate matches or events; a check runs through `create_scan` with the internal profile, only the approved detection, only the selected endpoint; a second click is a 409; "not detected" is labelled not-proof and changes no remediation; crashed or timed-out checks are inconclusive and close nothing; scope without active permission refuses the check; remediation separate from assessment; two tenants with the same asset names see only their own matches, counts, check runs and export, and guessed ids are 404 |
+| `tests/sensors/test_screenshot.py` | unit (local HTTP + stand-in browser) | address rules incl. IPv4-in-IPv6 and metadata in lab mode; the proxy pins each connection and survives DNS rebinding; ports, schemes, exclusions, response and connection limits; blocked subresources never reach the origin; redirect limits and blocked redirects without leaking query strings; sandbox/no-image/not-PNG/too-big failures; non-pages never start a browser; a hung page and a cancelled job kill the browser and close the proxy; one browser per pool; fresh, deleted profiles; runner egress refusal; stale-browser reaper; vendor background services refused and one feature-flag list |
+| `tests/backend/test_screenshots.py` | DB/API | off until platform and tenant enable it (reasons shown); policy bounds; end-to-end through the sealed job; only web endpoints in authorized scope, re-checked at dispatch; failures never remove the previous image; retention keeps two and deletes objects; storage quota; daily/queue limits and reuse of an active capture; eight concurrent dispatchers on eight connections reserve exactly one slot, with fairness; the watchdog frees lost slots; result binding (job id, tenant, pool, adapter, replay); cross-tenant image/cancel/delete/request are 404; organization deletion removes images; weekly schedule; not a scan stage; cancel revokes and refuses late results |
+| `tests/backend/test_exposure_map.py` | DB/API | the chain and edge metadata with no engine names; depth/node/edge bounds and validation; time budget → partial map; a 600-subdomain node is capped at 25 with "+575" and expands to 100; cycles terminate; current/stale/inactive/historical/unverified distinguished; tenant and organization boundaries (404); cache keys carry tenant and role |
+| `frontend/src/test/features.test.tsx` | UI | per-role actions (viewer vs analyst vs tenant admin vs platform admin), the 409 explanation, "not proof of safety", empty/error states, inventory-only advisories, tenant switching refetch; screenshots: blob-fetched image through the asset-scoped endpoint, disabled feature explained, queued/running/failed/blocked states with the old image kept, settings cards; exposure map: line explanations, third-party/inactive/hidden marks, expansion request, partial/empty/error states, filters refetch |
 
 ## 9.4 Writing tests
 

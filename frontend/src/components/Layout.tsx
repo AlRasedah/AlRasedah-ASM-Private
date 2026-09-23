@@ -1,7 +1,7 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
-  Activity, AppWindow, BookOpen, Boxes, Building2, FileText, Gauge, Globe2, LogOut, Megaphone, Plug, Radar, ScrollText, Settings,
+  Activity, AppWindow, BookOpen, Boxes, Building2, FileText, Gauge, Globe2, LogOut, Megaphone, Network, Plug, Radar, ScrollText, Settings,
   ShieldAlert, Siren, SlidersHorizontal, Users, Workflow,
 } from "lucide-react";
 import { useAuth } from "@/auth/AuthContext";
@@ -55,6 +55,7 @@ export default function Layout() {
           <Nav to="/findings" icon={ShieldAlert}>Findings</Nav>
           <Nav to="/threats" icon={Megaphone}>Threat Center</Nav>
           <Nav to="/web-apps" icon={AppWindow}>Web apps</Nav>
+          <Nav to="/exposure-map" icon={Network}>Exposure map</Nav>
           <Nav to="/changes" icon={Activity} count={unacked?.total}>Changes</Nav>
           <Nav to="/scans" icon={Workflow}>Scans</Nav>
           <Nav to="/reports" icon={FileText}>Reports</Nav>

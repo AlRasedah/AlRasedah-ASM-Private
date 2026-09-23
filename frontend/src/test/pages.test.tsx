@@ -44,6 +44,7 @@ const pages: [string, string | RegExp][] = [
   ["/threats", "Example VPN pre-auth RCE"],
   ["/threats/adv1", "Checked — not detected"],
   ["/threats/catalog", "Advisory catalog"],
+  ["/exposure-map", "The map shows one organization at a time."],
   ["/changes", "Attack surface changes"],
   ["/scans", "Standard ASM"],
   ["/scans/s1", "Pipeline"],

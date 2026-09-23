@@ -358,7 +358,40 @@ seed with redirects followed, assert the baseline is a `200`, and consider ZAP's
 management instead of a Replacer header. Also noticed: `attack_strength` in `ZapActiveConfig`
 is accepted and never applied to the daemon.
 
-## 11.15 Recommended next steps
+## 11.15 Threat Center, website screenshots, exposure map (23 September 2026)
+
+Built on the audit-fix branch (after F1–F8), in that order, as three reviewable commits.
+Product docs: [THREAT_CENTER.md](../THREAT_CENTER.md), [SCREENSHOTS.md](../SCREENSHOTS.md),
+[EXPOSURE_MAP.md](../EXPOSURE_MAP.md); decisions ADR-026–028.
+
+**What reused what.** Threat Center checks are ordinary scans (`create_scan` with an internal
+profile and a `stages` override that only internal profiles accept), so scope, quotas,
+concurrency, pools and coverage needed no new code. Screenshots are ordinary sealed sensor
+jobs in the tenant's pool with their own binding in `asm-ingest`. The exposure map reads
+`asset_relationships` and findings; no graph store.
+
+**Problems met.**
+
+| Problem | Cause | Fix |
+|---|---|---|
+| Real Chrome contacted Google services during captures (`update.googleapis.com`, `accounts.google.com`, `clients2.google.com`, …) | branded-browser background features ignore the usual switches; a second `--disable-features` *replaces* the first | one merged feature list; the egress proxy refuses known vendor-service hosts; the proxy records every allowed host and the measurement script prints them. `www.google.com`/`www.gstatic.com` remain (pages use them too) |
+| `docker compose config` rejected the screenshot override | Compose appends `security_opt` and `deploy` limits from override files | the override adds only the seccomp profile, `shm_size` and a PID limit; the base file's `no-new-privileges` and 2 GB cap stay |
+| A parsed version `-1` | the tokenizer skipped the sign | a version must start with a digit, as documented |
+| Exposure map reported hidden neighbours on a cycle | an edge drawn from its other end was not counted as shown | count every drawn edge for both anchors (regression: `test_cycles_terminate_…`) |
+| Changing a map filter blanked the map | the query had no placeholder data | `keepPreviousData` |
+| Catalog edits landing in a tenant's audit chain | `audit.record(tenant_id=None)` falls back to the request's tenant | `platform=True` writes to the platform chain |
+
+**Verification status.**
+
+| Area | Verified | Not verified |
+|---|---|---|
+| All three features' logic, RLS, isolation, bounds | 473 backend/sensor tests (471 + the 2 broker tests) on PostgreSQL 18 with a non-superuser, non-BYPASSRLS role; 56 UI tests; broker ACL tests on Valkey | — |
+| Screenshot browser flags, sandbox, destination refusals | real Google Chrome 153 on Windows 11 through the real adapter and proxy against a local fixture (`measure_screenshots.py`, `browser-selftest` equivalent) | Alpine Chromium in the scanner image; the derived seccomp profile and user namespaces on a Linux host; `setpriv` parent-death behaviour; the reaper on a real `/proc` |
+| Migrations | upgrade → downgrade 0007 → upgrade → downgrade 0006 → upgrade | on a production-sized database |
+| Resource use | Windows lab numbers for captures; synthetic 5 000-host org for evaluation and the map | the deployed image, broker queue delay, S3 latency, concurrency |
+| Threat Center checks | through the pipeline with recorded engine output | the detection engine's `-id` filter at the pinned version with real templates |
+
+## 11.16 Recommended next steps
 
 1. Work through the manual pass in [chapter 9.8](09-testing.md#98-the-manual-pass) on a
    deployed stack — that is the only verification left that matters, and §11.4 says exactly

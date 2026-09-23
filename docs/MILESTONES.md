@@ -68,7 +68,15 @@ categories — but the total and the integration count are exact.
    standing between the current state and a release.
 2. **Wildcard DNS handling**: detect wildcard zones before ingesting brute-forced/passive
    names. (Unrelated to `*.example.com` *scope entries*, which are supported.)
-3. **Screenshots** of web endpoints (httpx headless) — schema slot exists (`meta`), UI tab planned.
+3. **Website screenshots** — implemented (SCREENSHOTS.md), off by default. Open: build the
+   scanner image with the pinned Chromium, derive the seccomp profile and pass
+   `browser-selftest` on the target hosts, then measure with `measure_screenshots.py` on that
+   image; only Windows/Chrome 153 lab numbers exist so far.
+3a. **Threat Center** (THREAT_CENTER.md) and **exposure map** (EXPOSURE_MAP.md) — implemented.
+   Open: curate the first advisories and approved checks against the deployed detection
+   template set (the `-id` filter's behaviour at the pinned engine version is unverified here).
+3b. **Attack-path analysis** — deliberately not built. Needs authoritative cloud, identity and
+   internal-network evidence (EXPOSURE_MAP.md, "Future phase").
 4. **SSO**: SAML/OIDC (Entra ID, Google Workspace) using `users.auth_provider/external_id`.
 5. **Custom roles** backed by a `roles` table using the existing `Permission` vocabulary.
 6. **Jira / ServiceNow** ticketing channels — the adapters exist with `implemented = False`,

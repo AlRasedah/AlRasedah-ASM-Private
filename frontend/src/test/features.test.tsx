@@ -224,3 +224,64 @@ describe("Website screenshots", () => {
     expect(await screen.findByText("Website screenshots — platform")).toBeTruthy();
   });
 });
+
+describe("Exposure map", () => {
+  beforeEach(() => { try { localStorage.setItem("asm.org", "o1"); } catch { /* ignore */ } });
+  afterEach(() => { try { localStorage.removeItem("asm.org"); } catch { /* ignore */ } });
+
+  it("draws observed relationships, explains each line, and says it is not an attack path", async () => {
+    renderAt("/exposure-map");
+    expect(await screen.findByText(/A line never means one asset can be used to reach another/)).toBeTruthy();
+    expect(screen.getByText(/Full attack-path analysis/)).toBeTruthy();
+    const svg = screen.getByRole("img", { name: "Exposure map" });
+    expect(svg.querySelectorAll("g[role=button]").length).toBe(7);
+    // a stale DNS answer: click its line
+    const stale = svg.querySelector("g[data-relation=resolves_to][data-freshness=stale]");
+    fireEvent.click(stale!);
+    expect(await screen.findByText("resolves_to meaning")).toBeTruthy();
+    expect(screen.getByText(/Not observed for more than 14 days/)).toBeTruthy();
+    // the derived naming relation says it is not a connection
+    const derived = svg.querySelector("g[data-relation=subdomain_of]");
+    fireEvent.click(derived!);
+    expect(await screen.findByText(/not a network connection/)).toBeTruthy();
+    expect(screen.getByText("derived by the platform")).toBeTruthy();
+  });
+
+  it("third-party, inactive and hidden neighbours are marked; a node expands through the API", async () => {
+    const calls = serve(() => undefined);
+    renderAt("/exposure-map");
+    await screen.findByRole("img", { name: "Exposure map" });
+    expect(screen.getByRole("button", { name: /port 198.51.100.7:10443\/tcp/ }).textContent).toMatch(/third-party record/);
+    expect(screen.getByRole("button", { name: /ip_address 198.51.100.99/ }).textContent).toMatch(/no longer observed/);
+    const root = screen.getByRole("button", { name: /root_domain example.com/ });
+    expect(root.textContent).toMatch(/\+40/);
+    fireEvent.click(root);
+    expect(await screen.findByText(/Not shown: 40 × subdomain of/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Expand/ }));
+    await waitFor(() => expect(calls.some((c) => c.path === "/exposure-map" && c.query?.expand === "x1" && c.query?.per_node === 100)).toBe(true));
+  });
+
+  it("partial maps, empty maps and errors say so", async () => {
+    serve((p) => (p === "/exposure-map" ? { ...(mockApi(p) as object), truncated: true, truncation_reasons: ["node limit reached"] } : undefined));
+    renderAt("/exposure-map");
+    expect(await screen.findByText(/Partial map: node limit reached/)).toBeTruthy();
+    cleanup();
+    serve((p) => (p === "/exposure-map" ? { ...(mockApi(p) as object), nodes: [(mockApi(p) as { nodes: unknown[] }).nodes[0]], edges: [] } : undefined));
+    renderAt("/exposure-map");
+    expect(await screen.findByText(/No recorded relationships here yet/)).toBeTruthy();
+    cleanup();
+    serve((p) => (p === "/exposure-map" ? new ApiError(404, "not_found", "Asset not found") : undefined));
+    renderAt("/exposure-map");
+    expect(await screen.findByText("Asset not found")).toBeTruthy();
+  });
+
+  it("filters refetch with the new bounds", async () => {
+    const calls = serve(() => undefined);
+    renderAt("/exposure-map");
+    await screen.findByRole("img", { name: "Exposure map" });
+    fireEvent.change(screen.getByLabelText("Depth"), { target: { value: "3" } });
+    fireEvent.click(await screen.findByRole("checkbox", { name: /No longer observed/ }));
+    await waitFor(() => expect(calls.some((c) => c.path === "/exposure-map" && c.query?.depth === 3 && c.query?.include_inactive === true)).toBe(true));
+    expect(calls.filter((c) => c.path === "/exposure-map").every((c) => c.query?.organization_id === "o1")).toBe(true);
+  });
+});

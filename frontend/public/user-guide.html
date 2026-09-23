@@ -180,6 +180,7 @@
     <a href="#dast">12. Web app testing (DAST)</a>
     <a href="#threats">12a. Threat Center</a>
     <a href="#screenshots">12b. Website screenshots</a>
+    <a href="#exposure">12c. Exposure map</a>
     <div class="toc-group">Reporting &amp; config</div>
     <a href="#reports">13. Reports</a>
     <a href="#integrations">14. Integrations &amp; notifications</a>
@@ -564,6 +565,20 @@
         <li>Tenant administrators turn screenshots on under <b>Settings → Website screenshots</b> and choose on-request or weekly.
         If your platform has not enabled the capability yet, the page says so.</li>
         <li>Only the latest captures per endpoint are kept (two by default), within your tenant's storage quota.</li>
+      </ul>
+    </section>
+
+    <section id="exposure">
+      <h2>12c. Exposure map<a class="anchor" href="#exposure">#</a></h2>
+      <p>The <b>Exposure map</b> draws what your scans observed: domains, the addresses they resolve to, the ports and services on
+      those addresses, the web applications they serve, and the findings recorded on them. It shows one organization at a time,
+      starting from its domains or from any asset you pick (also available as a tab on each asset).</p>
+      <ul>
+        <li>Click a <b>line</b> to see what it means, which capability observed it, when, and whether it is current, stale,
+        no longer observed, or only reported by a third-party database.</li>
+        <li>Click a <b>node</b> for its details. A "+N" means more relationships exist; <b>Expand</b> loads them. Large maps are
+        trimmed and say so.</li>
+        <li>The map is <em>not</em> an attack-path analysis: a line never means one asset can be used to reach another.</li>
       </ul>
     </section>
 

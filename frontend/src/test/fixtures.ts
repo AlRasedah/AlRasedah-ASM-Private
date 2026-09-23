@@ -168,8 +168,44 @@ export const screenshotPolicy = { available: true, max_concurrent: 1, per_tenant
   retention_per_endpoint: 2, storage_quota_mb: 200, failed_retention_days: 30, timeout_seconds: 20, viewport_width: 1280,
   viewport_height: 800, max_image_kb: 2048 };
 
+const xnode = (id: string, type: string, labelText: string, depth: number, extra: Record<string, unknown> = {}) => ({
+  id, kind: "asset", type, label: labelText, status: "active", scope_status: "in_scope", risk_score: 40, open_findings: 0,
+  first_seen: earlier, last_seen: now, depth, hidden: {}, third_party_only: false, ...extra,
+});
+const xedge = (id: string, source: string, target: string, relation: string, freshness: string, extra: Record<string, unknown> = {}) => ({
+  id, source, target, relation, meaning: `${relation} meaning`, active: freshness !== "inactive", evidence: "observed",
+  source_label: "DNS resolution", first_seen: earlier, last_seen: now, age_days: 0, freshness, ...extra,
+});
+
+export const exposureMap = {
+  organization: { id: "o1", name: "Example Corp" }, root_ids: ["x1"], expanded: null,
+  nodes: [
+    xnode("x1", "root_domain", "example.com", 0, { hidden: { subdomain_of: 40 } }),
+    xnode("x2", "subdomain", "vpn.example.com", 1),
+    xnode("x3", "ip_address", "198.51.100.7", 2, { scope_status: "derived" }),
+    xnode("x4", "port", "198.51.100.7:10443/tcp", 3, { third_party_only: true }),
+    xnode("x5", "http_endpoint", "https://vpn.example.com:10443", 2),
+    xnode("x6", "ip_address", "198.51.100.99", 2, { status: "inactive" }),
+    { id: "f:f1", kind: "finding", finding_id: "f1", type: "finding", label: "Fortinet FortiOS - Path Traversal", severity: "critical",
+      status: "new", unverified: false, risk_score: 95, first_seen: earlier, last_seen: now, depth: 3, hidden: {} },
+  ],
+  edges: [
+    xedge("e1", "x2", "x1", "subdomain_of", "current", { evidence: "derived", source_label: "Platform (from names)",
+      meaning: "Naming: this host name is under the domain. Derived from the names, not a network connection." }),
+    xedge("e2", "x2", "x3", "resolves_to", "stale", { age_days: 40 }),
+    xedge("e3", "x3", "x4", "has_port", "historical", { source_label: "Internet exposure intelligence" }),
+    xedge("e4", "x2", "x5", "serves", "current"),
+    xedge("e5", "x2", "x6", "resolves_to", "inactive"),
+    xedge("hf:f1", "x5", "f:f1", "has_finding", "current", { source_label: "Vulnerability detection" }),
+  ],
+  truncated: false, truncation_reasons: [],
+  limits: { depth: 2, max_nodes: 150, max_edges: 450, per_node: 25, time_budget_ms: 4000 }, elapsed_ms: 12,
+  notice: "Observed relationships only. A line never means one asset can be used to reach another.",
+};
+
 export function mockApi(path: string): unknown {
   const routes: [RegExp, unknown][] = [
+    [/^\/exposure-map$/, exposureMap],
     [/^\/screenshots\/status$/, screenshotStatus],
     [/^\/assets\/[^/]+\/screenshots$/, { status: screenshotStatus, latest: capture("sc1", "succeeded"), captures: [capture("sc1", "succeeded")] }],
     [/^\/settings\/screenshots$/, { policy: screenshotPolicy, defaults: screenshotPolicy,

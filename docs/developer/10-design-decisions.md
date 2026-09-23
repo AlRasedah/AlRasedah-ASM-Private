@@ -280,3 +280,20 @@ browser download, unsandboxed as root, no per-connection control); a shared scre
 (one compromise would see every tenant's targets and could forge their images); Playwright or
 a CDP client (a large dependency for one screenshot); `--no-sandbox` in a locked-down
 container (rejected by requirement).
+
+## ADR-028 Exposure map: observed relationships, bounded in the database, never paths
+**Decision**: the map is built from `asset_relationships` and findings only, per request,
+inside the caller's tenant session and one organization, with PostgreSQL doing the bounding
+(per-node window ranking, counts for what was left out, a statement timeout) and the service
+enforcing depth, node/edge caps and a time budget. Edges carry their meaning, whether they
+were observed or derived from names, the capability label of their source, first/last seen
+and a freshness class. Context relationships (technology, certificate, hosting) are off by
+default.
+**Consequences**: no graph database and no precomputed graph to keep consistent; one request
+costs at most depth × two bounded queries plus findings. High-degree nodes stay usable
+through counts and explicit expansion. The map cannot answer "can an attacker get from A to
+B", and says so.
+**Alternatives**: a graph database (new infrastructure, a second copy of the data to keep in
+step and isolate); recursive CTEs over the whole organization (unbounded fan-out before any
+cap applies); inferring paths from shared IPs/certificates/providers (rejected: presents
+coincidence as exploitability).

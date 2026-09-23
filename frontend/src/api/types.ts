@@ -640,3 +640,53 @@ export interface ScreenshotPolicy {
   viewport_height: number;
   max_image_kb: number;
 }
+
+// ------------------------------------------------------------------ Exposure map
+export interface ExposureNode {
+  id: string;
+  kind: "asset" | "finding";
+  type: string;
+  label: string;
+  status: string;
+  scope_status?: string;
+  risk_score?: number;
+  open_findings?: number;
+  severity?: string;
+  unverified?: boolean;
+  finding_id?: string;
+  third_party_only?: boolean;
+  first_seen: string;
+  last_seen: string;
+  depth: number;
+  hidden: Record<string, number>;
+  more_beyond_depth?: boolean;
+}
+
+export interface ExposureEdge {
+  id: string;
+  source: string;
+  target: string;
+  relation: string;
+  meaning: string;
+  active: boolean;
+  evidence: string;
+  source_label: string;
+  first_seen: string;
+  last_seen: string;
+  age_days: number;
+  freshness: "current" | "stale" | "inactive" | "historical" | "unverified";
+}
+
+export interface ExposureMap {
+  organization: { id: string; name: string };
+  root_ids: string[];
+  expanded: string | null;
+  nodes: ExposureNode[];
+  edges: ExposureEdge[];
+  truncated: boolean;
+  truncation_reasons: string[];
+  limits: { depth: number; max_nodes: number; max_edges: number; per_node: number; time_budget_ms: number };
+  elapsed_ms: number;
+  notice: string;
+  cached?: boolean;
+}

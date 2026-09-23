@@ -70,7 +70,8 @@ def env(db_clean, factory, monkeypatch):
     badmin = factory.user(tb.id, role="tenant_admin", password=PW)
     with TestClient(app) as c:
         def login(u):
-            return {"Authorization": f"Bearer {c.post('/api/v1/auth/login', json={'email': u.email, 'password': PW}).json()['access_token']}"}
+            token = c.post("/api/v1/auth/login", json={"email": u.email, "password": PW}).json()["access_token"]
+            return {"Authorization": f"Bearer {token}"}
 
         yield {"c": c, "browser": browser, "ta": ta, "tb": tb, "root": login(root), "analyst": login(analyst),
                "viewer": login(viewer), "bravo": login(badmin)}
@@ -269,7 +270,8 @@ def _queue(system_db, tenant, org_id, asset_id, n, minutes_ago=10):
 def _asset(system_db, tenant_id):
     from app.models import Asset
 
-    a = system_db.execute(select(Asset).where(Asset.tenant_id == tenant_id, Asset.asset_type == "http_endpoint")).scalars().first()
+    a = system_db.execute(select(Asset).where(Asset.tenant_id == tenant_id,
+                                              Asset.asset_type == "http_endpoint")).scalars().first()
     return a.organization_id, a.id
 
 

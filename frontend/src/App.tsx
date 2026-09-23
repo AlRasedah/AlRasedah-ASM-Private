@@ -18,6 +18,7 @@ const WebApps = lazy(() => import("@/pages/WebApps"));
 const ThreatCenter = lazy(() => import("@/threats/ThreatCenter"));
 const ThreatDetail = lazy(() => import("@/threats/ThreatDetail"));
 const ThreatCatalog = lazy(() => import("@/threats/ThreatCatalog"));
+const ExposureMapPage = lazy(() => import("@/exposure/ExposureMapPage"));
 const Changes = lazy(() => import("@/pages/Changes"));
 const Scans = lazy(() => import("@/scans/Scans"));
 const ScanDetail = lazy(() => import("@/scans/ScanDetail"));
@@ -58,6 +59,7 @@ export default function App() {
         <Route path="threats" element={page(<ThreatCenter />)} />
         <Route path="threats/catalog" element={page(<ThreatCatalog />)} />
         <Route path="threats/:id" element={page(<ThreatDetail />)} />
+        <Route path="exposure-map" element={page(<ExposureMapPage />)} />
         <Route path="changes" element={page(<Changes />)} />
         <Route path="scans" element={page(<Scans />)} />
         <Route path="scans/:id" element={page(<ScanDetail />)} />
