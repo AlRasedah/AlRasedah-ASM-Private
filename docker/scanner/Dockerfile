@@ -47,7 +47,7 @@ RUN apk add --no-cache libpcap ca-certificates tini bind-tools \
       fi; \
       # Alpine keeps only the newest build of a package, so an old pin stops resolving when
       # the repository moves on; say so instead of carrying on without a browser.
-      apk add --no-cache "chromium=${CHROMIUM_VERSION}" font-noto font-noto-arabic util-linux-misc \
+      apk add --no-cache "chromium=${CHROMIUM_VERSION}" font-noto font-noto-arabic setpriv \
         || { echo "chromium=${CHROMIUM_VERSION} cannot be installed; the repository offers:" >&2; \
              apk --no-cache policy chromium >&2; \
              echo "set ASM_CHROMIUM_VERSION in .env to that version (docs/DEPLOYMENT.md section 5b)" >&2; \
@@ -56,6 +56,9 @@ RUN apk add --no-cache libpcap ca-certificates tini bind-tools \
       # finds either. Fail the build here rather than at the first capture if neither exists.
       command -v chromium >/dev/null || command -v chromium-browser >/dev/null \
         || { echo "chromium was installed but provides neither chromium nor chromium-browser" >&2; exit 1; }; \
+      # util-linux setpriv ties the browser to its worker; BusyBox's applet cannot (no --pdeathsig).
+      setpriv --help 2>&1 | grep -q -- --pdeathsig \
+        || { echo "setpriv without --pdeathsig: the util-linux setpriv package did not replace BusyBox's" >&2; exit 1; }; \
     fi \
  && addgroup -S -g 10002 sensor && adduser -S -D -H -u 10002 -G sensor -h /data/home -s /sbin/nologin sensor
 

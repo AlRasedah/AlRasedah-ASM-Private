@@ -220,6 +220,8 @@ measurements: [SCREENSHOTS.md](SCREENSHOTS.md).
    ```
    `"ok": true` means the pinned browser started **with its sandbox** and produced an image.
    "sandbox is unavailable" means steps 1–2 are not in effect.
+   `"dies_with_worker": true` means util-linux `setpriv` is in the image, so a browser cannot
+   outlive a killed worker (BusyBox's `setpriv` cannot do this and is not used).
 5. **Measure** on the deployed image (optional, recommended before raising limits):
    `... run --rm asm-scanner python /opt/asm/measure_screenshots.py --runs 10`. It also lists
    every external destination the browser contacted.
