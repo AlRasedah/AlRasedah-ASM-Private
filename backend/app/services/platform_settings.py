@@ -49,12 +49,15 @@ def email_status(db: Session) -> dict[str, Any]:
     return {
         "configured": bool(stored.get("host") or env.smtp_host),
         "source": "platform_settings" if stored.get("host") else ("environment" if env.smtp_host else "none"),
-        "host": stored.get("host") or env.smtp_host,
-        "port": stored.get("port") or env.smtp_port,
+        # A saved mail server replaces the environment entirely (see mailer.send_email),
+        # so what is shown here is what will actually be used — including a cleared
+        # password, which must not silently fall back to ASM_SMTP_PASSWORD.
+        "host": stored.get("host") if stored else env.smtp_host,
+        "port": stored.get("port") if stored else env.smtp_port,
         "username": stored.get("username") if stored else env.smtp_username,
-        "sender": stored.get("sender") or env.smtp_from,
-        "starttls": stored.get("starttls", env.smtp_starttls),
-        "ssl": stored.get("ssl", env.smtp_ssl),
+        "sender": stored.get("sender") if stored else env.smtp_from,
+        "starttls": stored.get("starttls") if stored else env.smtp_starttls,
+        "ssl": stored.get("ssl") if stored else env.smtp_ssl,
         "has_password": bool(stored.get("password")) if stored else bool(env.smtp_password),
         "editable": True,
     }

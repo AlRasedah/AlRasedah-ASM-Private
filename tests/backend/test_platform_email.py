@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 from sqlalchemy import select
 
 from app.db.session import new_session, system_session
@@ -203,3 +204,123 @@ class TestPersonalAlerts:
             assert row.tenant_id == tenant.id and row.enabled is False
         with new_session(uuid.uuid4()) as db:  # another tenant's session sees nothing (RLS)
             assert db.scalars(select(UserAlertPreference)).all() == []
+
+
+class TestPersonalAlertsSurviveAnOutage:
+    """Review finding F5: a momentary SMTP failure must not lose a high-severity alert.
+
+    Events are marked notified before delivery. Integration deliveries each had a
+    durable row with attempts and back-off; personal mail had none, so a failure was
+    counted in a statistic and forgotten — `retry_failed` had nothing to find and the
+    delivery log could not show it.
+    """
+
+    def _event(self, db, tenant_id, org_id):
+        from datetime import UTC, datetime
+
+        from app.models import AssetEvent
+        from app.models.enums import EventType, Severity
+
+        ev = AssetEvent(tenant_id=tenant_id, organization_id=org_id, event_type=EventType.PORT_OPENED,
+                        severity=Severity.CRITICAL, title="New externally exposed service", details={},
+                        occurred_at=datetime.now(UTC), is_baseline=False, notified=False)
+        db.add(ev)
+        db.flush()
+        return ev
+
+    def test_a_failed_personal_alert_is_recorded_and_retried(self, db_clean, factory, monkeypatch):
+        from sqlalchemy import select
+
+        from app.db.session import new_session, system_session
+        from app.integrations import notifications
+        from app.models import NotificationDelivery
+        from app.models.enums import DeliveryStatus
+
+        tenant = factory.tenant()
+        user = factory.user(tenant.id)
+        org = factory.org(tenant.id, domains=("example.com",))
+        with new_session(tenant.id) as db:
+            self._event(db, tenant.id, org.id)
+            db.commit()
+
+        outage = {"failing": True}
+
+        def flaky(to, subject, text, html=None, smtp_override=None):
+            if outage["failing"]:
+                raise TimeoutError("smtp timed out")
+            sent.append(to)
+
+        sent: list[list[str]] = []
+        monkeypatch.setattr(notifications, "send_email", flaky)
+
+        with system_session() as db:
+            stats = notifications.dispatch_pending(db)
+        assert stats["personal_failed"] == 1
+
+        with new_session(tenant.id) as db:
+            rows = list(db.execute(select(NotificationDelivery).where(
+                NotificationDelivery.recipient_user_id == user.id)).scalars())
+            assert len(rows) == 1 and rows[0].status == DeliveryStatus.FAILED
+            assert "TimeoutError" in (rows[0].last_error or "")
+            # back-off: the row is retryable, and the event is not re-evaluated
+            rows[0].created_at = rows[0].created_at.replace(year=rows[0].created_at.year - 1)
+            db.commit()
+
+        outage["failing"] = False
+        with system_session() as db:
+            assert notifications.dispatch_pending(db)["events"] == 0, "the event was already evaluated"
+            assert notifications.retry_failed(db) == 1
+
+        assert sent == [[user.email]]
+        with new_session(tenant.id) as db:
+            row = db.scalar(select(NotificationDelivery).where(NotificationDelivery.recipient_user_id == user.id))
+            assert row.status == DeliveryStatus.SENT and row.attempts == 2
+
+
+class TestClearingTheStoredPassword:
+    """Review finding F7: a saved mail server must not inherit the environment password.
+
+    The mailer started from ASM_SMTP_* and overlaid only non-null stored values, so a
+    cleared password was *absent* rather than empty and the environment password
+    survived — and was then offered to whichever server the administrator had just
+    chosen, while the status screen said no password was set.
+    """
+
+    def _save(self, host: str, *, password: str | None = None, clear: bool = False):
+        from app.services import platform_settings
+
+        with system_session() as db:
+            platform_settings.set_email(db, {"host": host, "port": 587, "username": "postmaster",
+                                             "sender": "asm@example.com", "starttls": True, "ssl": False},
+                                        password=password, clear_password=clear)
+            db.commit()
+
+    def test_a_cleared_password_is_not_taken_from_the_environment(self, db_clean, smtp, monkeypatch):
+        from app.core.config import get_settings
+        from app.services import platform_settings
+
+        env = get_settings()
+        monkeypatch.setattr(env, "smtp_host", "old-server.example.com")
+        monkeypatch.setattr(env, "smtp_username", "old-user")
+        monkeypatch.setattr(env, "smtp_password", SecretStr("env-password"))
+        self._save("new-server.example.com", password="stored-password")
+        self._save("new-server.example.com", clear=True)  # the administrator clears it
+
+        send_email(["someone@example.com"], "s", "b")
+        sent = smtp.sent[-1]
+        assert sent["host"] == "new-server.example.com"
+        assert sent["login"] is None, "the environment password must not reach the new server"
+        with system_session() as db:
+            assert platform_settings.email_status(db)["has_password"] is False
+
+    def test_the_environment_is_still_used_when_nothing_is_saved(self, db_clean, smtp, monkeypatch):
+        from app.core.config import get_settings
+
+        env = get_settings()
+        monkeypatch.setattr(env, "smtp_host", "env-server.example.com")
+        monkeypatch.setattr(env, "smtp_username", "env-user")
+        monkeypatch.setattr(env, "smtp_password", SecretStr("env-password"))
+        send_email(["someone@example.com"], "s", "b")
+        sent = smtp.sent[-1]
+        assert sent["host"] == "env-server.example.com"
+        assert sent["login"] == ("env-user", "env-password")

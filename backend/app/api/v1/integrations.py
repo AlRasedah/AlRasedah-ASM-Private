@@ -307,6 +307,8 @@ def providers(_: Principal = Depends(require(Permission.INTEGRATIONS_READ))) -> 
             used.setdefault(p, []).append(a["display_name"])
     out = []
     for key, engines in used.items():
+        if not provider_info.is_available(key):
+            continue  # a dead upstream: never offer a key that cannot return anything
         meta = provider_info.describe(key)
         out.append(ProviderOut(provider=key, used_by=sorted(set(engines)), label=meta["label"],
                                description=meta["description"], group=meta["group"],
@@ -360,6 +362,8 @@ def list_credentials(_: Principal = Depends(require(Permission.INTEGRATIONS_READ
 @router.put("/credentials/{provider}", response_model=CredentialOut, tags=["credentials"])
 def set_credential(provider: str, body: CredentialIn, principal: Principal = Depends(require(Permission.CREDENTIALS_WRITE)),
                    db: Session = Depends(get_db)) -> Secret:
+    if reason := provider_info.UNAVAILABLE.get(provider):
+        raise ValidationFailed(f"{provider_info.describe(provider)['label']} cannot be used: {reason}")
     known = {p.provider for p in providers(principal)}  # only providers an engine actually consumes
     if provider not in known:
         raise ValidationFailed(f"Unknown provider '{provider}'")

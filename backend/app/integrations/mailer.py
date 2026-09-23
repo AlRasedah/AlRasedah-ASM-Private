@@ -7,6 +7,7 @@ import smtplib
 import ssl
 from email.message import EmailMessage
 from email.utils import make_msgid
+from typing import Any
 
 from app.core.config import get_settings
 
@@ -34,12 +35,20 @@ def send_email(to: list[str], subject: str, text: str, html: str | None = None,
                smtp_override: dict | None = None) -> None:
     """Send one mail. Settings precedence: explicit override > platform settings > environment."""
     s = get_settings()
-    cfg = {
+    env = {
         "host": s.smtp_host, "port": s.smtp_port, "username": s.smtp_username,
         "password": s.smtp_password.get_secret_value() if s.smtp_password else None,
         "sender": s.smtp_from, "starttls": s.smtp_starttls, "ssl": s.smtp_ssl,
     }
-    cfg.update({k: v for k, v in _stored_settings().items() if v is not None})
+    stored = _stored_settings()
+    if stored.get("host"):
+        # A saved mail server is the whole configuration, not a patch over the
+        # environment. Overlaying would keep ASM_SMTP_PASSWORD after an administrator
+        # cleared the password — and send that password to the server they just chose.
+        cfg: dict[str, Any] = {k: None for k in env}
+        cfg.update(stored)  # host/port/sender/starttls/ssl are always saved together
+    else:
+        cfg = dict(env)
     cfg.update({k: v for k, v in (smtp_override or {}).items() if v is not None})
     if not cfg["host"]:
         raise MailNotConfigured("Email delivery is not configured. A platform administrator can set the mail "

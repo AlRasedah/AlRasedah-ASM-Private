@@ -51,10 +51,8 @@ PROVIDERS: dict[str, dict[str, Any]] = {
     "dnsrepo": {"group": "dns", "label": "DNSRepo", "description": "Passive DNS dataset.",
                 "key_format": "API key", "paid": True, "url": "https://dnsrepo.noc.org"},
     "facebook": {"group": "certificates", "label": "Facebook CT search",
-                 "description": "Facebook's certificate transparency search — a CT log index, nothing social. "
-                                "Needs a free Facebook developer app, not a Facebook page.",
-                 "key_format": "APP_ID:APP_SECRET", "paid": False,
-                 "url": "https://developers.facebook.com/docs/certificate-transparency-api"},
+                 "description": "Discontinued by Meta; kept only so an existing key can be removed.",
+                 "key_format": "APP_ID:APP_SECRET", "paid": False, "url": None},
     "fofa": {"group": "regional", "label": "FOFA", "description": "Chinese internet-scan search engine.",
              "key_format": "email:API key", "paid": True, "url": "https://fofa.info"},
     "fullhunt": {"group": "scan", "label": "FullHunt", "description": "Attack-surface database of hosts and subdomains.",
@@ -114,6 +112,19 @@ GROUPS = {
 
 # Providers Exteriq itself queries directly (beyond passing them to subfinder).
 NATIVE = {"shodan", "crtsh", "zap_auth"}
+
+# Sources that cannot return results any more, whatever key you hold: the upstream
+# service is gone. They stay listed here — and keep working if a key is already
+# stored — but are never offered for configuration, because "key saved, no data" is
+# the most expensive kind of integration to debug.
+UNAVAILABLE: dict[str, str] = {
+    "facebook": "Meta discontinued its certificate transparency API, so this source "
+                "returns nothing regardless of the credential.",
+}
+
+
+def is_available(provider: str) -> bool:
+    return provider not in UNAVAILABLE
 
 
 def describe(provider: str) -> dict[str, Any]:

@@ -26,6 +26,7 @@
 | `jobs.py` | `SensorJob` (the message the platform sends), task name `asm.sensors.run`, `ResultEnvelope`, per-pool HKDF keys, AES-GCM credential sealing bound to the job id and HMAC signing of results. |
 | `runner.py` | `execute_job`: build the `ExecutionContext` from job + deployment env, unseal credentials, apply the egress filter, run the adapter in a temp dir, turn every error into a *failed* `SensorResult` (a sensor never crashes the worker). |
 | `coordination.py` | The pool's `Coordinator`: job claims (a redelivered job is ignored) and leases for shared external daemons, so two scans never drive one ZAP instance at the same time. |
+| `logs.py` | Keeps credentials out of the worker's logs: silences routine HTTP request logging (the URL carries Shodan's key) and redacts known secret shapes from any record. |
 | `identity.py` | What the scanner looks like on the wire: `user_agent()` (neutral by default) and `identity_header()` (nothing unless `ASM_SCANNER_IDENTITY` is set). Scan traffic must not advertise the product — see ADR-022. |
 | `worker.py` | The Celery app for sensor containers (`celery -A asm_sensors.worker worker -Q scanners.default`); tasks are `shared=False` so a sensor worker knows only its own task. |
 | `adapters/_common.py` | `ObservationSet` (dedup while building observations), `clean_hostname/ip/cidr/asn`, `port_value`. |
@@ -111,6 +112,7 @@ tenants, profiles, audit log and private auth tables). `alembic/env.py` sets
 | `0004_unverified_findings` | `findings.unverified` — third-party CVE reports wait in their own view (ADR-020) |
 | `0005_platform_email` | `platform_settings` (encrypted SMTP password) and `user_alert_preferences` (ADR-021) |
 | `0006_scan_auth_secret` | `scans.auth_secret_encrypted` / `auth_header_name` — the per-scan session secret for authenticated DAST (ADR-023) |
+| `0007_personal_delivery_rows` | `notification_deliveries.recipient_user_id` — a personal alert gets a durable, retryable row like an integration delivery |
 
 ## `frontend/src`
 

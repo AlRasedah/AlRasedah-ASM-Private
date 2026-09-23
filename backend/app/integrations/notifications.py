@@ -147,16 +147,30 @@ def _deliver_personal(db: Session, tenant: Tenant | None, tenant_id: uuid.UUID, 
             continue
         batch = [payloads.get(ev.id) or event_payload(db, ev, tenant) for ev in mine]
         subject, body = email_message(batch)
+        # Recorded before the attempt, one row per event, exactly as an integration
+        # delivery is: a failure here must be retryable and visible, not lost with the
+        # event already marked notified.
+        deliveries = [NotificationDelivery(tenant_id=tenant_id, event_id=ev.id, recipient_user_id=user.id,
+                                           attempts=1) for ev in mine]
+        db.add_all(deliveries)
         try:
             send_email([user.email], subject, body)
+            for d in deliveries:
+                d.status, d.sent_at = DeliveryStatus.SENT, now
             stats["personal_sent"] += len(mine)
             if pref is not None:
                 pref.last_sent_at = now
-        except MailNotConfigured:
+        except MailNotConfigured as exc:
+            # No mail server at all: nothing to retry for anyone in this tenant, and a
+            # queue of doomed rows would only hide the real problem.
+            for d in deliveries:
+                d.status, d.last_error = DeliveryStatus.SKIPPED, str(exc)[:1000]
             stats["personal_skipped"] += len(mine)
             log.info("personal alerts for %s skipped: email delivery is not configured", tenant_id)
-            return  # no mail server: nothing to send for anyone in this tenant
+            return
         except Exception as exc:  # noqa: BLE001 - one bad address must not stop the rest
+            for d in deliveries:
+                d.status, d.last_error = DeliveryStatus.FAILED, f"{type(exc).__name__}: {exc}"[:1000]
             stats["personal_failed"] += len(mine)
             log.warning("personal alert delivery failed for a user in tenant %s: %s", tenant_id, type(exc).__name__)
 
@@ -228,9 +242,28 @@ def retry_failed(db: Session) -> int:
     for d in rows:
         if d.created_at + timedelta(minutes=2 ** d.attempts) > now:
             continue  # exponential back-off
-        integ = db.get(Integration, d.integration_id) if d.integration_id else None
         ev = db.get(AssetEvent, d.event_id) if d.event_id else None
-        if integ is None or ev is None or not integ.enabled:
+        if ev is None:
+            d.status = DeliveryStatus.SKIPPED
+            continue
+        if d.recipient_user_id is not None:  # a personal alert
+            user = db.get(User, d.recipient_user_id)
+            if user is None or not user.is_active:
+                d.status = DeliveryStatus.SKIPPED
+                continue
+            d.attempts += 1
+            subject, body = email_message([event_payload(db, ev, db.get(Tenant, ev.tenant_id))])
+            try:
+                send_email([user.email], subject, body)
+                d.status, d.sent_at, d.last_error = DeliveryStatus.SENT, now, None
+                retried += 1
+            except MailNotConfigured as exc:
+                d.status, d.last_error = DeliveryStatus.SKIPPED, str(exc)[:1000]
+            except Exception as exc:  # noqa: BLE001 - keep trying the other recipients
+                d.last_error = f"{type(exc).__name__}: {exc}"[:1000]
+            continue
+        integ = db.get(Integration, d.integration_id) if d.integration_id else None
+        if integ is None or not integ.enabled:
             d.status = DeliveryStatus.SKIPPED
             continue
         d.attempts += 1

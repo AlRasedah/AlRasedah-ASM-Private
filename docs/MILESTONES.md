@@ -56,7 +56,7 @@ demo data replay, CI pipeline.
 | tests/integration | 2 | broker trust boundary against a real Valkey with the compose ACL (skipped without one) |
 | frontend/src/test | 35 | every page renders with API data; asset tabs; authorization log |
 
-322 Python tests in total. The counts per group are approximate — several files span
+342 Python tests in total. The counts per group are approximate — several files span
 categories — but the total and the integration count are exact.
 
 ## Known gaps / next steps

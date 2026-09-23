@@ -230,7 +230,12 @@ def test_notifications_webhook_and_wazuh(ctx, monkeypatch, tmp_path):
     doc = json.loads(lines[0])
     assert doc["source"] == "exteriq-asm" and doc["severity"] in ("high", "critical") and doc["event_type"]
     deliveries = c.get("/api/v1/integrations/deliveries", headers=admin).json()
-    assert deliveries and all(d["status"] == "sent" for d in deliveries)
+    to_integrations = [d for d in deliveries if d["integration_id"]]
+    assert to_integrations and all(d["status"] == "sent" for d in to_integrations)
+    # Personal alerts are recorded too, so a failure is retryable rather than lost;
+    # this deployment has no mail server, so they are skipped rather than failed.
+    personal = [d for d in deliveries if not d["integration_id"]]
+    assert personal and all(d["status"] == "skipped" for d in personal)
 
 
 def test_wazuh_syslog_line_format():

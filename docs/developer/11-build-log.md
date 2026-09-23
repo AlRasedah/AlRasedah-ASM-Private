@@ -77,7 +77,7 @@ delivery endpoints — nothing below marked "not verified" has been exercised by
 | Area | How it was verified | Not verified |
 |---|---|---|
 | Sensor parsing/normalization | recorded output of each engine (fixtures written to match documented output formats) | real binaries at the pinned versions; exact CLI flags for Amass v4 (`-o`, `-dir`, `-nocolor`), BBOT 2.x output path, SpiderFoot 4 export endpoint, ZAP 2.15 API paths, a live Shodan key against a paid plan |
-| Pipeline, change detection, findings, risk | 322 automated tests on PostgreSQL 18 | behaviour at 50k+ assets (performance) |
+| Pipeline, change detection, findings, risk | 342 automated tests on PostgreSQL 18 | behaviour at 50k+ assets (performance) |
 | Tenant isolation | RLS tests for every tenant table and API cross-tenant tests | separate BYPASSRLS role hardening (documented, not implemented) |
 | Broker trust boundary (A01) | real Celery workers against a real Valkey 9 using the compose ACL (`tests/integration`) | the ACL under a multi-pool deployment (only `default` is exercised) |
 | Audit remediation (A01–A11) | a regression test per finding; the auditor's reproductions re-run | a re-audit by the reviewer |
