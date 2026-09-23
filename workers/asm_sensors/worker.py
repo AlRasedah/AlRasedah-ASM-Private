@@ -23,12 +23,16 @@ from celery import Celery
 from celery.exceptions import SoftTimeLimitExceeded
 from kombu import Queue
 
+from . import logs
 from .coordination import RedisCoordinator
 from .jobs import RESULT_TASK_NAME, TASK_NAME, SensorJob, job_queue, result_queue, seal_result, validate_pool
 from .observations import SensorResult
 from .runner import execute_job
 
 log = logging.getLogger(__name__)
+
+# Before any adapter builds an HTTP client: request URLs carry credentials.
+logs.configure()
 
 POOL = validate_pool(os.environ.get("ASM_SENSOR_POOL", "default"))
 QUEUE = job_queue(os.environ.get("ASM_SENSOR_QUEUE_PREFIX", "scanners"), POOL)

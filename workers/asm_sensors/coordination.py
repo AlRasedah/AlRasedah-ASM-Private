@@ -27,6 +27,10 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 
+class LeaseLost(RuntimeError):
+    """The lease stopped being ours while the work was still running."""
+
+
 class LeaseUnavailable(RuntimeError):
     """The resource stayed leased by another job for longer than we were willing to wait."""
 
@@ -48,11 +52,17 @@ class Coordinator(ABC):
     async def _release(self, name: str, token: str) -> None: ...
 
     @contextlib.asynccontextmanager
-    async def lease(self, name: str, *, ttl: int = 120, wait: float = 3600) -> AsyncIterator[None]:
+    async def lease(self, name: str, *, ttl: int = 120, wait: float = 3600) -> AsyncIterator[asyncio.Event]:
         """Hold ``name`` exclusively for the duration of the block.
 
         The lease expires ``ttl`` seconds after the holder stops renewing it (a
         crashed worker never blocks the resource for longer than that).
+
+        If renewal stops succeeding the lease is **lost**: another job may already
+        hold it, so the body must stop touching the resource. The event yielded here
+        is set, the body is cancelled, and the lease is not released — releasing it
+        would hand away a lock whose new owner is someone else. Callers check the
+        event before any cleanup that would disturb the resource.
         """
         token = secrets.token_hex(16)
         deadline = time.monotonic() + wait
@@ -61,19 +71,35 @@ class Coordinator(ABC):
                 raise LeaseUnavailable(f"{name} is in use by another job")
             await asyncio.sleep(self.poll_interval)
 
+        lost = asyncio.Event()
+        owner = asyncio.current_task()
+
         async def keepalive() -> None:
             while True:
                 await asyncio.sleep(max(ttl / 3, 0.05))
-                await self._renew(name, token, ttl)
+                try:
+                    held = await self._renew(name, token, ttl)
+                except Exception:  # noqa: BLE001 - a broker hiccup is a lost lease like any other
+                    held = False
+                if not held:
+                    lost.set()
+                    if owner is not None:
+                        owner.cancel()
+                    return
 
         renewer = asyncio.create_task(keepalive())
         try:
-            yield
+            yield lost
+        except asyncio.CancelledError:
+            if not lost.is_set():
+                raise
+            raise LeaseLost(f"the lease on {name} was lost to another job") from None
         finally:
             renewer.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await renewer
-            await self._release(name, token)
+            if not lost.is_set():
+                await self._release(name, token)
 
 
 class LocalCoordinator(Coordinator):

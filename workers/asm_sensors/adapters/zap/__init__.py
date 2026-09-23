@@ -69,7 +69,7 @@ import httpx
 from pydantic import AfterValidator, Field
 
 from ...base import AdapterConfig, ConfigurationError, ExecutionContext, RawOutput, ScannerAdapter, StageType
-from ...coordination import LeaseUnavailable
+from ...coordination import LeaseLost, LeaseUnavailable
 from ...identity import DEFAULT_USER_AGENT, user_agent
 from ...observations import (
     AssetRef,
@@ -247,8 +247,14 @@ class _ZapClient:
     async def __aexit__(self, *exc: object) -> None:
         await self._c.aclose()
 
-    async def call(self, component: str, kind: str, action: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        resp = await self._c.get(f"/JSON/{component}/{kind}/{action}/", params={k: str(v) for k, v in (params or {}).items()})
+    async def call(self, component: str, kind: str, action: str, params: dict[str, Any] | None = None,
+                   *, secret: bool = False) -> dict[str, Any]:
+        """One API call. ``secret=True`` sends the parameters as a form body instead of
+        a query string, so a credential among them never reaches a request log."""
+        path = f"/JSON/{component}/{kind}/{action}/"
+        values = {k: str(v) for k, v in (params or {}).items()}
+        resp = (await self._c.post(path, data=values) if secret
+                else await self._c.get(path, params=values))
         resp.raise_for_status()
         body = resp.json()
         return body if isinstance(body, dict) else {}
@@ -270,7 +276,7 @@ class _ZapClient:
         await self.call("replacer", "action", "addRule", {
             "description": description, "enabled": "true", "matchType": "REQ_HEADER",
             "matchString": header_name, "matchRegex": "false", "replacement": value,
-            "initiators": "", "url": url_regex})
+            "initiators": "", "url": url_regex}, secret=True)  # the session value is in here
 
     async def remove_auth_header(self, description: str) -> None:
         await self.call("replacer", "action", "removeRule", {"description": description})
@@ -331,14 +337,21 @@ async def _exclusive_daemon(zap: _ZapClient, ctx: ExecutionContext) -> AsyncIter
     and Replacer rules are global, so jobs never share it: the pool-wide lease
     serializes them, and the session is replaced before and after the job so no
     job sees another's traffic, alerts or credentials.
+
+    If the lease is lost mid-run (a broker outage outlasting the TTL), another job
+    may already own the daemon. The cleanup session reset is then skipped — it would
+    wipe the *new* owner's crawl — and the job fails rather than carrying on against
+    a daemon it no longer controls.
     """
-    async with ctx.coordinator.lease(_lease_name(ctx), ttl=120, wait=max(60, ctx.timeout_seconds // 2)):
+    async with ctx.coordinator.lease(_lease_name(ctx), ttl=120,
+                                     wait=max(60, ctx.timeout_seconds // 2)) as lost:
         await zap.new_session()
         try:
             yield
         finally:
-            with contextlib.suppress(httpx.HTTPError):
-                await zap.new_session()
+            if not lost.is_set():
+                with contextlib.suppress(httpx.HTTPError):
+                    await zap.new_session()
 
 
 async def _stop(zap: _ZapClient, component: str, params: dict[str, Any]) -> None:
@@ -395,6 +408,9 @@ class ZapSpiderAdapter(ScannerAdapter):
                         raw.errors.append(f"zap_spider error for {url}: {type(exc).__name__}")
         except LeaseUnavailable:
             raw.errors.append("zap_spider: the ZAP daemon stayed busy with another job; nothing was crawled")
+        except LeaseLost:
+            raw.errors.append("zap_spider: lost exclusive use of the web application scanner mid-crawl; "
+                              "another job may now hold it, so this crawl is incomplete")
         except httpx.HTTPError as exc:
             raw.errors.append(f"zap_spider: ZAP daemon unavailable: {type(exc).__name__}")
         return raw
@@ -617,6 +633,9 @@ class ZapActiveAdapter(ScannerAdapter):
                         raw.errors.append(f"zap_active error for {origin_url}: {type(exc).__name__}")
         except LeaseUnavailable:
             raw.errors.append("zap_active: the ZAP daemon stayed busy with another job; nothing was scanned")
+        except LeaseLost:
+            raw.errors.append("zap_active: lost exclusive use of the web application scanner mid-scan; "
+                              "another job may now hold it, so this scan is incomplete")
         except httpx.HTTPError as exc:
             raw.errors.append(f"zap_active: ZAP daemon unavailable: {type(exc).__name__}")
         return raw

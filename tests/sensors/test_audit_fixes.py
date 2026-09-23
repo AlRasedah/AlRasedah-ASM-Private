@@ -20,7 +20,7 @@ import pytest
 from asm_sensors.adapters.dnsx import DnsxAdapter
 from asm_sensors.adapters.zap import ZapActiveAdapter, ZapSpiderAdapter, _include_regex, _ZapClient
 from asm_sensors.base import ExecutionContext, RawOutput, read_output_file, tool_output
-from asm_sensors.coordination import LeaseUnavailable, LocalCoordinator
+from asm_sensors.coordination import LeaseLost, LeaseUnavailable, LocalCoordinator
 from asm_sensors.execution import ProcessResult
 from asm_sensors.jobs import (
     ResultRejected,
@@ -153,7 +153,7 @@ class TestZapIsolation:
         overlap: list[bool] = []
 
         def make_call(job: str):
-            async def call(self, component, kind, action, params=None):
+            async def call(self, component, kind, action, params=None, *, secret=False):
                 params = params or {}
                 log.append((job, component, action))
                 if action == "newContext":
@@ -343,7 +343,7 @@ class _ScriptedZap(_ZapClient):
     def params(self, action):
         return [p for (_c, _k, a, p) in self.calls if a == action]
 
-    async def call(self, component, kind, action, params=None):
+    async def call(self, component, kind, action, params=None, *, secret=False):
         self.calls.append((component, kind, action, params or {}))
         if action == "newContext":
             return {"contextId": "5"}
@@ -372,3 +372,52 @@ def _clock(step: float = 45.0):
 
 async def _no_sleep(_seconds):
     return None
+
+
+class TestLostLeaseStopsTheHolder:
+    """Review finding F3: losing the lease must stop the job that held it.
+
+    The renewal loop ignored a false return and swallowed exceptions, so once a
+    broker hiccup outlasted the TTL a second worker could take the lease while the
+    first job was still driving the same ZAP daemon — resetting each other's
+    sessions and mixing two tenants' traffic. Worse, the stale holder's cleanup
+    would then wipe the new owner's session.
+    """
+
+    class _FlakyCoordinator(LocalCoordinator):
+        """Acquires normally; renewal fails the way a broker outage would."""
+
+        def __init__(self, *, raises: bool) -> None:
+            super().__init__(poll_interval=0.01)
+            self.raises = raises
+            self.renewed = 0
+
+        async def _renew(self, name: str, token: str, ttl: int) -> bool:
+            self.renewed += 1
+            if self.raises:
+                raise ConnectionError("broker gone")
+            return False
+
+    @pytest.mark.parametrize("raises", [False, True], ids=["renewal_returns_false", "renewal_raises"])
+    async def test_the_body_is_stopped_and_the_lease_is_not_handed_back(self, raises):
+        coordinator = self._FlakyCoordinator(raises=raises)
+        cleaned: list[str] = []
+
+        with pytest.raises(LeaseLost):
+            async with coordinator.lease("zap:x", ttl=1, wait=1) as lost:
+                try:
+                    await asyncio.sleep(5)  # the long-running scan
+                finally:
+                    # The adapter's cleanup: it must not reset a daemon it no longer owns.
+                    if not lost.is_set():
+                        cleaned.append("reset")
+        assert coordinator.renewed >= 1
+        assert cleaned == [], "a stale holder must not touch the resource on the way out"
+
+    async def test_a_healthy_lease_still_releases_normally(self):
+        coordinator = LocalCoordinator(poll_interval=0.01)
+        async with coordinator.lease("zap:y", ttl=60, wait=1) as lost:
+            assert not lost.is_set()
+        # released, so the next job gets it immediately
+        async with coordinator.lease("zap:y", ttl=60, wait=1):
+            pass

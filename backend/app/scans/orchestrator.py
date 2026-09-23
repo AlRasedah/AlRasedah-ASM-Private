@@ -412,8 +412,14 @@ def complete_stage(db: Session, scan: Scan, stage: ScanStage, result: SensorResu
         discovery_method=stage.stage_type.value, scan_id=scan.id, stage_id=stage.id, baseline=scan.is_baseline,
         historical=result.historical,
     )).ingest(result)
-    rules_result = rules.evaluate(db, ingest.touched, ts["detection_rules"])
-    if rules_result.coverage:
+    # Detection rules assert what is exposed *now* ("RDP reachable", "admin interface
+    # open"), so they may only read evidence a sensor actually observed. A historical
+    # result is another database's record of unknown age: running the rules over it
+    # would turn a third-party sighting into an ordinary verified finding with alerts
+    # and a risk score, which is exactly the separation ADR-020 exists to keep.
+    rules_result = (rules.evaluate(db, ingest.touched, ts["detection_rules"])
+                    if not result.historical else None)
+    if rules_result and rules_result.coverage:
         rules_ingest = Ingestor(db, IngestContext(
             tenant_id=scan.tenant_id, organization=org, source=rules.SOURCE, checker=checker, now=now, settings=ts,
             discovery_method="detection_rules", scan_id=scan.id, stage_id=stage.id, baseline=scan.is_baseline,

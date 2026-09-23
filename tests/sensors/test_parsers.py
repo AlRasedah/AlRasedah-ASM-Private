@@ -276,7 +276,7 @@ class _FakeZap(_ZapClient):
     def __init__(self):  # no HTTP client
         self.calls = []
 
-    async def call(self, component, kind, action, params=None):
+    async def call(self, component, kind, action, params=None, *, secret=False):
         self.calls.append((component, kind, action, params or {}))
         if action == "newContext":
             return {"contextId": "7"}

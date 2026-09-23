@@ -13,7 +13,7 @@ from sqlalchemy import select
 from app.assets.ingest import IngestContext, Ingestor
 from app.db.session import new_session
 from app.models import Asset, Finding, Organization, ScanProfile
-from app.models.enums import AssetStatus, AssetType
+from app.models.enums import AssetStatus, AssetType, ScanStatus, StageStatus
 from app.scans import orchestrator
 from app.scope.service import load_checker
 from app.tenants.settings import tenant_settings
@@ -142,3 +142,61 @@ def test_live_results_still_refresh_liveness(factory):
         db.commit()
         asset = db.scalar(select(Asset).where(Asset.normalized_value == "198.51.100.7"))
         assert asset.status == AssetStatus.ACTIVE and asset.missed_count == 0
+
+
+class TestRulesNeverSeeHistoricalEvidence:
+    """Review finding F6: a third-party sighting must not become a verified finding.
+
+    The Shodan result was ingested with `historical=True`, but the assets it touched
+    were then handed to the built-in detection rules, which ingest with the default
+    `historical=False`. A port Shodan last saw weeks ago produced an ordinary
+    "RDP is exposed" finding — verified, alerted on and counted in the risk score —
+    with nothing having checked that the service is still reachable.
+    """
+
+    def _stage_result(self, historical: bool) -> SensorResult:
+        now = datetime.now(UTC)
+        return SensorResult(
+            adapter="shodan" if historical else "naabu", status="completed", historical=historical,
+            started_at=now, finished_at=now, target_count=1,
+            observations=[
+                AssetObservation(type=ObservedType.IP_ADDRESS, value="198.51.100.7"),
+                AssetObservation(type=ObservedType.PORT, value="198.51.100.7:3389/tcp",
+                                 attributes={"port": 3389, "protocol": "tcp", "ip": "198.51.100.7"}),
+            ])
+
+    def _run_stage(self, factory, monkeypatch, *, historical: bool):
+        calls: list[int] = []
+        from app.scans import orchestrator as orch
+
+        original = orch.rules.evaluate
+        monkeypatch.setattr(orch.rules, "evaluate",
+                            lambda db, touched, cfg: (calls.append(len(touched)), original(db, touched, cfg))[1])
+        tenant = factory.tenant()
+        org = factory.org(tenant.id, ips=("198.51.100.7",))
+        with new_session(tenant.id) as db:
+            pid = db.scalar(select(ScanProfile.id).where(ScanProfile.slug == "standard-asm",
+                                                         ScanProfile.tenant_id.is_(None)))
+            scan = orchestrator.create_scan(db, tenant_id=tenant.id, organization_id=org.id, profile_id=pid)
+            scan.status = ScanStatus.RUNNING
+            stage = sorted(scan.stages, key=lambda s: s.position)[0]
+            stage.status = StageStatus.RUNNING
+            db.commit()
+            orchestrator.complete_stage(db, scan, stage, self._stage_result(historical))
+            db.commit()
+            findings = list(db.execute(select(Finding).where(Finding.organization_id == org.id)).scalars())
+        return calls, findings
+
+    def test_a_port_only_shodan_saw_raises_no_verified_finding(self, db_clean, factory, monkeypatch):
+        calls, findings = self._run_stage(factory, monkeypatch, historical=True)
+        assert calls == [], "detection rules must not run on a historical-only result"
+        assert not [f for f in findings if f.source == "asm-rules"]
+        assert all(f.unverified for f in findings)
+
+    def test_the_same_port_seen_live_still_raises_one(self, db_clean, factory, monkeypatch):
+        # The guard must not disable the rules; it must only withhold unverified evidence.
+        calls, findings = self._run_stage(factory, monkeypatch, historical=False)
+        assert calls and calls[0] > 0
+        rule_findings = [f for f in findings if f.source == "asm-rules"]
+        assert rule_findings, "a live observation of 3389 is exactly what the rule is for"
+        assert not any(f.unverified for f in rule_findings)

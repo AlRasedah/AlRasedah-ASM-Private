@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from . import logs
 from .base import ConfigurationError, ExecutionContext
 from .coordination import Coordinator, local_coordinator
 from .execution import BinaryNotFound, ExecutionError
@@ -121,6 +122,9 @@ async def execute_job(
     coordinator: Coordinator | None = None,
 ) -> SensorResult:
     started = datetime.now(UTC)
+    # Inline mode runs adapters inside the platform process, which configures its own
+    # logging; make sure request URLs are still not written out with their credentials.
+    logs.configure()
     try:
         adapter = get_adapter(job.adapter)
     except KeyError as exc:
