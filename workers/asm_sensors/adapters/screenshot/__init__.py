@@ -64,6 +64,7 @@ LEASE_NAME = "screenshot-browser"
 # Flags that would switch off isolation. The adapter never builds them; the check
 # is a tripwire for future edits.
 FORBIDDEN_FLAGS = ("--no-sandbox", "--disable-setuid-sandbox", "--no-zygote", "--single-process",
+                   "--disable-gpu-sandbox", "--disable-seccomp-filter-sandbox", "--disable-namespace-sandbox",
                    "--disable-web-security", "--remote-debugging-port", "--remote-debugging-pipe",
                    "--allow-running-insecure-content")
 _SANDBOX_ERRORS = re.compile(r"no usable sandbox|sandbox.*(not|could not|failed)|setuid sandbox|"
@@ -320,7 +321,12 @@ class ScreenshotAdapter(ScannerAdapter):
     def browser_argv(self, binary: str, url: str, cfg: ScreenshotConfig, proxy_url: str, profile: Path,
                      out: Path, ua: str) -> list[str]:
         argv = [
-            binary, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--mute-audio",
+            binary, "--headless=new", "--disable-gpu",
+            # Alpine's Chromium 152 writes this cache with pwritev2, which its own GPU-process
+            # seccomp policy forbids: the GPU process dies three times and the browser exits.
+            # A one-shot capture has no use for the cache anyway.
+            "--disable-gpu-shader-disk-cache",
+            "--hide-scrollbars", "--mute-audio",
             "--no-first-run", "--no-default-browser-check", "--disable-extensions", "--disable-default-apps",
             "--disable-background-networking", "--disable-component-update", "--disable-sync",
             "--disable-domain-reliability", "--disable-client-side-phishing-detection", "--disable-breakpad",
@@ -436,6 +442,16 @@ class ScreenshotAdapter(ScannerAdapter):
             await asyncio.sleep(0)
 
 
+_BROWSER_ERROR_LINE = re.compile(r"FATAL|CRASHING|ERROR|sandbox", re.I)
+
+
+def browser_errors(stderr: str, limit: int = 1200) -> str:
+    """The browser's own error lines. A crash ends with crash-reporter noise that would
+    otherwise push the one line naming the cause out of the self-test's output."""
+    lines = [ln for ln in stderr.splitlines() if _BROWSER_ERROR_LINE.search(ln) and "crashpad" not in ln]
+    return "\n".join(dict.fromkeys(lines))[-limit:] if lines else stderr[-limit:]
+
+
 async def selftest(timeout: int = 60) -> dict[str, Any]:
     """Operator check, no network needed: can this container start the pinned browser
     *with its sandbox* and write a PNG? Chromium refuses to run unsandboxed unless told
@@ -469,9 +485,9 @@ async def selftest(timeout: int = 60) -> dict[str, Any]:
             return {**out, "error": f"the browser could not be started: {exc}"}
         err = proc.stderr.decode("utf-8", "replace")
         if _SANDBOX_ERRORS.search(err):
-            return {**out, "error": "the browser sandbox is unavailable in this container", "detail": err[-800:]}
+            return {**out, "error": "the browser sandbox is unavailable in this container", "detail": browser_errors(err)}
         if not png_path.exists():
-            return {**out, "error": "no image was produced", "exit": proc.returncode, "detail": err[-800:]}
+            return {**out, "error": "no image was produced", "exit": proc.returncode, "detail": browser_errors(err)}
         out.update(ok=True, image_bytes=png_path.stat().st_size, dimensions=png_dimensions(png_path.read_bytes()),
                    seconds=round(proc.duration, 2))
     return out

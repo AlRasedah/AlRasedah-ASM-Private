@@ -269,6 +269,18 @@ def test_browser_flags_keep_isolation(tmp_path):
     assert "--disable-quic" in argv and "--force-webrtc-ip-handling-policy=disable_non_proxied_udp" in argv
     assert f"--user-data-dir={tmp_path / 'asm-shot-profile-j1'}" in argv
     assert "--window-size=1280,800" in argv and argv[-1] == "https://example.com"
+    # Alpine's Chromium crashes its sandboxed GPU process writing this cache (pwritev2).
+    assert "--disable-gpu-shader-disk-cache" in argv
+
+
+def test_the_self_test_reports_the_browsers_own_error_not_crash_reporter_noise():
+    fatal = ("../../sandbox/linux/seccomp-bpf-helpers/sigsys_handlers.cc:**CRASHING**:"
+             "seccomp-bpf failure in syscall nr=0x148 arg1=0x1c")
+    noise = "[0923/170153.904070:WARNING:third_party/crashpad/crashpad/snapshot/linux/process_reader_linux.cc:95] x\n"
+    stderr = "[1:1:INFO:CONSOLE] page loaded\n" + fatal + "\n" + fatal + "\n" + noise * 40
+    detail = shot.browser_errors(stderr)
+    assert detail == fatal  # once, and none of the noise that followed it
+    assert shot.browser_errors("something odd\n") == "something odd\n"
 
 
 def test_redirects_are_bounded_and_checked_hop_by_hop(origin, fake_browser, tmp_path):
