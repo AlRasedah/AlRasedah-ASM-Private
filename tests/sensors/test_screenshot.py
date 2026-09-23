@@ -523,3 +523,26 @@ def test_the_browser_is_found_under_either_package_name(monkeypatch, tmp_path):
         shot.browser_binary()
     result = asyncio.run(shot.selftest())
     assert result["ok"] is False and "not installed" in result["error"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="runs small shell scripts as stand-ins for setpriv")
+def test_only_a_setpriv_with_pdeathsig_wraps_the_browser(monkeypatch, tmp_path):
+    """Alpine's BusyBox links a setpriv applet without --pdeathsig; wrapping the browser in it
+    makes every capture fail, so only util-linux setpriv is used."""
+    busybox = tmp_path / "busybox-setpriv"
+    busybox.write_text("#!/bin/sh\necho 'Usage: setpriv [OPTIONS] PROG ARGS' >&2\nexit 1\n")
+    util_linux = tmp_path / "setpriv"
+    util_linux.write_text("#!/bin/sh\necho ' --pdeathsig keep|clear|<signal>'\n")
+    for f in (busybox, util_linux):
+        f.chmod(0o755)
+    monkeypatch.setattr(shot.sys, "platform", "linux")
+    cfg = shot.ScreenshotConfig()
+    args = ("chromium", "https://example.com/", cfg, "http://127.0.0.1:9", tmp_path / "p", tmp_path / "o.png", "ua")
+
+    monkeypatch.setattr(shot.shutil, "which", lambda name: str(busybox))
+    assert shot.parent_death_wrapper() is None
+    assert shot.ScreenshotAdapter().browser_argv(*args)[0] == "chromium"
+
+    monkeypatch.setattr(shot.shutil, "which", lambda name: str(util_linux))
+    assert shot.parent_death_wrapper() == str(util_linux)
+    assert shot.ScreenshotAdapter().browser_argv(*args)[:4] == [str(util_linux), "--pdeathsig", "KILL", "--"]

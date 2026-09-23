@@ -123,7 +123,8 @@ Refused destinations are recorded as `host:port: reason` — never a path or que
   with a message saying so.
 - The browser runs in its own process group with a hard time limit; a cancelled or
   timed-out job kills the group. On Linux it is also started under
-  `setpriv --pdeathsig KILL`, so it dies with its worker. Before each capture, while holding
+  `setpriv --pdeathsig KILL` (util-linux's, which the image installs; BusyBox's applet lacks
+  the option and is never used), so it dies with its worker. Before each capture, while holding
   the pool's browser lease, the adapter kills any browser left behind by a worker that was
   killed outright.
 - One browser per pool at a time (a lease in the broker, per pool), and at most the

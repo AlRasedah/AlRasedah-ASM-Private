@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import functools
 import hashlib
 import ipaddress
 import logging
@@ -36,6 +37,7 @@ import re
 import shutil
 import signal
 import struct
+import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -135,6 +137,24 @@ def browser_binary() -> str:
             return found
     note = f" (ASM_BIN_CHROMIUM={override} does not exist)" if override else ""
     raise BinaryNotFound(f"the screenshot browser is not installed in this scanner{note}")
+
+
+@functools.cache
+def _supports_pdeathsig(path: str) -> bool:
+    try:
+        proc = subprocess.run([path, "--help"], capture_output=True, timeout=5, check=False)  # noqa: S603
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return b"--pdeathsig" in proc.stdout + proc.stderr
+
+
+def parent_death_wrapper() -> str | None:
+    """util-linux ``setpriv``, when installed. BusyBox also has a ``setpriv`` applet (Alpine
+    links it at /bin/setpriv), but without ``--pdeathsig``; that one is not used."""
+    if not sys.platform.startswith("linux"):
+        return None
+    path = shutil.which("setpriv")
+    return path if path and _supports_pdeathsig(path) else None
 
 
 def png_dimensions(data: bytes) -> tuple[int, int]:
@@ -326,8 +346,9 @@ class ScreenshotAdapter(ScannerAdapter):
         bad = [a for a in argv if a.split("=", 1)[0] in FORBIDDEN_FLAGS]
         if bad:
             raise ConfigurationError(f"refusing to start the browser with {bad}")
-        pdeath = shutil.which("setpriv") if sys.platform.startswith("linux") else None
+        pdeath = parent_death_wrapper()
         # Tie the browser to this worker process: if the worker dies, the kernel kills it.
+        # Without setpriv, the stale-browser reaper is what cleans up after a dead worker.
         return [pdeath, "--pdeathsig", "KILL", "--", *argv] if pdeath else argv
 
     async def preflight(self, url: str, cfg: ScreenshotConfig, proxy: EgressProxy, ua: str,
@@ -434,6 +455,7 @@ async def selftest(timeout: int = 60) -> dict[str, Any]:
     except OSError as exc:
         return {**out, "error": f"the browser could not be started: {exc}"}
     out["version"] = version.stdout.decode("utf-8", "replace").strip()[:200]
+    out["dies_with_worker"] = parent_death_wrapper() is not None
     with tempfile.TemporaryDirectory(prefix="asm-selftest-") as wd:
         cfg = ScreenshotConfig(viewport_width=320, viewport_height=240, timeout_seconds=15)
         png_path = Path(wd) / "selftest.png"
