@@ -204,6 +204,10 @@ measurements: [SCREENSHOTS.md](SCREENSHOTS.md).
    `docker-compose.yml` alone — without the browser — and captures then fail with "not
    installed". To avoid typing it, put `COMPOSE_FILE=docker-compose.yml:docker-compose.screenshots.yml`
    in `.env`; plain `docker compose` commands then include the override.
+   The override builds its own image tag (`asm-scanner:<version>-screenshots`), so a plain build
+   never overwrites it; check the browser is really in it with
+   `docker compose -f docker-compose.yml -f docker-compose.screenshots.yml run --rm asm-scanner versions`
+   ("screenshot browser: Chromium …").
    Repeat the override's block for every per-tenant scanner service (`asm-scanner-<pool>`).
    The override adds the seccomp profile (`no-new-privileges` stays), 256 MB `/dev/shm` and
    a PID limit; the base file's 2 CPU / 2 GB cap still applies.
