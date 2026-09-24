@@ -391,7 +391,32 @@ jobs in the tenant's pool with their own binding in `asm-ingest`. The exposure m
 | Resource use | Windows lab numbers for captures; synthetic 5 000-host org for evaluation and the map | the deployed image, broker queue delay, S3 latency, concurrency |
 | Threat Center checks | through the pipeline with recorded engine output | the detection engine's `-id` filter at the pinned version with real templates |
 
-## 11.16 Recommended next steps
+## 11.16 Independent audit of the three features (24 September 2026)
+
+An independent audit of commit `2b29bec` reported eight medium findings and no
+cross-tenant disclosure. All eight were reproduced against the code and fixed on
+`claude/audit-lean-fixes` (migration `0010`), each with a regression test for the corrected
+behaviour:
+
+| # | Finding | Fix | Test |
+|---|---|---|---|
+| F1 | a capped evaluation marked unreached matches "no longer observed" | a bound makes the evaluation partial: it retires nothing and says so (`threat_campaigns.incomplete_orgs`, "partial" badge) | `test_a_capped_evaluation_retires_nothing_and_says_it_is_partial` |
+| F2 | a new advisory version inherited the previous check's outcome; completion used current definitions | runs record the detection and CVEs they ran; results are read against those and dropped for a version that asks something else | `test_a_check_result_never_carries_over_…` |
+| F3 | an expired screenshot job could still run after its slot was reused | `SensorJob.not_after` enforced by the runner and the broker; the slot is held until `slot_until` (start window + hard limit) or a result | `test_a_capture_keeps_its_slot_…`, `test_a_cancelled_running_capture_holds_its_slot_…`, `test_a_job_delivered_after_its_start_deadline_…` |
+| F4 | concurrent requests and deletion/retention bypassed quotas | per-tenant advisory lock, unique active capture per endpoint, `screenshot_usage` ledger per UTC day | `test_concurrent_requests_…`, `test_deleting_an_image_…`, `test_retention_never_restores_…` |
+| F5 | a failed completion update left a check queued forever (409 on retry) | runs whose scan ended are finished on view, daily and on manual re-evaluation | `test_a_lost_check_completion_is_repaired_…` |
+| F6 | organization deletion could orphan images | `storage_deletions` rows written with the delete, retried by maintenance, counted in storage | `test_organization_images_that_fail_to_delete_…` |
+| F7 | asset rows stayed "Check running" after a check finished | the rows poll with the summary and refresh once when the run ends | UI: `asset rows follow a check from running to finished` |
+| F8 | a cancelled map query returned HTTP 500 | per-level savepoints with the remaining budget as statement timeout; partial map, not cached; 503 only if the roots time out | `test_a_cancelled_query_returns_the_map_built_so_far` |
+
+The zero-budget map test the audit saw fail on Windows is now deterministic: the budget is
+checked before each level's queries rather than by comparing elapsed time.
+
+Still not verified, as the audit says: the pinned detection engine against real templates,
+and the production browser's behaviour beyond the VPS self-test (redirects after preflight,
+subresources, rebinding, memory) on the deployed image.
+
+## 11.17 Recommended next steps
 
 1. Work through the manual pass in [chapter 9.8](09-testing.md#98-the-manual-pass) on a
    deployed stack — that is the only verification left that matters, and §11.4 says exactly

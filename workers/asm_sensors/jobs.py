@@ -31,6 +31,7 @@ import json
 import os
 import re
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -39,6 +40,9 @@ from .observations import SensorResult
 from .targets import Target
 
 TASK_NAME = "asm.sensors.run"
+# Seconds a job may run past its own timeout before the worker kills it outright (the
+# broker's hard time limit). Anything that holds a slot for a job must cover this too.
+JOB_HARD_LIMIT_GRACE = 300
 RESULT_TASK_NAME = "asm.results.submit"
 RESULT_QUEUE_PREFIX = "results"
 _POOL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62})$")
@@ -81,6 +85,10 @@ class SensorJob(BaseModel):
     # The scope's excluded IP ranges: active sensors re-check every resolved
     # destination against them just before connecting (see runner.egress_filter).
     excluded_networks: list[str] = Field(default_factory=list, max_length=10_000)
+    # Latest moment the job may *start*. The platform keeps the job's execution slot until
+    # this plus the job's hard time limit, so a delivery that arrives later than this is
+    # refused rather than run after its slot was given to someone else.
+    not_after: datetime | None = None
 
     @field_validator("excluded_networks")
     @classmethod

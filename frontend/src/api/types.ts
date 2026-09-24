@@ -490,6 +490,8 @@ export interface AdvisorySummary {
   last_evaluated_at: string | null;
   evaluated_version: number | null;
   stale: boolean;
+  /** Why the assessment covers only part of the inventory (one line per organization). */
+  incomplete: string[];
   has_check: boolean;
 }
 

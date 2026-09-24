@@ -257,3 +257,32 @@ def test_asset_page_starts_from_that_asset(env, system_db):
     ep = system_db.execute(select(Asset).where(Asset.normalized_value == "https://api.example.com")).scalar_one()
     m = _map(c, h, asset_id=str(ep.id), depth=1)
     assert m["root_ids"] == [str(ep.id)] and any(e["relation"] in ("serves", "hosted_on") for e in m["edges"])
+
+
+def test_a_cancelled_query_returns_the_map_built_so_far(env, monkeypatch):
+    """A real PostgreSQL statement cancellation (57014) ends the traversal, not the request."""
+    from sqlalchemy import text
+
+    from app.exposure import graph
+
+    c, h = env["c"], env["admin"]
+    org = _scan(c, h)
+    real = graph._neighbours
+    calls: list = []
+
+    def slow_second_level(db, org_id, frontier, relations, p):  # noqa: ANN001
+        calls.append(len(frontier))
+        if len(calls) == 2:
+            db.execute(text("SELECT pg_sleep(5)"))  # longer than the statement timeout
+        return real(db, org_id, frontier, relations, p)
+
+    monkeypatch.setattr(graph, "_neighbours", slow_second_level)
+    monkeypatch.setattr(graph, "STATEMENT_TIMEOUT_MS", 300)
+    m = _map(c, h, organization_id=org["id"], depth=3)
+    assert m["timed_out"] and "time limit reached" in m["truncation_reasons"]
+    depths = {n["depth"] for n in m["nodes"] if n["kind"] == "asset"}
+    assert depths == {0, 1}  # the first level made it; nothing beyond the cancelled one
+    # A map cut short by a slow database is not cached: the next request tries again.
+    monkeypatch.setattr(graph, "_neighbours", real)
+    again = _map(c, h, organization_id=org["id"], depth=3)
+    assert not again["timed_out"] and not again["cached"] and max(n["depth"] for n in again["nodes"]) >= 2

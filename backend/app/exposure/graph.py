@@ -16,7 +16,9 @@ Bounds, all enforced here rather than trusted to the caller:
   PostgreSQL, so a domain with 5 000 subdomains returns 25 rows plus a count), the
   rest reported as ``hidden`` for progressive expansion;
 * total node and edge caps, a statement timeout and a wall-clock budget; hitting any
-  of them returns a partial map that says why.
+  of them returns a partial map that says why. Each level's queries run in a savepoint
+  with the time that is left as their statement timeout, so a query PostgreSQL cancels
+  ends the traversal there instead of failing the request.
 """
 
 from __future__ import annotations
@@ -30,9 +32,10 @@ from typing import Any
 
 from asm_sensors.registry import adapter_names, get_adapter
 from sqlalchemy import func, select, text, union_all
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from app.core.errors import NotFound, ValidationFailed
+from app.core.errors import AppError, NotFound, ValidationFailed
 from app.models import Asset, AssetRelationship, Finding, Organization
 from app.models.enums import (
     OPEN_FINDING_STATES,
@@ -106,9 +109,43 @@ class _Build:
     edges: dict[str, dict[str, Any]] = field(default_factory=dict)
     reasons: list[str] = field(default_factory=list)
 
+    timed_out: bool = False
+
     def note(self, reason: str) -> None:
         if reason not in self.reasons:
             self.reasons.append(reason)
+
+
+class MapTimeout(AppError):
+    """Not even the starting points could be read in time: retry, or narrow the map."""
+
+    status_code = 503
+    code = "map_timeout"
+
+
+class _OutOfTime(Exception):
+    pass
+
+
+def _cancelled(exc: OperationalError) -> bool:
+    return getattr(exc.orig, "sqlstate", None) == "57014"  # query_canceled (statement_timeout)
+
+
+def _bounded(db: Session, started: float, fn: Any, *, floor_ms: int = 0) -> Any:
+    """Run ``fn`` in a savepoint with the remaining time as its statement timeout. A
+    cancelled query rolls back only the savepoint and raises ``_OutOfTime``."""
+    left_ms = int((TIME_BUDGET_S - (time.monotonic() - started)) * 1000)
+    ms = min(STATEMENT_TIMEOUT_MS, max(left_ms, floor_ms))
+    if ms <= 0:
+        raise _OutOfTime
+    db.execute(text(f"SET LOCAL statement_timeout = {max(ms, 1)}"))
+    try:
+        with db.begin_nested():
+            return fn()
+    except OperationalError as exc:
+        if _cancelled(exc):
+            raise _OutOfTime from exc
+        raise
 
 
 def _historical_sources() -> frozenset[str]:
@@ -177,11 +214,17 @@ def _neighbours(db: Session, org_id: uuid.UUID, frontier: list[uuid.UUID], relat
 
 def build(db: Session, p: MapParams, *, findings_allowed: bool) -> dict[str, Any]:
     """The map for the caller's tenant session. Raises NotFound for anything invisible to it."""
+    out = _build(db, p, findings_allowed=findings_allowed)
+    # The per-level timeouts may have shrunk it; later statements get the normal bound.
+    db.execute(text(f"SET LOCAL statement_timeout = {STATEMENT_TIMEOUT_MS}"))
+    return out
+
+
+def _build(db: Session, p: MapParams, *, findings_allowed: bool) -> dict[str, Any]:
     p.validate()
     started = time.monotonic()
     now = datetime.now(UTC)
     historical = _historical_sources()
-    db.execute(text(f"SET LOCAL statement_timeout = {STATEMENT_TIMEOUT_MS}"))
 
     start_id = p.expand or p.asset_id
     start: Asset | None = db.get(Asset, start_id) if start_id else None
@@ -201,15 +244,23 @@ def build(db: Session, p: MapParams, *, findings_allowed: bool) -> dict[str, Any
     if start is not None:
         roots = [start]
     else:
-        q = select(Asset).where(Asset.organization_id == org.id, Asset.asset_type == AssetType.ROOT_DOMAIN)
-        if not p.include_inactive:
-            q = q.where(Asset.status == AssetStatus.ACTIVE)
-        roots = list(db.execute(q.order_by(Asset.risk_score.desc(), Asset.value).limit(MAX_ROOTS + 1)).scalars())
-        if not roots:  # scope without domains: start from the highest-risk in-scope assets
-            roots = list(db.execute(select(Asset).where(
-                Asset.organization_id == org.id, Asset.scope_status == ScopeStatus.IN_SCOPE,
-                Asset.status == AssetStatus.ACTIVE, Asset.asset_type.not_in([t.value for t in CONTEXT_TYPES]))
-                .order_by(Asset.risk_score.desc()).limit(MAX_ROOTS + 1)).scalars())
+        def load_roots() -> list[Asset]:
+            q = select(Asset).where(Asset.organization_id == org.id, Asset.asset_type == AssetType.ROOT_DOMAIN)
+            if not p.include_inactive:
+                q = q.where(Asset.status == AssetStatus.ACTIVE)
+            found = list(db.execute(q.order_by(Asset.risk_score.desc(), Asset.value).limit(MAX_ROOTS + 1)).scalars())
+            if not found:  # scope without domains: start from the highest-risk in-scope assets
+                found = list(db.execute(select(Asset).where(
+                    Asset.organization_id == org.id, Asset.scope_status == ScopeStatus.IN_SCOPE,
+                    Asset.status == AssetStatus.ACTIVE, Asset.asset_type.not_in([t.value for t in CONTEXT_TYPES]))
+                    .order_by(Asset.risk_score.desc()).limit(MAX_ROOTS + 1)).scalars())
+            return found
+
+        try:  # the starting points get the full statement timeout, whatever the budget
+            roots = _bounded(db, started, load_roots, floor_ms=STATEMENT_TIMEOUT_MS)
+        except _OutOfTime as exc:
+            raise MapTimeout("The database took too long to answer; try again, or open the map from one "
+                             "asset") from exc
         if len(roots) > MAX_ROOTS:
             roots = roots[:MAX_ROOTS]
             b.note(f"only the {MAX_ROOTS} highest-risk starting points are shown; pick an asset to focus")
@@ -221,16 +272,23 @@ def build(db: Session, p: MapParams, *, findings_allowed: bool) -> dict[str, Any
     for depth in range(1, depth_limit + 1):
         if not frontier:
             break
-        if time.monotonic() - started > TIME_BUDGET_S:
+
+        def load_level(frontier: list[uuid.UUID] = frontier) -> tuple:
+            rows, totals = _neighbours(db, org.id, frontier, relations, p)
+            other_ids = {r.other for r in rows}
+            others = {a.id: a for a in db.execute(select(Asset).where(Asset.id.in_(other_ids))).scalars()} \
+                if other_ids else {}
+            rels = {r.id: r for r in db.execute(select(AssetRelationship).where(
+                AssetRelationship.id.in_({r.rid for r in rows}))).scalars()} if rows else {}
+            return rows, totals, others, rels
+
+        try:
+            rows, totals, others, rels = _bounded(db, started, load_level)
+        except _OutOfTime:
+            b.timed_out = True
             b.note("time limit reached")
             break
-        rows, totals = _neighbours(db, org.id, frontier, relations, p)
         shown: dict[tuple[str, str], int] = defaultdict(int)
-        other_ids = {r.other for r in rows}
-        others = {a.id: a for a in db.execute(select(Asset).where(Asset.id.in_(other_ids))).scalars()} \
-            if other_ids else {}
-        rels = {r.id: r for r in db.execute(select(AssetRelationship).where(
-            AssetRelationship.id.in_({r.rid for r in rows}))).scalars()} if rows else {}
         next_frontier: list[uuid.UUID] = []
         for rid, anchor, other in rows:
             o = others.get(other)
@@ -269,7 +327,11 @@ def build(db: Session, p: MapParams, *, findings_allowed: bool) -> dict[str, Any
             b.nodes[str(aid)]["more_beyond_depth"] = True
 
     if p.include_findings and findings_allowed:
-        _add_findings(db, b, p, max_edges)
+        try:
+            _bounded(db, started, lambda: _add_findings(db, b, p, max_edges))
+        except _OutOfTime:
+            b.timed_out = True
+            b.note("time limit reached before findings were loaded")
     hidden = sum(sum(n["hidden"].values()) for n in b.nodes.values())
     if hidden:
         b.note(f"{hidden} more relationships are not shown (nodes marked +N); expand a node to load them")
@@ -282,7 +344,7 @@ def build(db: Session, p: MapParams, *, findings_allowed: bool) -> dict[str, Any
         "truncated": bool(b.reasons), "truncation_reasons": b.reasons,
         "limits": {"depth": depth_limit, "max_nodes": p.max_nodes, "max_edges": max_edges, "per_node": p.per_node,
                    "time_budget_ms": int(TIME_BUDGET_S * 1000)},
-        "elapsed_ms": elapsed,
+        "elapsed_ms": elapsed, "timed_out": b.timed_out,
         "notice": "Observed relationships only. A line never means one asset can be used to reach another.",
     }
 
@@ -363,7 +425,8 @@ def cached_build(db: Session, p: MapParams, *, tenant_id: uuid.UUID, role: str, 
     if hit is not None:
         return {**hit, "cached": True}
     out = build(db, p, findings_allowed=findings_allowed)
-    cache.put(key, out)
+    if not out["timed_out"]:  # a map cut short by a slow database is not worth keeping
+        cache.put(key, out)
     return {**out, "cached": False}
 
 

@@ -99,9 +99,17 @@ def delete_organization(org_id: uuid.UUID, _: Principal = Depends(require(Permis
     org = _get(db, org_id)
     audit.record(db, Action.ORG_DELETED, object_type="organization", object_id=org.id, previous={"name": org.name})
     # Screenshot records cascade with the organization; their stored images must go too.
-    from app.screenshots.service import delete_organization_objects
+    # They are recorded as pending deletions in the same transaction, so an image that
+    # cannot be removed right now is retried by maintenance instead of being forgotten.
+    from app.screenshots.service import purge_pending_deletions, queue_organization_objects
 
-    delete_organization_objects(db, org.id)
+    tenant_id = org.tenant_id
+    queue_organization_objects(db, org.id)
     db.delete(org)
     db.commit()
+    left = purge_pending_deletions(db, tenant_id)["storage_pending"]
+    db.commit()
+    if left:
+        return Message(message=f"Organization deleted. {left} stored images could not be removed yet; "
+                               "they are retried automatically.")
     return Message(message="Organization and all of its data were deleted")

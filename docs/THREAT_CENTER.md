@@ -167,6 +167,13 @@ and is idempotent: a match is unique per tenant, advisory and asset.
 
 Checks additionally consume the tenant's normal scan quota and concurrency.
 
+**When a bound is hit** the evaluation still adds and updates what it saw, but it is
+*partial*: it marks nothing "no longer observed" (a bound is not evidence that anything
+disappeared), and matches it could not reach keep their previous state. The advisory shows a
+**partial** badge and the detail page names the organization and the bound. The next
+evaluation that sees everything clears it. Beyond the match bound, assets already tracked
+are kept current first.
+
 ## Failure behavior and recovery
 
 - Threat Center updates after a scan run inside a database **savepoint**: an error there is
@@ -177,6 +184,14 @@ Checks additionally consume the tenant's normal scan quota and concurrency.
   tenant's assessment is; "updating" means a newer version has not been matched yet.
 - A check whose scan is cancelled, fails, or is failed by the watchdog is marked
   inconclusive; request it again once the cause is fixed.
+- If recording a finished check fails (it runs in that savepoint), the check is not left
+  "running": opening the advisory, the daily evaluation or `POST /threat-catalog/evaluate`
+  finishes it from its scan's outcome, and a new check can be requested.
+- A check's result belongs to what it tested. Each run records the detection and the CVEs
+  it was dispatched with, and its result is read against those — never against a newer
+  advisory version or a changed check. When a new version asks for a different detection or
+  different CVEs, earlier results stop applying ("not yet checked" again; the run stays in
+  the history). A version that only rewords the advisory keeps them.
 
 ## Tenant isolation
 

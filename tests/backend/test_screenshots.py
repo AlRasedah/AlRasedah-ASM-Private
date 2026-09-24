@@ -251,13 +251,31 @@ def test_daily_and_queue_limits(env, monkeypatch):
 
 
 # ------------------------------------------------------------- concurrency limit
+def _endpoint_like(system_db, asset_id, i):
+    """Another web endpoint like this one: an endpoint has at most one active capture."""
+    from sqlalchemy import inspect
+
+    from app.models import Asset
+
+    if i == 0:
+        return asset_id
+    src = system_db.get(Asset, asset_id)
+    data = {a.key: getattr(src, a.key) for a in inspect(Asset).column_attrs if a.key not in ("id", "created_at",
+                                                                                            "updated_at")}
+    data["value"] = data["normalized_value"] = f"https://q{i}-{str(asset_id)[:8]}.example.com"
+    copy = Asset(**data)
+    system_db.add(copy)
+    system_db.flush()
+    return copy.id
+
+
 def _queue(system_db, tenant, org_id, asset_id, n, minutes_ago=10):
     from app.models import ScreenshotCapture
 
     rows = []
     for i in range(n):
-        cap = ScreenshotCapture(tenant_id=tenant, organization_id=org_id, asset_id=asset_id, url="https://api.example.com",
-                                status="queued")
+        cap = ScreenshotCapture(tenant_id=tenant, organization_id=org_id, asset_id=_endpoint_like(system_db, asset_id, i),
+                                url="https://api.example.com", status="queued")
         system_db.add(cap)
         system_db.flush()
         system_db.execute(update(ScreenshotCapture).where(ScreenshotCapture.id == cap.id).values(
@@ -457,3 +475,172 @@ def test_cancel_revokes_the_job_and_a_late_result_is_refused(env, system_db, mon
     row = system_db.get(ScreenshotCapture, uuid.UUID(cap["id"]))
     assert row.status == "cancelled" and row.storage_key is None
     assert service.reserve() == []  # nothing queued; the slot is free again
+
+
+# ------------------------------------------------------- audit regressions (F3, F4, F6)
+@pytest.mark.parametrize("same_endpoint", [True, False])
+def test_concurrent_requests_cannot_pass_the_last_unit_of_quota(env, monkeypatch, same_endpoint):
+    from app.db.session import new_session
+    from app.models import ScreenshotCapture
+    from app.screenshots import service
+    from app.workers import dispatch
+
+    c, root = env["c"], env["root"]
+    _, eps = _inventory(c, root)
+    _enable(c, root, root, per_tenant_daily=1, per_tenant_queued=1)
+    monkeypatch.setattr(dispatch, "dispatch_screenshots", lambda: None)
+    urls = sorted(u for u in eps if ".example.com" in u)
+    targets = [eps[urls[0]]] * 2 if same_endpoint else [eps[urls[0]], eps[urls[1]]]
+    tid = env["ta"].id
+    barrier = threading.Barrier(2)
+    outcomes: list = []
+
+    def request(asset_id: str) -> None:
+        with new_session(tid) as db:
+            barrier.wait()
+            try:
+                _, created = service.request_capture(db, tenant_id=tid, asset_id=uuid.UUID(asset_id), user_id=None)
+                db.commit()
+                outcomes.append("created" if created else "reused")
+            except Exception as exc:  # noqa: BLE001
+                db.rollback()
+                outcomes.append(type(exc).__name__)
+
+    threads = [threading.Thread(target=request, args=(a,)) for a in targets]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    with new_session(tid) as db:
+        assert db.scalar(select(func.count()).select_from(ScreenshotCapture)) == 1
+    assert sorted(outcomes) == (["created", "reused"] if same_endpoint else ["QuotaExceeded", "created"])
+
+
+def test_deleting_an_image_never_restores_the_daily_allowance(env):
+    c, root, analyst = env["c"], env["root"], env["analyst"]
+    _, eps = _inventory(c, root)
+    _enable(c, root, root, per_tenant_daily=1)
+    ep = eps["https://api.example.com"]
+    assert c.post(f"/api/v1/assets/{ep}/screenshots", headers=analyst).status_code == 202
+    cap = _shots(c, analyst, ep)["latest"]["id"]
+    assert c.delete(f"/api/v1/assets/{ep}/screenshots/{cap}", headers=root).status_code in (200, 204)
+    assert _shots(c, analyst, ep)["status"]["usage"]["captures_today"] == 1
+    r = c.post(f"/api/v1/assets/{ep}/screenshots", headers=analyst)
+    assert r.status_code == 429, r.text
+
+
+def test_retention_never_restores_the_daily_allowance(env):
+    c, root, analyst = env["c"], env["root"], env["analyst"]
+    _, eps = _inventory(c, root)
+    _enable(c, root, root, per_tenant_daily=3, retention_per_endpoint=1)
+    ep = eps["https://api.example.com"]
+    for _ in range(3):
+        assert c.post(f"/api/v1/assets/{ep}/screenshots", headers=analyst).status_code == 202
+    shots = _shots(c, analyst, ep)
+    assert len([x for x in shots["captures"] if x["status"] == "succeeded"]) == 1  # retention kept one
+    assert shots["status"]["usage"]["captures_today"] == 3
+    assert c.post(f"/api/v1/assets/{ep}/screenshots", headers=analyst).status_code == 429
+
+
+def test_cancelling_before_it_starts_gives_the_allowance_back(env, monkeypatch):
+    from app.workers import dispatch
+
+    c, root, analyst = env["c"], env["root"], env["analyst"]
+    _, eps = _inventory(c, root)
+    _enable(c, root, root, per_tenant_daily=1)
+    ep = eps["https://api.example.com"]
+    monkeypatch.setattr(dispatch, "dispatch_screenshots", lambda: None)
+    cap = c.post(f"/api/v1/assets/{ep}/screenshots", headers=analyst).json()
+    assert c.post(f"/api/v1/assets/{ep}/screenshots/{cap['id']}/cancel", headers=analyst).json()["status"] == "cancelled"
+    assert c.post(f"/api/v1/assets/{ep}/screenshots", headers=analyst).status_code == 202
+
+
+def test_a_capture_keeps_its_slot_until_its_job_can_no_longer_run(env, system_db):
+    """The watchdog frees nothing a delayed job could still use; the job refuses to start late."""
+    from asm_sensors.jobs import JOB_HARD_LIMIT_GRACE
+
+    from app.models import ScreenshotCapture
+    from app.screenshots import service
+
+    c, root = env["c"], env["root"]
+    org, eps = _inventory(c, root)
+    _enable(c, root, root)
+    first, second = _queue(system_db, env["ta"].id, uuid.UUID(org["id"]), uuid.UUID(eps["https://api.example.com"]), 2)
+    start = datetime.now(UTC)
+    assert [cid for _, cid in service.reserve(start)] == [first]
+    job, _pool = service.launch(env["ta"].id, first)
+    system_db.expire_all()
+    row = system_db.get(ScreenshotCapture, first)
+    # The job may start until not_after; the slot covers that plus its hard time limit.
+    assert job.not_after is not None and job.not_after <= row.started_at + service.START_WINDOW
+    assert row.slot_until >= job.not_after + timedelta(seconds=job.timeout_seconds + JOB_HARD_LIMIT_GRACE)
+    # Eleven minutes on, with no result: the old watchdog freed the slot here.
+    system_db.execute(update(ScreenshotCapture).where(ScreenshotCapture.id == first).values(dispatched_at=start))
+    system_db.commit()
+    assert service.reserve(start + timedelta(minutes=11)) == []
+    # Once the job cannot be running any more, the capture fails and the slot is reused.
+    assert [cid for _, cid in service.reserve(row.slot_until + timedelta(seconds=1))] == [second]
+    system_db.expire_all()
+    assert system_db.get(ScreenshotCapture, first).status == "failed"
+
+
+def test_a_cancelled_running_capture_holds_its_slot_until_its_job_reports(env, monkeypatch):
+    import asyncio
+
+    from asm_sensors.jobs import seal_result
+
+    from app.core import crypto
+    from app.screenshots import service
+    from app.workers import dispatch
+    from app.workers.results import receive_result
+
+    c, root, analyst = env["c"], env["root"], env["analyst"]
+    _, eps = _inventory(c, root)
+    _enable(c, root, root)
+    urls = sorted(u for u in eps if ".example.com" in u)
+    monkeypatch.setattr(dispatch, "dispatch_screenshots", lambda: None)
+    monkeypatch.setattr(dispatch, "revoke", lambda tasks: None)
+    cap = c.post(f"/api/v1/assets/{eps[urls[0]]}/screenshots", headers=analyst).json()
+    (tid, cid), = service.reserve()
+    job, pool = service.launch(tid, cid)
+    c.post(f"/api/v1/assets/{eps[urls[0]]}/screenshots/{cap['id']}/cancel", headers=analyst)
+    c.post(f"/api/v1/assets/{eps[urls[1]]}/screenshots", headers=analyst)
+    assert service.reserve() == []  # the cancelled job may still be running
+    late = asyncio.run(env["browser"].run(None, job.targets, job.config, type("X", (), {"job_id": "j"})))
+    receive_result(seal_result(job, late, pool, crypto.pool_transport_key(pool)))
+    assert len(service.reserve()) == 1  # its result arrived: the slot is free
+
+
+def test_organization_images_that_fail_to_delete_are_retried_by_maintenance(env, system_db, monkeypatch):
+    from app.models import StorageDeletion
+    from app.services import maintenance
+    from app.services.storage import get_store
+
+    c, root, analyst = env["c"], env["root"], env["analyst"]
+    org, eps = _inventory(c, root)
+    _enable(c, root, root)
+    ep = eps["https://api.example.com"]
+    c.post(f"/api/v1/assets/{ep}/screenshots", headers=analyst)
+    cap = _shots(c, analyst, ep)["latest"]
+    key = f"tenants/{env['ta'].id}/screenshots/{cap['id']}.png"
+    store = get_store()
+    real_delete = type(store).delete
+
+    def failing(self, k):  # noqa: ANN001
+        raise OSError("storage unavailable")
+
+    monkeypatch.setattr(type(store), "delete", failing)
+    r = c.delete(f"/api/v1/organizations/{org['id']}", headers=root)
+    assert r.status_code == 200 and "retried automatically" in r.json()["message"]
+    assert store.exists(key)
+    system_db.expire_all()
+    pending = system_db.execute(select(StorageDeletion)).scalars().all()
+    assert [p.storage_key for p in pending] == [key] and pending[0].attempts == 1
+    # Still counted against the tenant's storage while it exists.
+    st = c.get("/api/v1/screenshots/status", headers=analyst).json()
+    assert st["usage"]["stored_bytes"] == cap["size"]
+    monkeypatch.setattr(type(store), "delete", real_delete)
+    maintenance.purge_retention()
+    assert not store.exists(key)
+    system_db.expire_all()
+    assert system_db.execute(select(StorageDeletion)).scalars().all() == []

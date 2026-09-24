@@ -333,10 +333,12 @@ class _FindingRef:
     source: str
 
 
-def _findings(db: Session, org: Organization, cves: set[str], templates: set[str]) -> list[_FindingRef]:
-    """Existing findings that concern these CVEs / detections. Referenced, never copied."""
+def _findings(db: Session, org: Organization, cves: set[str], templates: set[str]
+              ) -> tuple[list[_FindingRef], bool]:
+    """Existing findings that concern these CVEs / detections. Referenced, never copied.
+    Bounded; the flag says whether the bound was hit."""
     if not cves and not templates:
-        return []
+        return [], False
     conds = []
     if cves:
         conds.append(Finding.cve.overlap(sorted(cves)))
@@ -347,8 +349,8 @@ def _findings(db: Session, org: Organization, cves: set[str], templates: set[str
                       .where(Finding.organization_id == org.id, Finding.status != FindingStatus.FALSE_POSITIVE,
                              or_(*conds))
                       .limit(MAX_OBSERVATIONS)).all()
-    return [_FindingRef(i, a, set(c or []), (r or "").split(":")[0].lower(), bool(u), s, src)
-            for i, a, c, r, u, s, src in rows]
+    return ([_FindingRef(i, a, set(c or []), (r or "").split(":")[0].lower(), bool(u), s, src)
+             for i, a, c, r, u, s, src in rows], len(rows) >= MAX_OBSERVATIONS)
 
 
 def assess(match_status: MatchStatus, basis: MatchBasis, check: CheckOutcome, has_verified: bool) -> Assessment:
@@ -372,6 +374,16 @@ def assess(match_status: MatchStatus, basis: MatchBasis, check: CheckOutcome, ha
     return Assessment.POTENTIALLY_AFFECTED
 
 
+def run_applies(run: ThreatCheckRun | None, version: int, templates: set[str], cves: Iterable[str]) -> bool:
+    """Whether a check run tested what this advisory version asks for: the same detection
+    and the same CVEs. A result never carries over to a version that asks something else."""
+    if run is None:
+        return False
+    if run.template_id is None:  # recorded before the run kept its own definition
+        return run.advisory_version == version
+    return run.template_id.lower() in templates and set(run.cves or []) == set(cves)
+
+
 def _templates_for(db: Session, content: AdvisoryContent) -> set[str]:
     if not content.check_keys:
         return set()
@@ -388,15 +400,22 @@ def evaluate_org(db: Session, org: Organization, advisories: list[tuple[ThreatAd
         return stats
     db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": f"threat:{org.id}"})
     all_names = set().union(*(names_of(c) for _, c in advisories))
-    observations, truncated = product_observations(db, org, all_names)
-    stats.observations, stats.truncated = len(observations), truncated
+    observations, obs_truncated = product_observations(db, org, all_names)
     templates = {a.id: _templates_for(db, c) for a, c in advisories}
     all_cves = set().union(*(set(c.cves) for _, c in advisories))
-    findings = _findings(db, org, all_cves, set().union(*templates.values()))
+    findings, findings_truncated = _findings(db, org, all_cves, set().union(*templates.values()))
+    stats.observations = len(observations)
+    # A bound that was hit means part of the inventory was not seen: it is not evidence
+    # that anything disappeared, so such an evaluation adds and updates but never retires.
+    shared_gap = (f"more than {MAX_OBSERVATIONS} product observations" if obs_truncated
+                  else f"more than {MAX_OBSERVATIONS} related findings" if findings_truncated else None)
     existing: dict[tuple[uuid.UUID, uuid.UUID], ThreatMatch] = {
         (m.advisory_id, m.asset_id): m for m in db.execute(select(ThreatMatch).where(
             ThreatMatch.organization_id == org.id,
             ThreatMatch.advisory_id.in_([a.id for a, _ in advisories]))).scalars()}
+    run_ids = {m.last_check_run_id for m in existing.values() if m.last_check_run_id}
+    runs = {r.id: r for r in db.execute(select(ThreatCheckRun).where(ThreatCheckRun.id.in_(run_ids))).scalars()} \
+        if run_ids else {}
     active_assets = set(db.execute(select(Asset.id).where(
         Asset.organization_id == org.id, Asset.status == AssetStatus.ACTIVE,
         Asset.id.in_({f.asset_id for f in findings}))).scalars()) if findings else set()
@@ -412,9 +431,14 @@ def evaluate_org(db: Session, org: Organization, advisories: list[tuple[ThreatAd
                 continue
             (unverified if f.unverified else verified)[f.asset_id].append(f.id)
         asset_ids = (set(verdicts) | set(verified) | set(unverified))
+        gap = shared_gap
         if len(asset_ids) > MAX_MATCHES_PER_ADVISORY:
-            stats.truncated = True
-            asset_ids = set(sorted(asset_ids, key=str)[:MAX_MATCHES_PER_ADVISORY])
+            gap = gap or f"more than {MAX_MATCHES_PER_ADVISORY} assets match"
+            # Keep what is already tracked current first; the rest waits for more room.
+            ranked = sorted(asset_ids, key=lambda a: ((adv.id, a) not in existing, str(a)))
+            asset_ids = set(ranked[:MAX_MATCHES_PER_ADVISORY])
+        stats.truncated = stats.truncated or gap is not None
+        version = adv.published_version or 0
         new_countable = 0
         for asset_id in asset_ids:
             v = verdicts.get(asset_id)
@@ -439,7 +463,13 @@ def evaluate_org(db: Session, org: Organization, advisories: list[tuple[ThreatAd
                 is_new = True
             else:
                 is_new = False
-            m.advisory_version = adv.published_version or 0
+            m.advisory_version = version
+            if m.check_outcome in (CheckOutcome.DETECTED, CheckOutcome.NOT_DETECTED, CheckOutcome.INCONCLUSIVE) \
+                    and not run_applies(runs.get(m.last_check_run_id), version, templates[adv.id], content.cves):
+                # The last check tested an earlier definition; it says nothing about this one.
+                m.check_outcome, m.checked_at = CheckOutcome.NONE, None
+                m.check_detail = (f"the last check tested an earlier version of this advisory; it does not "
+                                  f"apply to version {version}")
             m.basis, m.match_status, m.evidence = basis, status, evidence
             m.finding_ids = sorted(set(verified.get(asset_id, [])), key=str)
             m.unverified_finding_ids = sorted(set(unverified.get(asset_id, [])), key=str)
@@ -449,16 +479,19 @@ def evaluate_org(db: Session, org: Organization, advisories: list[tuple[ThreatAd
             if is_new and m.assessment in AFFECTED_ASSESSMENTS:
                 new_countable += 1
         # Matched before, not any more: keep the row (history, remediation), say why.
+        # Only after an evaluation that saw everything; otherwise leave the row as it was.
         for (aid, _asset), m in list(existing.items()):
             if aid != adv.id:
                 continue
             existing.pop((aid, _asset))
+            if gap is not None:
+                continue
             m.match_status = MatchStatus.NO_LONGER_OBSERVED
             m.finding_ids, m.unverified_finding_ids = [], []
             m.evidence = {**(m.evidence or {}), "reason": "the product or finding is no longer observed on this asset"}
             m.assessment = assess(m.match_status, m.basis, m.check_outcome, False)
             m.last_evaluated_at = now
-        _touch_campaign(db, org.tenant_id, adv, now)
+        _touch_campaign(db, org, adv, now, gap)
         if new_countable:
             stats.new_matches += new_countable
             stats.per_advisory_new[adv.id] = new_countable
@@ -468,13 +501,17 @@ def evaluate_org(db: Session, org: Organization, advisories: list[tuple[ThreatAd
     return stats
 
 
-def _touch_campaign(db: Session, tenant_id: uuid.UUID, adv: ThreatAdvisory, now: datetime) -> None:
-    c = db.execute(select(ThreatCampaign).where(ThreatCampaign.tenant_id == tenant_id,
+def _touch_campaign(db: Session, org: Organization, adv: ThreatAdvisory, now: datetime, gap: str | None) -> None:
+    c = db.execute(select(ThreatCampaign).where(ThreatCampaign.tenant_id == org.tenant_id,
                                                 ThreatCampaign.advisory_id == adv.id)).scalar_one_or_none()
     if c is None:
-        c = ThreatCampaign(tenant_id=tenant_id, advisory_id=adv.id)
+        c = ThreatCampaign(tenant_id=org.tenant_id, advisory_id=adv.id, incomplete_orgs={})
         db.add(c)
     c.evaluated_version, c.last_evaluated_at = adv.published_version, now
+    gaps = {k: v for k, v in (c.incomplete_orgs or {}).items() if k != str(org.id)}
+    if gap:
+        gaps[str(org.id)] = f"{org.name}: {gap}; the assessment covers part of the inventory"[:300]
+    c.incomplete_orgs = gaps
 
 
 def _match_event(db: Session, org: Organization, adv: ThreatAdvisory, count: int, now: datetime) -> None:
@@ -491,6 +528,7 @@ def _match_event(db: Session, org: Organization, adv: ThreatAdvisory, count: int
 
 def evaluate_tenant(db: Session, tenant_id: uuid.UUID, advisory_ids: Iterable[uuid.UUID] | None = None,
                     organization_id: uuid.UUID | None = None) -> EvalStats:
+    reconcile_check_runs(db)
     advisories = published_advisories(db, advisory_ids)
     total = EvalStats(advisories=len(advisories))
     stmt = select(Organization).where(Organization.tenant_id == tenant_id, Organization.is_active.is_(True))
@@ -586,7 +624,8 @@ def request_checks(db: Session, *, tenant_id: uuid.UUID, advisory_id: uuid.UUID,
                                         trigger=trigger, requested_by=user_id, target_override=targets,
                                         stages=[stage])
         run = ThreatCheckRun(tenant_id=tenant_id, organization_id=org_id, advisory_id=adv.id,
-                             advisory_version=adv.published_version or 0, check_key=check.key, scan_id=scan.id,
+                             advisory_version=adv.published_version or 0, check_key=check.key,
+                             template_id=check.template_id, cves=list(content.cves), scan_id=scan.id,
                              asset_ids=[m.asset_id for m in group], status=CheckRunStatus.QUEUED,
                              requested_by=user_id, summary={})
         db.add(run)
@@ -656,8 +695,15 @@ def sync_check_run(db: Session, scan: Scan) -> ThreatCheckRun | None:
         allowed = set(db.execute(select(ScopeDecision.target).where(
             ScopeDecision.scan_id == scan.id, ScopeDecision.stage_id == stage.id,
             ScopeDecision.decision == DecisionResult.ALLOWED)).scalars())
-    adv_cves = set(db.execute(select(ThreatAdvisory.cves).where(ThreatAdvisory.id == run.advisory_id)).scalar() or [])
-    template = db.execute(select(ThreatCheck.template_id).where(ThreatCheck.key == run.check_key)).scalar()
+    # Read the result against what was dispatched, not against today's definitions.
+    if run.template_id is not None:
+        adv_cves, template = set(run.cves or []), run.template_id
+    else:
+        adv_cves = set(db.execute(select(ThreatAdvisory.cves).where(ThreatAdvisory.id == run.advisory_id)).scalar()
+                       or [])
+        template = db.execute(select(ThreatCheck.template_id).where(ThreatCheck.key == run.check_key)).scalar()
+    current = published_advisories(db, [run.advisory_id])
+    current_templates = _templates_for(db, current[0][1]) if current else set()
     concerns = [func.lower(func.split_part(Finding.source_finding_id, ":", 1)) == (template or "").lower()]
     if adv_cves:
         concerns.append(Finding.cve.overlap(sorted(adv_cves)))
@@ -686,9 +732,14 @@ def sync_check_run(db: Session, scan: Scan) -> ThreatCheckRun | None:
         else:
             outcome, detail = CheckOutcome.NOT_DETECTED, ("the check completed without detecting the issue. This "
                                                           "is not proof the asset is safe")
-        m.check_outcome, m.check_detail, m.checked_at = outcome, detail[:500], now
+        if current and not run_applies(run, m.advisory_version, current_templates, current[0][1].cves):
+            outcome, detail = CheckOutcome.NONE, ("the advisory changed while this check ran, so its result does "
+                                                  "not apply to the current version; request the check again")
+        m.check_outcome, m.check_detail = outcome, detail[:500]
+        m.checked_at = now if outcome != CheckOutcome.NONE else None
         m.assessment = assess(m.match_status, m.basis, m.check_outcome, bool(m.finding_ids))
-        counts[outcome.value] += 1
+        key = outcome.value if outcome.value in counts else "superseded"
+        counts[key] = counts.get(key, 0) + 1
     if scan.status == ScanStatus.CANCELLED:
         run.status = CheckRunStatus.CANCELLED
     elif reason:
@@ -701,12 +752,49 @@ def sync_check_run(db: Session, scan: Scan) -> ThreatCheckRun | None:
     return run
 
 
-def refresh_run_status(db: Session, run: ThreatCheckRun) -> None:
-    """Queued → running when its scan starts (display only)."""
-    if run.status == CheckRunStatus.QUEUED and run.scan_id:
-        st = db.execute(select(Scan.status).where(Scan.id == run.scan_id)).scalar()
-        if st == ScanStatus.RUNNING:
-            run.status = CheckRunStatus.RUNNING
+TERMINAL_SCAN_STATES = (ScanStatus.COMPLETED, ScanStatus.PARTIAL, ScanStatus.FAILED, ScanStatus.CANCELLED)
+
+
+def refresh_run_status(db: Session, run: ThreatCheckRun) -> bool:
+    """Queued → running when its scan starts (display only); finish a run whose scan has
+    already ended (its completion update was lost). Returns whether anything durable changed."""
+    if run.status not in ACTIVE_CHECK_RUN_STATES:
+        return False
+    scan = db.get(Scan, run.scan_id) if run.scan_id else None
+    if scan is not None and scan.status == ScanStatus.RUNNING and run.status == CheckRunStatus.QUEUED:
+        run.status = CheckRunStatus.RUNNING
+        return False
+    if scan is None or scan.status in TERMINAL_SCAN_STATES:
+        reconcile_run(db, run, scan)
+        return True
+    return False
+
+
+def reconcile_run(db: Session, run: ThreatCheckRun, scan: Scan | None) -> None:
+    locked = db.get(ThreatCheckRun, run.id, with_for_update=True, populate_existing=True)
+    if locked is None or locked.status not in ACTIVE_CHECK_RUN_STATES:
+        return
+    if scan is not None:
+        sync_check_run(db, scan)
+        return
+    reason = "the check's scan no longer exists"
+    for m in db.execute(select(ThreatMatch).where(ThreatMatch.last_check_run_id == locked.id)).scalars():
+        if m.check_outcome == CheckOutcome.PENDING:
+            m.check_outcome, m.check_detail, m.checked_at = CheckOutcome.INCONCLUSIVE, reason, _now()
+            m.assessment = assess(m.match_status, m.basis, m.check_outcome, bool(m.finding_ids))
+    locked.status, locked.finished_at = CheckRunStatus.INCONCLUSIVE, _now()
+    locked.summary = {**(locked.summary or {}), "reason": reason}
+    db.flush()
+
+
+def reconcile_check_runs(db: Session) -> int:
+    """Finish every queued/running check whose scan has ended: the repair for a completion
+    update that failed (it runs in a savepoint, so it can never fail the scan itself)."""
+    fixed = 0
+    for run in list(db.execute(select(ThreatCheckRun).where(
+            ThreatCheckRun.status.in_([s.value for s in ACTIVE_CHECK_RUN_STATES]))).scalars()):
+        fixed += refresh_run_status(db, run)
+    return fixed
 
 
 # ==================================================================== remediation

@@ -387,3 +387,110 @@ def test_two_tenants_with_the_same_asset_names_never_see_each_other(world, syste
     export = c.get(f"/api/v1/threats/{adv_id}/assets/export.csv", headers=bravo).text
     assert "resolved" not in export and export.count("\n") == len(b_rows) + 1
     assert system_db.scalar(select(func.count()).select_from(ThreatMatch)) == len(a_rows) + len(b_rows)
+
+
+# ------------------------------------------------------- audit regressions (F1, F2, F5)
+def test_a_capped_evaluation_retires_nothing_and_says_it_is_partial(world, monkeypatch):
+    """Hitting a bound is not evidence that anything disappeared."""
+    from app.threats import service
+
+    c, root, analyst = world["c"], world["root"], world["analyst"]
+    _approve_check(c, root)
+    _scan(c, analyst, admin=root)
+    adv_id = _publish(c, root)
+    before = _assets(c, analyst, adv_id)
+    assert len(before) >= 2, before
+    monkeypatch.setattr(service, "MAX_MATCHES_PER_ADVISORY", 1)
+    c.post("/api/v1/threat-catalog/evaluate", headers=root)
+    after = _assets(c, analyst, adv_id)
+    assert {v: m["assessment"] for v, m in after.items()} == {v: m["assessment"] for v, m in before.items()}
+    assert all(m["assessment"] != "no_longer_observed" for m in after.values())
+    detail = c.get(f"/api/v1/threats/{adv_id}", headers=analyst).json()
+    assert detail["incomplete"] and "more than 1 assets match" in detail["incomplete"][0]
+    listed = c.get("/api/v1/threats", headers=analyst).json()["items"]
+    assert next(i for i in listed if i["id"] == adv_id)["incomplete"]
+    # A complete evaluation clears it.
+    monkeypatch.setattr(service, "MAX_MATCHES_PER_ADVISORY", 5000)
+    c.post("/api/v1/threat-catalog/evaluate", headers=root)
+    assert c.get(f"/api/v1/threats/{adv_id}", headers=analyst).json()["incomplete"] == []
+
+
+def test_a_check_result_never_carries_over_to_a_version_that_asks_something_else(world, system_db):
+    from app.models import ThreatCheckRun
+
+    c, root, analyst, fake = world["c"], world["root"], world["analyst"], world["fake"]
+    _approve_check(c, root)
+    _scan(c, analyst, admin=root)
+    adv_id = _publish(c, root)
+    ep = _assets(c, analyst, adv_id)["https://api.example.com"]
+    fake.set("nuclei", b"")
+    run = c.post(f"/api/v1/threats/{adv_id}/checks", headers=analyst, json={"match_ids": [ep["id"]]}).json()[0]
+    # The run keeps what it actually tested.
+    row = system_db.get(ThreatCheckRun, uuid.UUID(run["id"]))
+    assert row.template_id == "cve-2099-0001" and row.cves == ["CVE-2099-0001"]
+    assert _assets(c, analyst, adv_id)["https://api.example.com"]["assessment"] == "not_detected"
+
+    # Version 2 only rewords the advisory: same detection, same CVE — the result still applies.
+    c.put(f"/api/v1/threat-catalog/{adv_id}/draft", headers=root, json={**NGINX, "summary": "Reworded."})
+    c.post(f"/api/v1/threat-catalog/{adv_id}/publish", headers=root)
+    m = _assets(c, analyst, adv_id)["https://api.example.com"]
+    assert m["advisory_version"] == 2 and m["assessment"] == "not_detected"
+
+    # Version 3 asks about another CVE with another detection: the old negative says nothing.
+    assert c.put("/api/v1/threat-catalog/checks/nginx-cve-2099-0002", headers=root, json={
+        "key": "nginx-cve-2099-0002", "name": "second detection", "template_id": "CVE-2099-0002"}).status_code == 200
+    c.put(f"/api/v1/threat-catalog/{adv_id}/draft", headers=root, json={
+        **NGINX, "cves": ["CVE-2099-0002"], "check_keys": ["nginx-cve-2099-0002"]})
+    c.post(f"/api/v1/threat-catalog/{adv_id}/publish", headers=root)
+    m = _assets(c, analyst, adv_id)["https://api.example.com"]
+    assert m["advisory_version"] == 3
+    assert m["check_outcome"] == "none" and m["assessment"] == "potentially_affected"
+    assert "earlier version" in m["check_detail"]
+
+
+def test_a_lost_check_completion_is_repaired_and_does_not_block_new_checks(world, monkeypatch):
+    from app.threats import service
+
+    c, root, analyst, fake = world["c"], world["root"], world["analyst"], world["fake"]
+    _approve_check(c, root)
+    _scan(c, analyst, admin=root)
+    adv_id = _publish(c, root)
+    ep = _assets(c, analyst, adv_id)["https://api.example.com"]
+    fake.set("nuclei", b"")
+    real = service.on_scan_finished
+
+    def broken(db, scan, org):  # noqa: ANN001
+        raise RuntimeError("transient failure while recording the check")
+
+    monkeypatch.setattr(service, "on_scan_finished", broken)
+    first = c.post(f"/api/v1/threats/{adv_id}/checks", headers=analyst, json={"match_ids": [ep["id"]]})
+    assert first.status_code == 201
+    scan = c.get(f"/api/v1/scans/{first.json()[0]['scan_id']}", headers=analyst).json()
+    assert scan["status"] == "completed"  # the savepoint kept the scan safe
+    monkeypatch.setattr(service, "on_scan_finished", real)
+    # Viewing the advisory finishes the run from its (ended) scan; no database edit needed.
+    runs = c.get(f"/api/v1/threats/{adv_id}/checks", headers=analyst).json()
+    assert runs[0]["status"] == "completed"
+    assert _assets(c, analyst, adv_id)["https://api.example.com"]["check_outcome"] == "not_detected"
+    again = c.post(f"/api/v1/threats/{adv_id}/checks", headers=analyst, json={"match_ids": [ep["id"]]})
+    assert again.status_code == 201, again.text
+
+
+def test_the_daily_evaluation_also_repairs_lost_check_completions(world, monkeypatch, tenant_db):
+    from app.models import ThreatCheckRun
+    from app.threats import service
+
+    c, root, analyst, fake = world["c"], world["root"], world["analyst"], world["fake"]
+    _approve_check(c, root)
+    _scan(c, analyst, admin=root)
+    adv_id = _publish(c, root)
+    ep = _assets(c, analyst, adv_id)["https://api.example.com"]
+    fake.set("nuclei", b"")
+    real = service.on_scan_finished
+    monkeypatch.setattr(service, "on_scan_finished", lambda *a: (_ for _ in ()).throw(RuntimeError("lost")))
+    run_id = c.post(f"/api/v1/threats/{adv_id}/checks", headers=analyst, json={"match_ids": [ep["id"]]}).json()[0]["id"]
+    monkeypatch.setattr(service, "on_scan_finished", real)
+    with tenant_db(world["ta"].id) as db:
+        assert service.evaluate_tenant(db, world["ta"].id) is not None
+        db.commit()
+        assert db.get(ThreatCheckRun, uuid.UUID(run_id)).status == "completed"

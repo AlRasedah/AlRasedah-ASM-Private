@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { capture, me, mockApi, screenshotStatus as shotStatus } from "./fixtures";
+import { advisoryDetail, capture, me, mockApi, screenshotStatus as shotStatus, threatMatches } from "./fixtures";
 const screenshotStatus = () => structuredClone(shotStatus);
 import { api, ApiError } from "@/api/client";
 
@@ -116,6 +116,35 @@ describe("Threat Center", () => {
     renderAt("/threats/adv1");
     expect(await screen.findByText(/No approved check exists for this advisory/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Check selected assets/ })).toBeNull();
+  });
+
+  it("asset rows follow a check from running to finished without a reload", async () => {
+    // The summary sees the run finish on its next poll; the rows must not stay "Check running".
+    let finished = false;
+    const pending = threatMatches.map((m) => (m.id === "m2" ? { ...m, assessment: "check_pending", check_outcome: "pending" } : m));
+    const run = advisoryDetail.check_runs[0];
+    serve((p) => {
+      if (p === "/threats/adv1") {
+        const status = finished ? "completed" : "running";
+        return { ...advisoryDetail, check_runs: [{ ...run, status, finished_at: finished ? run.finished_at : null }] };
+      }
+      if (p === "/threats/adv1/assets") return { items: finished ? threatMatches : pending, total: 3, page: 1, page_size: 50 };
+      return undefined;
+    });
+    renderAt("/threats/adv1");
+    expect(await screen.findByText("Check running", { selector: ".badge" })).toBeTruthy();
+    finished = true;
+    await waitFor(() => expect(screen.queryByText("Check running", { selector: ".badge" })).toBeNull(), { timeout: 12000 });
+    expect(screen.getAllByText("Checked — not detected", { selector: ".badge" }).length).toBeGreaterThan(0);
+  }, 20000);
+
+  it("a partial assessment says so", async () => {
+    serve((p) => (p === "/threats/adv1"
+      ? { ...advisoryDetail, incomplete: ["Acme: more than 5000 assets match; the assessment covers part of the inventory"] }
+      : undefined));
+    renderAt("/threats/adv1");
+    expect(await screen.findByText(/Partial assessment/)).toBeTruthy();
+    expect(screen.getByText("partial", { selector: ".badge" })).toBeTruthy();
   });
 
   it("the catalog is closed to tenant administrators", async () => {

@@ -51,6 +51,9 @@ class AdvisorySummary(BaseModel):
     last_evaluated_at: datetime | None = None
     evaluated_version: int | None = None
     stale: bool = False  # evaluated against an older version than the one published
+    # Organizations whose last evaluation hit a bound: their assessment covers part of the
+    # inventory, and nothing was marked "no longer observed" from it.
+    incomplete: list[str] = []
     has_check: bool = False
 
 

@@ -70,6 +70,13 @@ breadth-first with a visited set, so cycles (CNAME loops, a name and an address 
 each other) end where they close. When a bound is hit, the map says which one ("node limit
 reached", "time limit reached") instead of failing.
 
+Each level of the traversal runs in a savepoint whose statement timeout is the time left in
+the budget. When PostgreSQL cancels a slow query, only that level is rolled back: the map
+built so far is returned with `timed_out: true` and "time limit reached", and it is not
+cached, so the next request tries again. Only if even the starting points cannot be read in
+time does the request fail, with HTTP 503 (`map_timeout`) and a message to retry or start
+from one asset.
+
 ## Isolation
 
 The map is built in the caller's tenant session (RLS) and restricted to one organization:
@@ -97,7 +104,7 @@ Response: `organization`, `root_ids`, `nodes[]` (`id`, `kind` asset/finding, `ty
 `unverified`, `finding_id`), `edges[]` (`relation`, `meaning`, `evidence`
 observed/derived/unverified report, `source_label`, `first_seen`, `last_seen`, `age_days`,
 `freshness` current/stale/inactive/historical/unverified, `active`), `truncated`,
-`truncation_reasons`, `limits`, `elapsed_ms`, `notice`, `cached`.
+`truncation_reasons`, `limits`, `elapsed_ms`, `timed_out`, `notice`, `cached`.
 
 ## Future phase: attack-path analysis (not implemented)
 

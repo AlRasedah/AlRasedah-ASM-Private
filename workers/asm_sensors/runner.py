@@ -122,6 +122,9 @@ async def execute_job(
     coordinator: Coordinator | None = None,
 ) -> SensorResult:
     started = datetime.now(UTC)
+    if job.not_after is not None and started > job.not_after:
+        # Before any lease, browser or connection: the platform has already given up on it.
+        return _failed(job, "the job expired before a scanner started it (the scanner was busy)", started)
     # Inline mode runs adapters inside the platform process, which configures its own
     # logging; make sure request URLs are still not written out with their credentials.
     logs.configure()

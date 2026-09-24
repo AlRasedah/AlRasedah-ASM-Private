@@ -107,7 +107,7 @@ const counts = { affected: 3, confirmed: 1, not_detected: 1, inconclusive: 0, un
 export const advisory = {
   id: "adv1", slug: "cve-2099-0001", title: "Example VPN pre-auth RCE", severity: "critical", cves: ["CVE-2099-0001"],
   status: "published", published_version: 2, source_published_at: earlier, source_updated_at: now,
-  version_published_at: now, counts, last_evaluated_at: now, evaluated_version: 2, stale: false, has_check: true,
+  version_published_at: now, counts, last_evaluated_at: now, evaluated_version: 2, stale: false, incomplete: [], has_check: true,
 };
 
 export const advisoryDetail = {

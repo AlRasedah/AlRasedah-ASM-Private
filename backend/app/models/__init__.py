@@ -13,7 +13,7 @@ from .platform import PlatformSetting, UserAlertPreference
 from .reports import Report
 from .scans import Scan, ScanArtifact, ScanProfile, ScanSchedule, ScanStage, ScopeDecision
 from .scope import ScopeEntry, Secret
-from .screenshots import ScreenshotCapture
+from .screenshots import ScreenshotCapture, ScreenshotUsage, StorageDeletion
 from .tenancy import MetricSnapshot, Organization, Plan, Tenant, UsageRecord
 from .threats import ThreatAdvisory, ThreatAdvisoryVersion, ThreatCampaign, ThreatCheck, ThreatCheckRun, ThreatMatch
 
@@ -25,6 +25,7 @@ __all__ = [
     "ScanArtifact", "ScanProfile", "ScanSchedule", "ScanStage", "ScopeDecision", "ScopeEntry", "Secret",
     "MetricSnapshot", "Organization", "Plan", "Tenant", "UsageRecord", "ThreatAdvisory", "ThreatAdvisoryVersion",
     "ThreatCampaign", "ThreatCheck", "ThreatCheckRun", "ThreatMatch", "ScreenshotCapture",
+    "ScreenshotUsage", "StorageDeletion",
 ]
 
 # Tables protected by the standard tenant-isolation RLS policy.

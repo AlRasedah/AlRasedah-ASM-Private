@@ -24,7 +24,7 @@ import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from asm_sensors.jobs import TASK_NAME, SensorJob, job_queue
+from asm_sensors.jobs import JOB_HARD_LIMIT_GRACE, TASK_NAME, SensorJob, job_queue
 from sqlalchemy import exists, or_, select
 
 from app.core.config import get_settings
@@ -66,7 +66,10 @@ def publish_job(job: SensorJob, pool: str) -> None:
     """Put a sensor job on its pool's queue (task id = job id, so it can be revoked)."""
     celery_app.send_task(TASK_NAME, args=[job.model_dump(mode="json")], task_id=job.job_id,
                          queue=job_queue(get_settings().sensor_queue_prefix, pool),
-                         time_limit=job.timeout_seconds + 300, soft_time_limit=job.timeout_seconds + 60)
+                         time_limit=job.timeout_seconds + JOB_HARD_LIMIT_GRACE,
+                         soft_time_limit=job.timeout_seconds + 60,
+                         # A second guard: the worker discards it unstarted after this.
+                         expires=job.not_after)
 
 
 @celery_app.task(shared=False, name="asm.core.advance_scan")
