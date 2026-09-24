@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from functools import total_ordering
+from functools import lru_cache, total_ordering
 
 _TOKEN = re.compile(r"\d+|[a-z]+")
 _MAX_TOKENS = 12
@@ -39,6 +39,11 @@ class Version:
 
     @classmethod
     def parse(cls, value: str | None) -> Version:
+        # Versions repeat a lot (every advisory bound, every observed banner): parse each once.
+        return _parse(cls, value)
+
+    @classmethod
+    def _parse_uncached(cls, value: str | None) -> Version:
         text = (value or "").strip().lower()
         if text.startswith("v") and text[1:2].isdigit():
             text = text[1:]
@@ -69,6 +74,11 @@ class Version:
 
     def __hash__(self) -> int:
         return hash(self.tokens)
+
+
+@lru_cache(maxsize=16384)
+def _parse(cls: type[Version], value: str | None) -> Version:
+    return cls._parse_uncached(value)
 
 
 def in_range(version: Version, *, introduced: str | None, fixed: str | None, last_affected: str | None) -> bool:

@@ -77,6 +77,29 @@ def refresh_intel() -> None:
     _send("asm.core.refresh_intel")
 
 
+def run_threat_feed() -> None:
+    """Fetch automatic advisories now (inline: fetch, write and evaluate here)."""
+    if _inline():
+        from app.threats import feed
+        from app.threats.jobs import evaluate_everywhere
+
+        if feed.run().get("evaluate"):
+            evaluate_everywhere(None)
+        return
+    _send("asm.core.threat_feed")
+
+
+def evaluate_organization(tenant_id: uuid.UUID, organization_id: uuid.UUID) -> None:
+    """Match one organization against every published advisory (after its scan committed)."""
+    if _inline():
+        from app.threats.jobs import evaluate_organization
+
+        if evaluate_organization(tenant_id, organization_id).get("events"):
+            dispatch_notifications()
+        return
+    _send("asm.core.threat_evaluate_org", str(tenant_id), str(organization_id))
+
+
 def evaluate_advisory(advisory_id: uuid.UUID | None) -> None:
     """Match one published advisory (or all of them, with None) against every tenant's inventory."""
     if _inline():

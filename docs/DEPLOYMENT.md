@@ -242,7 +242,7 @@ Nothing in the platform requires a foreign cloud service. External calls are lim
 |---|---|---|
 | Passive DNS/CT sources (Subfinder, crt.sh, Amass, SpiderFoot) | Discovery | Disable per profile; `ASM_CRTSH_URL` for a mirror |
 | Team Cymru DNS | IP → ASN | Remove the `ip_enrichment` stage from profiles |
-| CISA KEV, FIRST EPSS, NVD | Vulnerability intelligence | `ASM_INTEL_*_URL` mirrors, or `ASM_INTEL_REFRESH_ENABLED=false` + offline import: `docker compose run --rm -v "$PWD/intel:/intel:ro" asm-api cli intel-import --kev /intel/kev.json --epss /intel/epss_scores-current.csv.gz` |
+| CISA KEV, FIRST EPSS, NVD | Vulnerability intelligence and automatic Threat Center advisories (`services.nvd.nist.gov`; turn the feed off under Manage advisories if the platform has no internet access) | `ASM_INTEL_*_URL` mirrors, or `ASM_INTEL_REFRESH_ENABLED=false` + offline import: `docker compose run --rm -v "$PWD/intel:/intel:ro" asm-api cli intel-import --kev /intel/kev.json --epss /intel/epss_scores-current.csv.gz` |
 | Nuclei template updates | Detection content | Volume populated from an internal mirror |
 
 Object storage: local volume by default; any S3-compatible service (e.g. OCI Object Storage

@@ -243,6 +243,31 @@ def threat_evaluate(advisory_id: str = "") -> dict:
     return stats
 
 
+@celery_app.task(shared=False, name="asm.core.threat_evaluate_org")
+def threat_evaluate_org(tenant_id: str, organization_id: str) -> dict:
+    """After a scan: the organization's inventory against every published advisory."""
+    from app.threats.jobs import evaluate_organization
+
+    stats = evaluate_organization(uuid.UUID(tenant_id), uuid.UUID(organization_id))
+    if stats.get("events"):
+        dispatch_notifications.delay()
+    return stats
+
+
+@celery_app.task(shared=False, name="asm.core.threat_feed")
+def threat_feed() -> dict:
+    """Write advisories from CISA KEV / NVD, then match what changed against every tenant."""
+    from app.threats import feed
+    from app.threats.jobs import evaluate_everywhere
+
+    out = feed.run()
+    if out.pop("evaluate", False):
+        out["evaluation"] = evaluate_everywhere(None)
+        if out["evaluation"].get("events"):
+            dispatch_notifications.delay()
+    return out
+
+
 @celery_app.task(shared=False, name="asm.core.screenshot_dispatch")
 def screenshot_dispatch() -> int:
     """Start queued website captures while the deployment-wide limit allows (also the watchdog)."""

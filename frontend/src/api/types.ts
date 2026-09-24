@@ -492,6 +492,10 @@ export interface AdvisorySummary {
   stale: boolean;
   /** Why the assessment covers only part of the inventory (one line per organization). */
   incomplete: string[];
+  /** "feed": written automatically from CISA KEV / NVD; "manual": by a platform administrator. */
+  origin?: "feed" | "manual";
+  /** One of its CVEs is in CISA's known-exploited catalog. */
+  kev?: boolean;
   has_check: boolean;
 }
 
@@ -582,10 +586,21 @@ export interface AdvisoryAdmin {
   version_published_at: string | null;
   updated_at: string;
   has_draft: boolean;
+  origin?: "feed" | "manual";
   draft: AdvisoryContent | null;
   draft_version: number | null;
   published: AdvisoryContent | null;
   versions: { version: number; state: string; published_at: string | null; created_at: string }[];
+}
+
+export interface FeedSourceState { last_success_at: string | null; last_attempt_at: string | null; last_error: string | null; records: number | null }
+
+export interface FeedConfig {
+  settings: { enabled: boolean; publish: "kev" | "all" | "none"; include_critical: boolean; critical_days: number;
+    auto_checks: boolean; aliases: Record<string, string[]> };
+  builtin_aliases: Record<string, string[]>;
+  status: { items: number; kev_items: number; by_status: Record<string, number>; has_api_key: boolean;
+    sources: { kev: FeedSourceState | null; critical: FeedSourceState | null } };
 }
 
 export interface ApprovedCheck {

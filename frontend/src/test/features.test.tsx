@@ -102,8 +102,12 @@ describe("Threat Center", () => {
   });
 
   it("no advisories yet, and an API error, both say so", async () => {
-    serve((p) => (p === "/threats" ? { items: [], total: 0, page: 1, page_size: 25 } : undefined));
+    const calls = serve((p) => (p === "/threats" ? { items: [], total: 0, page: 1, page_size: 25 } : undefined));
     renderAt("/threats");
+    // By default only advisories that may affect this tenant are listed.
+    expect(await screen.findByText(/None of the published advisories matches your recorded inventory/)).toBeTruthy();
+    expect(calls.find((c) => c.path === "/threats")?.query?.relevant).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Show all advisories" }));
     expect(await screen.findByText(/No advisories have been published yet/)).toBeTruthy();
     cleanup();
     serve((p) => (p === "/threats/adv1" ? new ApiError(404, "not_found", "Advisory not found") : undefined));
@@ -145,6 +149,29 @@ describe("Threat Center", () => {
     renderAt("/threats/adv1");
     expect(await screen.findByText(/Partial assessment/)).toBeTruthy();
     expect(screen.getByText("partial", { selector: ".badge" })).toBeTruthy();
+  });
+
+  it("exploited-in-the-wild advisories are marked", async () => {
+    serve((p) => (p === "/threats" ? { items: [{ ...advisoryDetail, kev: true, origin: "feed" }], total: 1, page: 1, page_size: 25 } : undefined));
+    renderAt("/threats");
+    expect(await screen.findByText("exploited", { selector: ".badge" })).toBeTruthy();
+  });
+
+  it("a platform administrator configures the automatic feed", async () => {
+    const calls = serve(() => undefined);
+    renderAt("/threats/catalog");
+    expect(await screen.findByText(/1480/)).toBeTruthy();
+    expect(screen.getByText(/not endorsed or certified by the NVD/)).toBeTruthy();
+    fireEvent.change(screen.getByPlaceholderText("acme:web_gateway = acme gateway, acmegw"),
+      { target: { value: "acme:widget_server = acme widget, widgetd\n# comment\nfoo:bar = baz" } });
+    fireEvent.change(screen.getByPlaceholderText("not set"), { target: { value: "0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9" } });
+    fireEvent.click(screen.getByRole("button", { name: /Save/ }));
+    await waitFor(() => expect(calls.some((c) => c.path === "/threat-catalog/feed" && c.method === "PUT")).toBe(true));
+    const put = calls.find((c) => c.path === "/threat-catalog/feed" && c.method === "PUT")!;
+    expect((put.body as { aliases: unknown }).aliases).toEqual({ "acme:widget_server": ["acme widget", "widgetd"], "foo:bar": ["baz"] });
+    expect((put.body as { nvd_api_key: string }).nvd_api_key).toBe("0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9");
+    fireEvent.click(screen.getByRole("button", { name: /Update now/ }));
+    await waitFor(() => expect(calls.some((c) => c.path === "/threat-catalog/feed/run" && c.method === "POST")).toBe(true));
   });
 
   it("the catalog is closed to tenant administrators", async () => {

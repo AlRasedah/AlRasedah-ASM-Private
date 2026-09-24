@@ -15,6 +15,19 @@ from . import service
 log = logging.getLogger(__name__)
 
 
+def evaluate_organization(tenant_id: uuid.UUID, organization_id: uuid.UUID) -> dict[str, int]:
+    """After a scan: match one organization's inventory against every published advisory."""
+    from app.models import Organization
+
+    with new_session(tenant_id) as db:
+        org = db.get(Organization, organization_id)
+        if org is None or not org.is_active:
+            return {}
+        s = service.evaluate_org(db, org, service.published_advisories(db))
+        db.commit()
+    return {"matches": s.matches, "new_matches": s.new_matches, "events": s.events}
+
+
 def evaluate_everywhere(advisory_id: uuid.UUID | None = None) -> dict[str, int]:
     totals = {"tenants": 0, "matches": 0, "new_matches": 0, "events": 0, "errors": 0}
     only = [advisory_id] if advisory_id else None

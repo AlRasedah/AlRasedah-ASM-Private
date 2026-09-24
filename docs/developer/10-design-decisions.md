@@ -281,6 +281,25 @@ browser download, unsandboxed as root, no per-connection control); a shared scre
 a CDP client (a large dependency for one screenshot); `--no-sandbox` in a locked-down
 container (rejected by requirement).
 
+## ADR-029 Threat Center advisories are generated from CISA KEV and NVD
+**Decision**: an hourly job writes advisories from NVD's CVE API filtered to CISA's Known
+Exploited Vulnerabilities (`hasKev`, incremental by modification date), optionally plus recent
+critical CVEs. Affected products and ranges come from NVD's CPE configurations; names are
+mapped to fingerprint names with built-in and administrator aliases; KEV advisories publish
+automatically, others are drafts. The approved check defaults to the community detection
+named after the CVE, and the scanner refuses a named detection it does not have or that is
+intrusive, so a missing detection is inconclusive rather than "not detected".
+**Consequences**: the Threat Center fills itself with no paid source and no language model;
+the whole catalog is shown to every tenant (no inference about other tenants' inventory),
+filtered to "affecting my assets" by default. Matching quality is bounded by NVD's CPE data
+(backlog, naming) and by fingerprinting; results stay "potentially affected" until a check
+or finding confirms them. Advisories written by administrators always win.
+**Alternatives**: manual curation only (does not keep up); a commercial feed (cost, licence,
+and little extra for "which exposed products are affected"); Wazuh CTI (no public API or
+licence for third-party use; built for host package inventories); OSV (package ecosystems,
+poor coverage of network appliances); generating only for products seen in inventory (would
+reveal one tenant's products to others through the shared catalog).
+
 ## ADR-028 Exposure map: observed relationships, bounded in the database, never paths
 **Decision**: the map is built from `asset_relationships` and findings only, per request,
 inside the caller's tenant session and one organization, with PostgreSQL doing the bounding

@@ -10,7 +10,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
-from sqlalchemy import or_, select
+from sqlalchemy import exists, or_, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import Paging, Principal, get_db, get_system_db, require
@@ -27,7 +27,7 @@ from app.models import (
     ThreatMatch,
     VulnIntel,
 )
-from app.models.enums import AdvisoryStatus, Assessment, ScanTrigger
+from app.models.enums import AFFECTED_ASSESSMENTS, AdvisoryStatus, Assessment, ScanTrigger
 from app.schemas.assets import AssetRef
 from app.schemas.common import Message, Page, paginate
 from app.schemas.threats import (
@@ -41,6 +41,7 @@ from app.schemas.threats import (
     CheckRequest,
     CheckRunOut,
     CveIntel,
+    FeedSettingsIn,
     FindingRef,
     MatchOut,
     MatchUpdate,
@@ -48,6 +49,7 @@ from app.schemas.threats import (
 )
 from app.services import audit
 from app.services.audit import Action
+from app.threats import feed
 from app.threats import service as threats
 from app.threats.content import AdvisoryContent
 from app.workers import dispatch
@@ -61,6 +63,9 @@ def _summaries(db: Session, advisories: list[ThreatAdvisory], organization_id: u
     ids = [a.id for a in advisories]
     counts = threats.counts_by_advisory(db, ids, organization_id)
     fresh = threats.freshness(db, ids)
+    all_cves = {c for a in advisories for c in a.cves or []}
+    kev = set(db.execute(select(VulnIntel.cve_id).where(VulnIntel.cve_id.in_(all_cves), VulnIntel.kev.is_(True)))
+              .scalars()) if all_cves else set()
     out = []
     for a in advisories:
         c = fresh.get(a.id)
@@ -71,7 +76,7 @@ def _summaries(db: Session, advisories: list[ThreatAdvisory], organization_id: u
             counts=ThreatCounts(**counts[a.id]), last_evaluated_at=c.last_evaluated_at if c else None,
             evaluated_version=c.evaluated_version if c else None,
             stale=bool(c is None or (a.published_version or 0) > (c.evaluated_version or 0)),
-            incomplete=_gaps(c, organization_id),
+            incomplete=_gaps(c, organization_id), origin=a.origin, kev=bool(kev & set(a.cves or [])),
             has_check=has_check.get(a.id, False)))
     return out
 
@@ -98,6 +103,7 @@ def _has_checks(db: Session, advisories: list[ThreatAdvisory]) -> dict[uuid.UUID
 @router.get("/threats", response_model=Page[AdvisorySummary])
 def list_threats(status: str = Query("published", pattern="^(published|archived|all)$"),
                  q: str | None = Query(None, max_length=200), organization_id: uuid.UUID | None = None,
+                 relevant: bool = Query(False, description="only advisories that may affect this tenant's assets"),
                  paging: Paging = Depends(), _: Principal = Depends(require(Permission.FINDINGS_READ)),
                  db: Session = Depends(get_db)) -> Page[AdvisorySummary]:
     # RLS already hides drafts from tenant sessions; the filter makes the intent explicit.
@@ -108,6 +114,12 @@ def list_threats(status: str = Query("published", pattern="^(published|archived|
         needle = "%" + q.replace("%", "\\%").replace("_", "\\_") + "%"
         stmt = stmt.where(or_(ThreatAdvisory.title.ilike(needle), ThreatAdvisory.slug.ilike(needle),
                               ThreatAdvisory.cves.any(q.strip().upper())))
+    if relevant:  # RLS confines the matches to the caller's tenant
+        hit = select(ThreatMatch.id).where(ThreatMatch.advisory_id == ThreatAdvisory.id,
+                                           ThreatMatch.assessment.in_([a.value for a in AFFECTED_ASSESSMENTS]))
+        if organization_id:
+            hit = hit.where(ThreatMatch.organization_id == organization_id)
+        stmt = stmt.where(exists(hit))
     stmt = stmt.order_by(ThreatAdvisory.version_published_at.desc().nulls_last(), ThreatAdvisory.title)
     rows, total = paginate(db, stmt, paging.page, paging.page_size)
     return Page(items=_summaries(db, rows, organization_id, _has_checks(db, rows)), total=total, page=paging.page,
@@ -260,7 +272,7 @@ def _admin_out(db: Session, adv: ThreatAdvisory, full: bool = False) -> Advisory
     draft = threats.draft_of(db, adv.id)
     out = AdvisoryAdminOut(id=adv.id, slug=adv.slug, title=adv.title, severity=adv.severity, status=adv.status,
                            published_version=adv.published_version, version_published_at=adv.version_published_at,
-                           updated_at=adv.updated_at, has_draft=draft is not None)
+                           updated_at=adv.updated_at, has_draft=draft is not None, origin=adv.origin)
     if full:
         pub = threats.published_of(db, adv)
         out.draft = draft.content if draft else None
@@ -275,10 +287,46 @@ def _admin_out(db: Session, adv: ThreatAdvisory, full: bool = False) -> Advisory
 
 
 @router.get("/threat-catalog", response_model=list[AdvisoryAdminOut])
-def catalog(_: Principal = Depends(require(Permission.INTEL_ADMIN)),
+def catalog(origin: str = Query("all", pattern="^(all|manual|feed)$"), q: str | None = Query(None, max_length=200),
+            drafts: bool = Query(False, description="only advisories with an unpublished draft"),
+            _: Principal = Depends(require(Permission.INTEL_ADMIN)),
             db: Session = Depends(get_system_db)) -> list[AdvisoryAdminOut]:
-    rows = db.execute(select(ThreatAdvisory).order_by(ThreatAdvisory.updated_at.desc()).limit(500)).scalars()
+    stmt = select(ThreatAdvisory)
+    if origin != "all":
+        stmt = stmt.where(ThreatAdvisory.origin == origin)
+    if q:
+        needle = "%" + q.replace("%", "\\%").replace("_", "\\_") + "%"
+        stmt = stmt.where(or_(ThreatAdvisory.title.ilike(needle), ThreatAdvisory.slug.ilike(needle),
+                              ThreatAdvisory.cves.any(q.strip().upper())))
+    if drafts:
+        stmt = stmt.where(exists(select(ThreatAdvisoryVersion.id).where(
+            ThreatAdvisoryVersion.advisory_id == ThreatAdvisory.id, ThreatAdvisoryVersion.state == "draft")))
+    rows = db.execute(stmt.order_by(ThreatAdvisory.updated_at.desc()).limit(500)).scalars()
     return [_admin_out(db, a) for a in rows]
+
+
+@router.get("/threat-catalog/feed")
+def feed_settings(_: Principal = Depends(require(Permission.INTEL_ADMIN)),
+                  db: Session = Depends(get_system_db)) -> dict[str, Any]:
+    """Automatic advisories: settings (without the NVD key), built-in name aliases and status."""
+    return {"settings": feed.settings(db), "builtin_aliases": feed.BUILTIN_ALIASES, "status": feed.status(db)}
+
+
+@router.put("/threat-catalog/feed")
+def save_feed_settings(body: FeedSettingsIn, principal: Principal = Depends(require(Permission.INTEL_ADMIN)),
+                       db: Session = Depends(get_system_db)) -> dict[str, Any]:
+    values = body.model_dump(exclude={"nvd_api_key", "clear_nvd_api_key"}, exclude_none=True)
+    feed.set_settings(db, values, api_key=body.nvd_api_key or None, clear_key=body.clear_nvd_api_key,
+                      user_id=principal.user_id)
+    db.commit()
+    return {"settings": feed.settings(db), "builtin_aliases": feed.BUILTIN_ALIASES, "status": feed.status(db)}
+
+
+@router.post("/threat-catalog/feed/run", response_model=Message, status_code=202)
+def run_feed(_: Principal = Depends(require(Permission.INTEL_ADMIN))) -> Message:
+    """Fetch now instead of waiting for the hourly run."""
+    dispatch.run_threat_feed()
+    return Message(message="The feed is running; new advisories appear within a few minutes")
 
 
 @router.get("/threat-catalog/checks", response_model=list[CheckAdminOut])

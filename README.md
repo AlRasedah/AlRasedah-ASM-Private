@@ -78,7 +78,7 @@ Serve over HTTPS before exposing the UI beyond localhost — see
    **Findings** (investigate, remediate, accept risk with justification, false positive).
 5. **Alert** — add notification channels (email, webhook, Wazuh, Slack, Teams) and alert
    policies under **Integrations**.
-6. **Respond to announcements** — the **Threat Center** shows which assets a curated advisory
+6. **Respond to announcements** — the **Threat Center** shows which assets an advisory (written automatically for every vulnerability CISA lists as exploited, or by you)
    may affect, what approved checks found and what remediation is open; the **Exposure map**
    shows how domains, addresses, services, web applications and findings relate; optional
    **website screenshots** show what each web endpoint looks like.
@@ -199,7 +199,7 @@ No test touches the internet: scanner behaviour is covered with recorded tool ou
 | [docs/RISK_SCORING.md](docs/RISK_SCORING.md) | Risk model and tuning |
 | [docs/integrations/wazuh.md](docs/integrations/wazuh.md) | Wazuh forwarding, decoders and rules |
 | [docs/API.md](docs/API.md) | REST API overview, authentication, pagination |
-| [docs/THREAT_CENTER.md](docs/THREAT_CENTER.md) | Curated advisories matched against your inventory, approved checks, remediation |
+| [docs/THREAT_CENTER.md](docs/THREAT_CENTER.md) | Automatic advisories (CISA KEV + NVD) and your own, matched against your inventory; approved checks, remediation |
 | [docs/SCREENSHOTS.md](docs/SCREENSHOTS.md) | Website screenshots: isolation, limits, retention, measurements |
 | [docs/EXPOSURE_MAP.md](docs/EXPOSURE_MAP.md) | External exposure map: what it shows, bounds, and why it is not attack-path analysis |
 | [docs/MILESTONES.md](docs/MILESTONES.md) | Delivery status per milestone and roadmap |
