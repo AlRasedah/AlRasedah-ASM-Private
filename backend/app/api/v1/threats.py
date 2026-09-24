@@ -71,8 +71,15 @@ def _summaries(db: Session, advisories: list[ThreatAdvisory], organization_id: u
             counts=ThreatCounts(**counts[a.id]), last_evaluated_at=c.last_evaluated_at if c else None,
             evaluated_version=c.evaluated_version if c else None,
             stale=bool(c is None or (a.published_version or 0) > (c.evaluated_version or 0)),
+            incomplete=_gaps(c, organization_id),
             has_check=has_check.get(a.id, False)))
     return out
+
+
+def _gaps(c: Any, organization_id: uuid.UUID | None) -> list[str]:
+    """Why the assessment covers only part of the inventory (empty when it covers all)."""
+    gaps = (c.incomplete_orgs or {}) if c is not None else {}
+    return [v for k, v in sorted(gaps.items()) if organization_id is None or k == str(organization_id)]
 
 
 def _has_checks(db: Session, advisories: list[ThreatAdvisory]) -> dict[uuid.UUID, bool]:
@@ -130,8 +137,9 @@ def get_threat(advisory_id: uuid.UUID, organization_id: uuid.UUID | None = None,
     if organization_id:
         runs_stmt = runs_stmt.where(ThreatCheckRun.organization_id == organization_id)
     runs = list(db.execute(runs_stmt.order_by(ThreatCheckRun.created_at.desc()).limit(20)).scalars())
-    for r in runs:
-        threats.refresh_run_status(db, r)
+    if any([threats.refresh_run_status(db, r) for r in runs]):
+        db.commit()  # a run whose scan had ended is finished now (idempotent repair)
+        summary = _summaries(db, [adv], organization_id, _has_checks(db, [adv]))[0]
     return AdvisoryDetail(
         **summary.model_dump(), summary=content.summary if content else "",
         remediation=content.remediation if content else "", references=content.references if content else [],
@@ -233,8 +241,8 @@ def list_checks(advisory_id: uuid.UUID, _: Principal = Depends(require(Permissio
     _visible(db, advisory_id)
     runs = list(db.execute(select(ThreatCheckRun).where(ThreatCheckRun.advisory_id == advisory_id)
                            .order_by(ThreatCheckRun.created_at.desc()).limit(50)).scalars())
-    for r in runs:
-        threats.refresh_run_status(db, r)
+    if any([threats.refresh_run_status(db, r) for r in runs]):
+        db.commit()
     return [CheckRunOut.model_validate(r) for r in runs]
 
 

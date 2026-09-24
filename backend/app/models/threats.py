@@ -103,6 +103,9 @@ class ThreatCampaign(UUIDPk, TenantScoped, Timestamps, Base):
     advisory_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("threat_advisories.id", ondelete="CASCADE"), index=True)
     evaluated_version: Mapped[int | None] = mapped_column(Integer)
     last_evaluated_at: Mapped[datetime | None]
+    # {organization id: reason} for organizations whose last evaluation hit a bound and saw
+    # only part of the inventory. Nothing is retired as "no longer observed" from those.
+    incomplete_orgs: Mapped[dict[str, str]] = mapped_column(JSONB, default=dict, server_default=text("'{}'"))
 
 
 class ThreatMatch(UUIDPk, TenantScoped, Timestamps, Base):
@@ -167,6 +170,10 @@ class ThreatCheckRun(UUIDPk, TenantScoped, Timestamps, Base):
                                                    index=True)
     advisory_version: Mapped[int] = mapped_column(Integer)
     check_key: Mapped[str] = mapped_column(String(64))
+    # What was actually dispatched: the result is read against these, never against the
+    # advisory's or the check's current definition (both may change while it runs).
+    template_id: Mapped[str | None] = mapped_column(String(64))
+    cves: Mapped[list[str] | None] = mapped_column(ARRAY(String(32)))
     scan_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("scans.id", ondelete="SET NULL"), index=True)
     asset_ids: Mapped[list[uuid.UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), default=list)
     status: Mapped[CheckRunStatus] = enum_column(CheckRunStatus, default=CheckRunStatus.QUEUED)

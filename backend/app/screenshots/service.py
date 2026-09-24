@@ -13,8 +13,18 @@ Life of a capture::
 
 The concurrency limit (default 1 active capture per deployment) lives in
 PostgreSQL, not in any process's memory: every dispatcher, in every container,
-takes the same advisory lock and counts ``running`` rows before reserving one.
-A capture that never reports back is failed by the watchdog, which frees its slot.
+takes the same advisory lock and counts occupied slots before reserving one.
+
+A slot is held until the capture's job can no longer be executing: its job must
+*start* within ``START_WINDOW`` (the scanner refuses it afterwards, and the broker
+drops it), and a started job is killed by its hard time limit. So the slot is
+released when a result for the job arrives, or at ``slot_until`` = reservation +
+start window + hard limit — never earlier, not even when a user cancels (the job may
+already be running). A capture that never reports back is failed by the watchdog
+once its slot has expired.
+
+The daily allowance is counted in ``screenshot_usage``, not from capture rows,
+which retention and users delete.
 """
 
 from __future__ import annotations
@@ -24,19 +34,29 @@ import binascii
 import hashlib
 import logging
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from asm_sensors.adapters.screenshot import png_dimensions
-from asm_sensors.jobs import ResultEnvelope, SensorJob
+from asm_sensors.jobs import JOB_HARD_LIMIT_GRACE, ResultEnvelope, SensorJob
 from asm_sensors.observations import SensorResult
 from asm_sensors.targets import Target, TargetKind
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from app.core.errors import NotFound, QuotaExceeded, ScopeViolation, ValidationFailed
 from app.db.session import new_session, system_session
-from app.models import Asset, Organization, PlatformSetting, ScopeEntry, ScreenshotCapture, Tenant
+from app.models import (
+    Asset,
+    Organization,
+    PlatformSetting,
+    ScopeEntry,
+    ScreenshotCapture,
+    ScreenshotUsage,
+    StorageDeletion,
+    Tenant,
+)
 from app.models.enums import (
     ACTIVE_SCREENSHOT_STATES,
     AssetStatus,
@@ -57,13 +77,14 @@ log = logging.getLogger(__name__)
 ADAPTER = "screenshot"
 _DISPATCH_LOCK = 0x41534D53484F5453  # "ASMSHOTS"
 DISPATCH_GRACE = timedelta(minutes=10)  # a reserved capture must reach the broker within this
+START_WINDOW = timedelta(minutes=10)  # ... and a scanner must start its job within this
 
 DEFAULT_POLICY: dict[str, Any] = {
     # The deployment's scanner image has the pinned browser and its sandbox prerequisites.
     # Off until a platform administrator says so (docs/SCREENSHOTS.md, DEPLOYMENT.md §5b).
     "available": False,
     "max_concurrent": 1,  # active captures across the whole deployment
-    "per_tenant_daily": 50,  # captures a tenant may request per rolling 24 hours
+    "per_tenant_daily": 50,  # captures a tenant may request per UTC day (screenshot_usage)
     "per_tenant_queued": 10,  # captures a tenant may have waiting at once
     "retention_per_endpoint": 2,  # successful captures kept per endpoint
     "storage_quota_mb": 200,  # per tenant
@@ -123,13 +144,18 @@ def set_policy(db: Session, values: dict[str, Any], user_id: uuid.UUID | None) -
     return {**DEFAULT_POLICY, **merged}
 
 
+def _today() -> date:
+    return _now().date()
+
+
 def usage(db: Session, tenant_id: uuid.UUID) -> dict[str, int]:
-    since = _now() - timedelta(days=1)
     stored = db.scalar(select(func.coalesce(func.sum(ScreenshotCapture.size), 0)).where(
         ScreenshotCapture.tenant_id == tenant_id, ScreenshotCapture.storage_key.is_not(None))) or 0
-    today = db.scalar(select(func.count()).select_from(ScreenshotCapture).where(
-        ScreenshotCapture.tenant_id == tenant_id, ScreenshotCapture.created_at >= since,
-        ScreenshotCapture.status != ScreenshotStatus.CANCELLED)) or 0
+    # Objects whose records are gone but which are still in storage count too.
+    stored += db.scalar(select(func.coalesce(func.sum(StorageDeletion.size), 0)).where(
+        StorageDeletion.tenant_id == tenant_id)) or 0
+    today = db.scalar(select(ScreenshotUsage.requested).where(
+        ScreenshotUsage.tenant_id == tenant_id, ScreenshotUsage.day == _today())) or 0
     waiting = db.scalar(select(func.count()).select_from(ScreenshotCapture).where(
         ScreenshotCapture.tenant_id == tenant_id,
         ScreenshotCapture.status.in_([s.value for s in ACTIVE_SCREENSHOT_STATES]))) or 0
@@ -173,9 +199,21 @@ def _authorize(db: Session, org: Organization, asset: Asset, tenant: Tenant) -> 
     return None if decision.allowed else f"not authorized by scope: {decision.reason}"
 
 
+def _count_request(db: Session, tenant_id: uuid.UUID, delta: int) -> None:
+    stmt = insert(ScreenshotUsage).values(id=uuid.uuid4(), tenant_id=tenant_id, day=_today(),
+                                          requested=max(delta, 0))
+    db.execute(stmt.on_conflict_do_update(
+        index_elements=[ScreenshotUsage.tenant_id, ScreenshotUsage.day],
+        set_={"requested": func.greatest(ScreenshotUsage.requested + delta, 0), "updated_at": func.now()}))
+
+
 def request_capture(db: Session, *, tenant_id: uuid.UUID, asset_id: uuid.UUID, user_id: uuid.UUID | None,
                     trigger: str = "manual") -> tuple[ScreenshotCapture, bool]:
-    """Queue a capture. Returns ``(capture, created)``; an active capture for the endpoint is reused."""
+    """Queue a capture. Returns ``(capture, created)``; an active capture for the endpoint is reused.
+
+    Serialized per tenant (advisory lock until commit), so concurrent requests cannot
+    both pass the limits; the unique index on active captures per endpoint backs it up."""
+    db.execute(select(func.pg_advisory_xact_lock(func.hashtext(f"screenshots:{tenant_id}"))))
     asset = db.get(Asset, asset_id)
     if asset is None:
         raise NotFound("Asset not found")
@@ -197,7 +235,7 @@ def request_capture(db: Session, *, tenant_id: uuid.UUID, asset_id: uuid.UUID, u
     if used["active"] >= lim["per_tenant_queued"]:
         raise QuotaExceeded(f"{used['active']} captures are already waiting; try again when they finish")
     if used["captures_today"] >= lim["per_tenant_daily"]:
-        raise QuotaExceeded(f"This tenant may request {lim['per_tenant_daily']} captures per day")
+        raise QuotaExceeded(f"This tenant may request {lim['per_tenant_daily']} captures per day (UTC)")
     reason = _authorize(db, org, asset, tenant)
     if reason:
         raise ScopeViolation(f"This endpoint cannot be captured: {reason}")
@@ -205,6 +243,7 @@ def request_capture(db: Session, *, tenant_id: uuid.UUID, asset_id: uuid.UUID, u
                           trigger=trigger, requested_by=user_id, status=ScreenshotStatus.QUEUED)
     db.add(c)
     db.flush()
+    _count_request(db, tenant_id, 1)
     audit.record(db, Action.SCREENSHOT_REQUESTED, tenant_id=tenant_id, object_type="screenshot", object_id=c.id,
                  new={"asset_id": str(asset.id), "trigger": trigger})
     return c, True
@@ -217,19 +256,38 @@ def cancel_capture(db: Session, asset_id: uuid.UUID, capture_id: uuid.UUID) -> t
     if c.status not in ACTIVE_SCREENSHOT_STATES:
         return c, None
     task = (c.task_id, c.worker_pool or "default") if c.status == ScreenshotStatus.RUNNING and c.task_id else None
+    if c.status == ScreenshotStatus.QUEUED and c.created_at.astimezone(UTC).date() == _today():
+        _count_request(db, c.tenant_id, -1)  # nothing ran: the allowance comes back
+    # A running capture keeps its slot (slot_until): its job may already be executing.
     c.status, c.finished_at, c.error = ScreenshotStatus.CANCELLED, _now(), "cancelled by a user"
     db.flush()
     return c, task
 
 
 # ===================================================================== dispatching
+def job_timeout(pol: dict[str, Any]) -> int:
+    return max(60, int(pol["timeout_seconds"]) * 3 + 60)
+
+
+def slot_hold(pol: dict[str, Any]) -> timedelta:
+    """How long a reserved capture's job could still be executing: latest start, plus the
+    job's hard time limit, plus a minute for the result to travel."""
+    return START_WINDOW + timedelta(seconds=job_timeout(pol) + JOB_HARD_LIMIT_GRACE + 60)
+
+
+def _occupied(now: datetime) -> Any:
+    return or_(ScreenshotCapture.status == ScreenshotStatus.RUNNING, ScreenshotCapture.slot_until > now)
+
+
 def _watchdog(sdb: Session, pol: dict[str, Any], now: datetime) -> int:
-    """Fail captures that were never dispatched or never reported back (frees their slot)."""
-    lost = now - timedelta(seconds=int(pol["timeout_seconds"]) * 3 + 600)
+    """Fail captures that were never dispatched, or whose job can no longer report back.
+    The slot itself is freed only when ``slot_until`` passes (or a result arrives)."""
     rows = sdb.execute(select(ScreenshotCapture).where(
         ScreenshotCapture.status == ScreenshotStatus.RUNNING,
         ((ScreenshotCapture.dispatched_at.is_(None)) & (ScreenshotCapture.started_at < now - DISPATCH_GRACE))
-        | (ScreenshotCapture.started_at < lost)).with_for_update(skip_locked=True)).scalars().all()
+        | (ScreenshotCapture.slot_until < now)
+        | (ScreenshotCapture.slot_until.is_(None) & (ScreenshotCapture.started_at < now - slot_hold(pol))))
+        .with_for_update(skip_locked=True)).scalars().all()
     for c in rows:
         c.status, c.finished_at = ScreenshotStatus.FAILED, now
         c.error = ("the capture was never handed to a scanner" if c.dispatched_at is None
@@ -248,8 +306,7 @@ def reserve(now: datetime | None = None) -> list[tuple[uuid.UUID, uuid.UUID]]:
         sdb.execute(select(func.pg_advisory_xact_lock(_DISPATCH_LOCK)))
         _watchdog(sdb, pol, now)
         sdb.flush()
-        running = sdb.scalar(select(func.count()).select_from(ScreenshotCapture).where(
-            ScreenshotCapture.status == ScreenshotStatus.RUNNING)) or 0
+        running = sdb.scalar(select(func.count()).select_from(ScreenshotCapture).where(_occupied(now))) or 0
         free = int(pol["max_concurrent"]) - running
         reserved: list[tuple[uuid.UUID, uuid.UUID]] = []
         if free > 0:
@@ -265,6 +322,7 @@ def reserve(now: datetime | None = None) -> list[tuple[uuid.UUID, uuid.UUID]]:
             picked += [c for c in candidates if c not in picked]
             for c in picked[:free]:
                 c.status, c.started_at, c.task_id = ScreenshotStatus.RUNNING, now, uuid.uuid4().hex
+                c.slot_until = now + slot_hold(pol)
                 reserved.append((c.tenant_id, c.id))
         sdb.commit()
     return reserved
@@ -283,6 +341,8 @@ def _job_config(db: Session, org: Organization, pol: dict[str, Any]) -> tuple[di
 
 def _finish(db: Session, c: ScreenshotCapture, status: ScreenshotStatus, error: str | None) -> None:
     c.status, c.error, c.finished_at = status, (error or None) and error[:500], _now()
+    if status != ScreenshotStatus.CANCELLED:
+        c.slot_until = None
 
 
 def launch(tenant_id: uuid.UUID, capture_id: uuid.UUID) -> tuple[SensorJob, str] | None:
@@ -306,6 +366,7 @@ def launch(tenant_id: uuid.UUID, capture_id: uuid.UUID) -> tuple[SensorJob, str]
             reason = _authorize(db, org, asset, tenant) or scanner_pool_error(tenant)
         if reason:
             _finish(db, c, ScreenshotStatus.BLOCKED, reason.removeprefix("Cancelled: "))
+            c.slot_until = None  # no job was created
             db.commit()
             return None
         assert tenant is not None and org is not None
@@ -313,7 +374,8 @@ def launch(tenant_id: uuid.UUID, capture_id: uuid.UUID) -> tuple[SensorJob, str]
         pool = tenant.worker_pool or "default"
         job = SensorJob(job_id=c.task_id, tenant_id=str(tenant_id), scan_id=str(c.id), stage_id=str(c.id),
                         adapter=ADAPTER, targets=[Target(kind=TargetKind.URL, value=c.url)], config=cfg,
-                        timeout_seconds=max(60, int(pol["timeout_seconds"]) * 3 + 60), excluded_networks=networks)
+                        timeout_seconds=job_timeout(pol), excluded_networks=networks,
+                        not_after=(c.started_at or _now()) + START_WINDOW)
         c.worker_pool = pool
         db.commit()
         return job, pool
@@ -328,6 +390,7 @@ def mark_dispatched(tenant_id: uuid.UUID, capture_id: uuid.UUID, job_id: str, ok
             c.dispatched_at = _now()
         else:
             _finish(db, c, ScreenshotStatus.FAILED, "the capture could not be handed to a scanner")
+            c.slot_until = None  # the broker never took the job
         db.commit()
 
 
@@ -408,6 +471,10 @@ def receive_result(env: ResultEnvelope, result: SensorResult) -> bool:
         problem = binding_error(c, env, result)
         if problem:
             log.warning("rejected screenshot result for job %s: %s", env.job_id, problem)
+            if c is not None and c.slot_until is not None and c.task_id == env.job_id \
+                    and (c.worker_pool or "default") == env.pool:
+                c.slot_until = None  # its (cancelled or expired) job has finished: the slot is free
+                db.commit()
             return False
         assert c is not None
         outcome = str(result.stats.get("outcome") or "")
@@ -500,20 +567,43 @@ def apply_retention(db: Session, tenant_id: uuid.UUID, now: datetime | None = No
             ScreenshotCapture.status.in_([ScreenshotStatus.FAILED.value, ScreenshotStatus.BLOCKED.value,
                                           ScreenshotStatus.CANCELLED.value]))).scalars():
         failed += _delete(db, c)
-    return {"screenshots_removed": removed, "screenshot_records_removed": failed}
+    pending = purge_pending_deletions(db, tenant_id)
+    db.execute(ScreenshotUsage.__table__.delete().where(ScreenshotUsage.tenant_id == tenant_id,
+                                                        ScreenshotUsage.day < (now - timedelta(days=7)).date()))
+    return {"screenshots_removed": removed, "screenshot_records_removed": failed, **pending}
 
 
-def delete_organization_objects(db: Session, organization_id: uuid.UUID) -> int:
-    """Called before an organization is deleted: its rows cascade, its objects would not."""
-    n = 0
-    for (key,) in db.execute(select(ScreenshotCapture.storage_key).where(
-            ScreenshotCapture.organization_id == organization_id, ScreenshotCapture.storage_key.is_not(None))):
+def queue_organization_objects(db: Session, organization_id: uuid.UUID) -> int:
+    """Called in the same transaction that deletes an organization: its capture rows
+    cascade away, so record every stored image as a pending deletion first. The record
+    is durable with the delete itself; ``purge_pending_deletions`` removes the objects
+    (right after the commit, and again from maintenance until it succeeds)."""
+    rows = db.execute(select(ScreenshotCapture.tenant_id, ScreenshotCapture.storage_key, ScreenshotCapture.size)
+                      .where(ScreenshotCapture.organization_id == organization_id,
+                             ScreenshotCapture.storage_key.is_not(None))).all()
+    for tenant_id, key, size in rows:
+        db.add(StorageDeletion(tenant_id=tenant_id, storage_key=key, size=size or 0, attempts=0))
+    db.flush()
+    return len(rows)
+
+
+def purge_pending_deletions(db: Session, tenant_id: uuid.UUID, limit: int = 500) -> dict[str, int]:
+    """Delete objects whose records are already gone; keep the ones that fail for next time."""
+    done = left = 0
+    store = get_store()
+    for d in db.execute(select(StorageDeletion).where(StorageDeletion.tenant_id == tenant_id)
+                        .order_by(StorageDeletion.created_at).limit(limit)).scalars().all():
         try:
-            get_store().delete(key)
-            n += 1
-        except Exception:  # noqa: BLE001
-            log.warning("could not delete a screenshot object while deleting organization %s", organization_id)
-    return n
+            store.delete(d.storage_key)
+        except Exception as exc:  # noqa: BLE001 - retried by the next maintenance run
+            d.attempts += 1
+            d.last_error = type(exc).__name__[:300]
+            left += 1
+            continue
+        db.delete(d)
+        done += 1
+    db.flush()
+    return {"storage_deleted": done, "storage_pending": left}
 
 
 # ====================================================================== schedules

@@ -30,7 +30,7 @@ export function TenantScreenshotsCard({ value, onChange }: {
           active-scanning authorization in scope. Only public pages are captured; nothing is signed in to.</p>
         {st.data && (
           <div className="small muted">
-            Today {st.data.usage.captures_today}/{st.data.limits.per_tenant_daily} captures · stored {bytes(st.data.usage.stored_bytes)} of
+            Today (UTC) {st.data.usage.captures_today}/{st.data.limits.per_tenant_daily} captures · stored {bytes(st.data.usage.stored_bytes)} of
             {" "}{bytes(quota)} · the latest {st.data.limits.retention_per_endpoint} per endpoint are kept
           </div>
         )}

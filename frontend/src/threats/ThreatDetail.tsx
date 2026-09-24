@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Download, ExternalLink, ScanSearch } from "lucide-react";
@@ -96,10 +96,19 @@ export default function ThreatDetail() {
     queryFn: () => api<AdvisoryDetail>(`/threats/${id}`, { query: { organization_id: orgId } }),
     refetchInterval: (q) => (q.state.data?.check_runs.some((r) => r.status === "queued" || r.status === "running") ? 5000 : false),
   });
+  const runsActive = !!detail.data?.check_runs.some((r) => r.status === "queued" || r.status === "running");
   const assets = useQuery({
     queryKey: ["threat", id, "assets", orgId, filter, page],
     queryFn: () => api<Page<ThreatMatch>>(`/threats/${id}/assets`, { query: { organization_id: orgId, assessment: values, page, page_size: 50 } }),
+    // The rows carry each asset's check outcome: poll them with the summary while a check runs.
+    refetchInterval: runsActive ? 5000 : false,
   });
+  // ...and once more when the last check finishes, so no row is left saying "check running".
+  const wasActive = useRef(false);
+  useEffect(() => {
+    if (wasActive.current && !runsActive) qc.invalidateQueries({ queryKey: ["threat", id, "assets"] });
+    wasActive.current = runsActive;
+  }, [runsActive, qc, id]);
   const check = useMutation({
     mutationFn: () => api(`/threats/${id}/checks`, { method: "POST", body: { match_ids: [...selected] } }),
     onSuccess: () => { setSelected(new Set()); qc.invalidateQueries({ queryKey: ["threat", id] }); },
@@ -162,6 +171,11 @@ export default function ThreatDetail() {
         <div className="stack">
           <Card title="Assessment" hint={<Freshness a={a} />}>
             <p className="small" style={{ marginTop: 0 }}>Matched automatically against recorded inventory when this advisory is published or updated and after every scan. No scan is started for you.</p>
+            {a.incomplete?.length > 0 && (
+              <div className="callout small" role="status" style={{ fontWeight: 400, marginBottom: 8 }}>
+                <b>Partial assessment.</b> Matching reached a size limit, so some assets were not assessed and none were
+                marked "no longer observed" from this evaluation. {a.incomplete.join(" ")}
+              </div>)}
             {a.check ? <p className="small" style={{ margin: 0 }}>Approved check available: <b>{a.check.name}</b>.</p>
               : <p className="small muted" style={{ margin: 0 }}>No approved check exists for this advisory; it can only be assessed from inventory and existing findings.</p>}
           </Card>

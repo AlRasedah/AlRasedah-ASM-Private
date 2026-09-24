@@ -47,7 +47,7 @@ checked when you click and again when the capture starts.
 |---|---|---|---|
 | The scanners have the screenshot browser | off | — | offer the feature to tenants at all |
 | Active captures, whole deployment | **1** | 1–8 | enforced in PostgreSQL across every process (see below) |
-| Captures per tenant per day | 50 | 1–5000 | rolling 24 h, manual + weekly |
+| Captures per tenant per day | 50 | 1–5000 | per UTC day, manual + weekly; deleting an image does not give it back, cancelling before it starts does |
 | Waiting captures per tenant | 10 | 1–500 | queued + running |
 | Images kept per endpoint | **2** | 1–10 | older successful captures are deleted (object, then record) |
 | Storage per tenant (MB) | 200 | 10–100 000 | a capture that would exceed it fails; older images stay |
@@ -61,14 +61,36 @@ connections per capture, 15 s idle per connection, ports 80/443/8080/8443 plus t
 endpoint's own port, one image per job, 5 MB hard ceiling on the image in the broker
 message.
 
+### Slots, deadlines and the daily allowance
+
+- **A slot is held until the job can no longer be running.** A reserved capture's job must
+  *start* within 10 minutes (`not_after` in the job: the scanner refuses a later delivery
+  before it takes a lease or opens a connection, and the broker discards it). A started job
+  is killed by its hard time limit. The slot is released when a result for the job arrives,
+  or at `slot_until` = reservation + start window + hard limit (about 18 minutes with the
+  default 20 s page limit) — not earlier, even when a user cancels a running capture, because
+  its job may already be executing. So the deployment-wide limit holds across pools.
+- **The daily allowance is a ledger** (`screenshot_usage`, per tenant and UTC day). Deleting
+  an image, or retention removing it, does not give the capture back; cancelling a capture
+  that has not started does.
+- **Requests are serialized per tenant** (a PostgreSQL advisory lock), and at most one
+  capture per endpoint can be queued or running (a unique index), so simultaneous clicks
+  cannot pass the last unit of a limit.
+- **Deleting an organization** records each of its stored images as a pending deletion in
+  the same transaction, then deletes them. An image that cannot be deleted right away is
+  retried by maintenance and still counts against the tenant's storage until it is gone.
+
+The platform and the scanners must run the same version: jobs now carry `not_after`, which
+an older scanner rejects. Rebuild and restart both together when upgrading.
+
 ## How it works
 
 ```text
 Capture screenshot ─► request_capture (tenant session): feature on? endpoint web + active + in scope?
                       scope check (active) · daily and queue limits ─► capture row: queued
 asm.core.screenshot_dispatch (every minute, and at once after a request or a result)
-   system session: pg_advisory_xact_lock ─► fail lost captures ─► count running ─► reserve free slots
-   (oldest first, one per tenant first) ─► running
+   system session: pg_advisory_xact_lock ─► fail lost captures ─► count occupied slots ─► reserve
+   free slots (oldest first, one per tenant first) ─► running, slot held until slot_until
    tenant session: authorize again (tenant active, feature on, scope, the tenant's own scanner pool)
    ─► SensorJob(adapter=screenshot, one URL, policy limits, scope exclusions) sealed and bound like
       any sensor job ─► scanners.<tenant pool>

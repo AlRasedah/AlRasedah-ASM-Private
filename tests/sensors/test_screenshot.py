@@ -558,3 +558,25 @@ def test_only_a_setpriv_with_pdeathsig_wraps_the_browser(monkeypatch, tmp_path):
     monkeypatch.setattr(shot.shutil, "which", lambda name: str(util_linux))
     assert shot.parent_death_wrapper() == str(util_linux)
     assert shot.ScreenshotAdapter().browser_argv(*args)[:4] == [str(util_linux), "--pdeathsig", "KILL", "--"]
+
+
+def test_a_job_delivered_after_its_start_deadline_is_refused_before_anything_runs(monkeypatch):
+    """The platform gave its slot away at the deadline; a late delivery must not start a browser."""
+    from datetime import UTC, datetime, timedelta
+
+    from asm_sensors.jobs import SensorJob
+    from asm_sensors.runner import execute_job
+    from asm_sensors.targets import Target, TargetKind
+
+    ran: list = []
+
+    async def never(self, targets, cfg, ctx):  # noqa: ANN001
+        ran.append(targets)
+        raise AssertionError("the adapter must not run")
+
+    monkeypatch.setattr(ScreenshotAdapter, "run", never)
+    job = SensorJob(job_id="late-job", tenant_id="t", scan_id="c", stage_id="c", adapter="screenshot",
+                    targets=[Target(kind=TargetKind.URL, value="https://example.com/")], timeout_seconds=60,
+                    not_after=datetime.now(UTC) - timedelta(seconds=1))
+    result = asyncio.run(execute_job(job))
+    assert result.status == "failed" and "expired" in result.errors[0] and ran == []

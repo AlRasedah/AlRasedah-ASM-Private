@@ -10,9 +10,10 @@ import { Card, Empty, ErrorBox, Loading, PageHead, Pagination, SeverityBadge, us
 import { fmtDay, timeAgo } from "@/lib/format";
 
 /** Assessment freshness: when this tenant's inventory was last matched against the advisory. */
-export function Freshness({ a }: { a: Pick<AdvisorySummary, "last_evaluated_at" | "stale"> }) {
+export function Freshness({ a }: { a: Pick<AdvisorySummary, "last_evaluated_at" | "stale" | "incomplete"> }) {
   if (!a.last_evaluated_at) return <span className="badge warn" title="Not yet matched against your inventory">not assessed yet</span>;
   if (a.stale) return <span className="badge warn" title="A newer advisory version is being matched">updating</span>;
+  if (a.incomplete?.length) return <span className="badge warn" title={a.incomplete.join(" ")}>partial</span>;
   return <span className="small" title={a.last_evaluated_at}>{timeAgo(a.last_evaluated_at)}</span>;
 }
 
