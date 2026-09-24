@@ -50,6 +50,9 @@ class ThreatAdvisory(UUIDPk, Timestamps, Base):
     source_updated_at: Mapped[datetime | None]
     # When a version was last published here — drives "is my assessment stale?".
     version_published_at: Mapped[datetime | None]
+    # "manual" (a platform administrator wrote it) or "feed" (generated from public
+    # vulnerability data by app/threats/feed.py, which never edits a manual advisory).
+    origin: Mapped[str] = mapped_column(String(16), default="manual", server_default="manual")
     created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     updated_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
 
@@ -181,3 +184,21 @@ class ThreatCheckRun(UUIDPk, TenantScoped, Timestamps, Base):
     finished_at: Mapped[datetime | None]
     # {"detected": n, "not_detected": n, "inconclusive": n, "reason": "..."}
     summary: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+
+
+class ThreatFeedItem(Timestamps, Base):
+    """One CVE the automatic feed has seen, and what it parsed from NVD. Platform-only."""
+
+    __tablename__ = "threat_feed_items"
+
+    cve_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    source: Mapped[str] = mapped_column(String(16))  # kev | critical
+    kev: Mapped[bool] = mapped_column(default=False)
+    nvd_last_modified: Mapped[datetime | None]
+    # The NVD version the advisory was last generated from.
+    applied_last_modified: Mapped[datetime | None]
+    record: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    # pending | published | draft | no_products | manual | failed
+    status: Mapped[str] = mapped_column(String(24), default="pending", index=True)
+    detail: Mapped[str | None] = mapped_column(String(300))
+    advisory_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("threat_advisories.id", ondelete="SET NULL"))

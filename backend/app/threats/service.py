@@ -23,15 +23,16 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlsplit
 
 from asm_sensors.registry import adapter_names, get_adapter
-from sqlalchemy import func, or_, select, text
+from sqlalchemy import ARRAY, bindparam, event, func, or_, select, text, update
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Session, aliased
 
 from app.assets.normalization import parse_port_value
@@ -79,7 +80,7 @@ from app.scans.profiles import THREAT_CHECK_SLUG
 from app.services import audit
 from app.services.audit import Action
 
-from .content import KEY_RE, AdvisoryContent
+from .content import KEY_RE, AdvisoryContent, norm_name
 from .matching import AssetVerdict, ProductObservation, match, names_of
 
 log = logging.getLogger(__name__)
@@ -125,7 +126,8 @@ def _content(raw: dict[str, Any] | AdvisoryContent) -> AdvisoryContent:
         raise ValidationFailed("Invalid advisory", details=[str(exc)[:500]]) from exc
 
 
-def create_advisory(db: Session, *, slug: str, content: AdvisoryContent, user_id: uuid.UUID | None) -> ThreatAdvisory:
+def create_advisory(db: Session, *, slug: str, content: AdvisoryContent, user_id: uuid.UUID | None,
+                    origin: str = "manual", audited: bool = True) -> ThreatAdvisory:
     if not KEY_RE.match(slug):
         raise ValidationFailed("The identifier must be 3–64 lower-case letters, digits or '-'")
     if db.execute(select(ThreatAdvisory.id).where(ThreatAdvisory.slug == slug)).first():
@@ -133,13 +135,15 @@ def create_advisory(db: Session, *, slug: str, content: AdvisoryContent, user_id
     _check_keys_exist(db, content.check_keys)
     adv = ThreatAdvisory(slug=slug, status=AdvisoryStatus.DRAFT, title=content.title, severity=content.severity,
                          cves=content.cves, source_published_at=content.source_published_at,
-                         source_updated_at=content.source_updated_at, created_by=user_id, updated_by=user_id)
+                         source_updated_at=content.source_updated_at, created_by=user_id, updated_by=user_id,
+                         origin=origin)
     db.add(adv)
     db.flush()
     db.add(ThreatAdvisoryVersion(advisory_id=adv.id, version=1, state="draft",
                                  content=content.model_dump(mode="json"), created_by=user_id))
-    audit.record(db, Action.ADVISORY_CHANGED, platform=True, object_type="threat_advisory", object_id=adv.id,
-                 new={"slug": slug, "title": content.title, "state": "draft"})
+    if audited:  # the feed records one summary entry per run instead of one per advisory
+        audit.record(db, Action.ADVISORY_CHANGED, platform=True, object_type="threat_advisory", object_id=adv.id,
+                     new={"slug": slug, "title": content.title, "state": "draft"})
     db.flush()
     return adv
 
@@ -165,7 +169,7 @@ def published_of(db: Session, adv: ThreatAdvisory) -> ThreatAdvisoryVersion | No
 
 
 def save_draft(db: Session, advisory_id: uuid.UUID, content: AdvisoryContent,
-               user_id: uuid.UUID | None) -> ThreatAdvisoryVersion:
+               user_id: uuid.UUID | None, audited: bool = True) -> ThreatAdvisoryVersion:
     """Edit the working copy. The published version keeps applying until the draft is published."""
     adv = _advisory(db, advisory_id)
     _check_keys_exist(db, content.check_keys)
@@ -180,14 +184,15 @@ def save_draft(db: Session, advisory_id: uuid.UUID, content: AdvisoryContent,
     if adv.published_version is None:  # never published: the listing shows the draft
         adv.title, adv.severity, adv.cves = content.title, content.severity, content.cves
     adv.updated_by = user_id
-    prev, new = audit.diff(before, draft.content)
-    audit.record(db, Action.ADVISORY_CHANGED, platform=True, object_type="threat_advisory", object_id=adv.id,
-                 previous=prev, new={**new, "state": "draft", "version": draft.version})
+    if audited:
+        prev, new = audit.diff(before, draft.content)
+        audit.record(db, Action.ADVISORY_CHANGED, platform=True, object_type="threat_advisory", object_id=adv.id,
+                     previous=prev, new={**new, "state": "draft", "version": draft.version})
     db.flush()
     return draft
 
 
-def publish(db: Session, advisory_id: uuid.UUID, user_id: uuid.UUID | None) -> ThreatAdvisory:
+def publish(db: Session, advisory_id: uuid.UUID, user_id: uuid.UUID | None, audited: bool = True) -> ThreatAdvisory:
     adv = _advisory(db, advisory_id)
     draft = draft_of(db, adv.id)
     if draft is None:
@@ -202,8 +207,9 @@ def publish(db: Session, advisory_id: uuid.UUID, user_id: uuid.UUID | None) -> T
     adv.source_published_at, adv.source_updated_at = content.source_published_at, content.source_updated_at
     adv.version_published_at = now
     adv.updated_by = user_id
-    audit.record(db, Action.ADVISORY_PUBLISHED, platform=True, object_type="threat_advisory", object_id=adv.id,
-                 new={"version": draft.version, "title": content.title})
+    if audited:
+        audit.record(db, Action.ADVISORY_PUBLISHED, platform=True, object_type="threat_advisory", object_id=adv.id,
+                     new={"version": draft.version, "title": content.title})
     db.flush()
     return adv
 
@@ -222,7 +228,7 @@ def set_archived(db: Session, advisory_id: uuid.UUID, archived: bool, user_id: u
 
 
 def save_check(db: Session, *, key: str, name: str, description: str | None, template_id: str, enabled: bool,
-               user_id: uuid.UUID | None) -> ThreatCheck:
+               user_id: uuid.UUID | None, audited: bool = True) -> ThreatCheck:
     """Add or update an approved check. The template id names one detection in the vetted
     template set — never a template body, a URL or a command."""
     import re
@@ -238,8 +244,9 @@ def save_check(db: Session, *, key: str, name: str, description: str | None, tem
         row = ThreatCheck(key=key, kind="detection_template", created_by=user_id)
         db.add(row)
     row.name, row.description, row.template_id, row.enabled = name, description, tid, enabled
-    audit.record(db, Action.THREAT_CHECK_CHANGED, platform=True, object_type="threat_check", object_id=key,
-                 previous=before, new={"name": name, "template_id": tid, "enabled": enabled})
+    if audited:
+        audit.record(db, Action.THREAT_CHECK_CHANGED, platform=True, object_type="threat_check", object_id=key,
+                     previous=before, new={"name": name, "template_id": tid, "enabled": enabled})
     db.flush()
     return row
 
@@ -256,22 +263,36 @@ class EvalStats:
     per_advisory_new: dict[uuid.UUID, int] = field(default_factory=dict)
 
 
+# A published version never changes, so its validated content is cached by (advisory, version).
+_CONTENT: OrderedDict[tuple[uuid.UUID, int], AdvisoryContent] = OrderedDict()
+_CONTENT_MAX = 5000
+
+
 def published_advisories(db: Session, only: Iterable[uuid.UUID] | None = None
                          ) -> list[tuple[ThreatAdvisory, AdvisoryContent]]:
     """Published (not archived) advisories with their current content. Works in a tenant session."""
-    stmt = (select(ThreatAdvisory, ThreatAdvisoryVersion)
-            .join(ThreatAdvisoryVersion, (ThreatAdvisoryVersion.advisory_id == ThreatAdvisory.id)
-                  & (ThreatAdvisoryVersion.version == ThreatAdvisory.published_version)
-                  & (ThreatAdvisoryVersion.state == "published"))
-            .where(ThreatAdvisory.status == AdvisoryStatus.PUBLISHED))
+    stmt = select(ThreatAdvisory).where(ThreatAdvisory.status == AdvisoryStatus.PUBLISHED,
+                                        ThreatAdvisory.published_version.is_not(None))
     if only is not None:
         stmt = stmt.where(ThreatAdvisory.id.in_(list(only)))
+    advisories = list(db.execute(stmt).scalars())
+    missing = [a for a in advisories if (a.id, a.published_version) not in _CONTENT]
+    if missing:
+        for adv_id, version, content in db.execute(select(
+                ThreatAdvisoryVersion.advisory_id, ThreatAdvisoryVersion.version, ThreatAdvisoryVersion.content).where(
+                ThreatAdvisoryVersion.advisory_id.in_([a.id for a in missing]),
+                ThreatAdvisoryVersion.state == "published")):
+            try:
+                _CONTENT[(adv_id, version)] = AdvisoryContent.model_validate(content)
+            except ValueError:
+                log.error("advisory %s version %s has invalid content; skipped", adv_id, version)
+        while len(_CONTENT) > _CONTENT_MAX:
+            _CONTENT.popitem(last=False)
     out = []
-    for adv, ver in db.execute(stmt).all():
-        try:
-            out.append((adv, AdvisoryContent.model_validate(ver.content)))
-        except ValueError:
-            log.error("advisory %s version %s has invalid content; skipped", adv.id, ver.version)
+    for adv in advisories:
+        content = _CONTENT.get((adv.id, adv.published_version or 0))
+        if content is not None:
+            out.append((adv, content))
     return out
 
 
@@ -391,6 +412,27 @@ def _templates_for(db: Session, content: AdvisoryContent) -> set[str]:
                                           .where(ThreatCheck.key.in_(content.check_keys))).scalars()}
 
 
+def _templates_by_advisory(db: Session, advisories: list[tuple[ThreatAdvisory, AdvisoryContent]]
+                           ) -> dict[uuid.UUID, set[str]]:
+    """The same, for many advisories in one query (the feed publishes hundreds)."""
+    keys = {k for _, c in advisories for k in c.check_keys}
+    by_key = {k: tid.lower() for k, tid in db.execute(select(ThreatCheck.key, ThreatCheck.template_id)
+                                                        .where(ThreatCheck.key.in_(keys)))} if keys else {}
+    return {a.id: {by_key[k] for k in c.check_keys if k in by_key} for a, c in advisories}
+
+
+# Feed advisories for long-known vulnerabilities are imported in bulk; their first matches
+# are inventory, not news, so they do not notify (later new matches do).
+BACKFILL_QUIET_FOR = timedelta(days=1)
+BACKFILL_OLDER_THAN = timedelta(days=30)
+
+
+def _quiet_backfill(adv: ThreatAdvisory, now: datetime) -> bool:
+    if adv.origin != "feed" or adv.created_at is None or now - adv.created_at > BACKFILL_QUIET_FOR:
+        return False
+    return adv.source_published_at is not None and now - adv.source_published_at > BACKFILL_OLDER_THAN
+
+
 def evaluate_org(db: Session, org: Organization, advisories: list[tuple[ThreatAdvisory, AdvisoryContent]],
                  now: datetime | None = None) -> EvalStats:
     """Bring one organization's matches up to date with these advisories (tenant session)."""
@@ -401,7 +443,7 @@ def evaluate_org(db: Session, org: Organization, advisories: list[tuple[ThreatAd
     db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": f"threat:{org.id}"})
     all_names = set().union(*(names_of(c) for _, c in advisories))
     observations, obs_truncated = product_observations(db, org, all_names)
-    templates = {a.id: _templates_for(db, c) for a, c in advisories}
+    templates = _templates_by_advisory(db, advisories)
     all_cves = set().union(*(set(c.cves) for _, c in advisories))
     findings, findings_truncated = _findings(db, org, all_cves, set().union(*templates.values()))
     stats.observations = len(observations)
@@ -419,14 +461,30 @@ def evaluate_org(db: Session, org: Organization, advisories: list[tuple[ThreatAd
     active_assets = set(db.execute(select(Asset.id).where(
         Asset.organization_id == org.id, Asset.status == AssetStatus.ACTIVE,
         Asset.id.in_({f.asset_id for f in findings}))).scalars()) if findings else set()
+    # Indexes, so each advisory looks only at what can concern it (there may be thousands).
+    obs_by_name: dict[str, list[ProductObservation]] = defaultdict(list)
+    for o in observations:
+        obs_by_name[norm_name(o.name)].append(o)
+    findings_by_key: dict[str, list[_FindingRef]] = defaultdict(list)
+    for f in findings:
+        for key in {*f.cves, f"rule:{f.rule}"}:
+            findings_by_key[key].append(f)
+    existing_by_adv: dict[uuid.UUID, list[uuid.UUID]] = defaultdict(list)
+    for adv_id, asset_id in existing:
+        existing_by_adv[adv_id].append(asset_id)
+    untouched: list[uuid.UUID] = []
+    campaigns = {c.advisory_id: c for c in db.execute(select(ThreatCampaign).where(
+        ThreatCampaign.tenant_id == org.tenant_id,
+        ThreatCampaign.advisory_id.in_([a.id for a, _ in advisories]))).scalars()}
 
     for adv, content in advisories:
-        verdicts: dict[uuid.UUID, AssetVerdict] = match(content, observations)
+        relevant = [o for n in names_of(content) for o in obs_by_name.get(n, ())]
+        verdicts: dict[uuid.UUID, AssetVerdict] = match(content, relevant) if relevant else {}
         verified: dict[uuid.UUID, list[uuid.UUID]] = defaultdict(list)
         unverified: dict[uuid.UUID, list[uuid.UUID]] = defaultdict(list)
-        for f in findings:
-            if not (f.cves & set(content.cves) or f.rule in templates[adv.id]):
-                continue
+        concerned = {id(f): f for k in (*content.cves, *(f"rule:{r}" for r in templates[adv.id]))
+                     for f in findings_by_key.get(k, ())}
+        for f in concerned.values():
             if f.asset_id not in active_assets and f.asset_id not in verdicts:
                 continue
             (unverified if f.unverified else verified)[f.asset_id].append(f.id)
@@ -463,49 +521,59 @@ def evaluate_org(db: Session, org: Organization, advisories: list[tuple[ThreatAd
                 is_new = True
             else:
                 is_new = False
-            m.advisory_version = version
-            if m.check_outcome in (CheckOutcome.DETECTED, CheckOutcome.NOT_DETECTED, CheckOutcome.INCONCLUSIVE) \
+            outcome, detail, checked = m.check_outcome, m.check_detail, m.checked_at
+            if outcome in (CheckOutcome.DETECTED, CheckOutcome.NOT_DETECTED, CheckOutcome.INCONCLUSIVE) \
                     and not run_applies(runs.get(m.last_check_run_id), version, templates[adv.id], content.cves):
                 # The last check tested an earlier definition; it says nothing about this one.
-                m.check_outcome, m.checked_at = CheckOutcome.NONE, None
-                m.check_detail = (f"the last check tested an earlier version of this advisory; it does not "
-                                  f"apply to version {version}")
-            m.basis, m.match_status, m.evidence = basis, status, evidence
-            m.finding_ids = sorted(set(verified.get(asset_id, [])), key=str)
-            m.unverified_finding_ids = sorted(set(unverified.get(asset_id, [])), key=str)
-            m.assessment = assess(m.match_status, m.basis, m.check_outcome, bool(m.finding_ids))
-            m.last_evaluated_at = now
+                outcome, checked = CheckOutcome.NONE, None
+                detail = f"the last check tested an earlier version of this advisory; it does not apply to version {version}"
+            found = sorted(set(verified.get(asset_id, [])), key=str)
+            values = {"advisory_version": version, "check_outcome": outcome, "check_detail": detail,
+                      "checked_at": checked, "basis": basis, "match_status": status, "evidence": evidence,
+                      "finding_ids": found,
+                      "unverified_finding_ids": sorted(set(unverified.get(asset_id, [])), key=str),
+                      "assessment": assess(status, basis, outcome, bool(found))}
+            # Only rows that change are written: re-evaluating a large, unchanged inventory
+            # touches their timestamp in one statement instead of rewriting every row.
+            if is_new or any(getattr(m, k) != v for k, v in values.items()):
+                for k, v in values.items():
+                    setattr(m, k, v)
+                m.last_evaluated_at = now
+            else:
+                untouched.append(m.id)
             stats.matches += 1
             if is_new and m.assessment in AFFECTED_ASSESSMENTS:
                 new_countable += 1
         # Matched before, not any more: keep the row (history, remediation), say why.
         # Only after an evaluation that saw everything; otherwise leave the row as it was.
-        for (aid, _asset), m in list(existing.items()):
-            if aid != adv.id:
-                continue
-            existing.pop((aid, _asset))
-            if gap is not None:
+        for _asset in existing_by_adv.get(adv.id, ()):
+            m = existing.pop((adv.id, _asset), None)
+            if m is None or gap is not None:
                 continue
             m.match_status = MatchStatus.NO_LONGER_OBSERVED
             m.finding_ids, m.unverified_finding_ids = [], []
             m.evidence = {**(m.evidence or {}), "reason": "the product or finding is no longer observed on this asset"}
             m.assessment = assess(m.match_status, m.basis, m.check_outcome, False)
             m.last_evaluated_at = now
-        _touch_campaign(db, org, adv, now, gap)
+        _touch_campaign(db, org, adv, now, gap, campaigns)
         if new_countable:
             stats.new_matches += new_countable
             stats.per_advisory_new[adv.id] = new_countable
-            _match_event(db, org, adv, new_countable, now)
-            stats.events += 1
+            if not _quiet_backfill(adv, now):
+                _match_event(db, org, adv, new_countable, now)
+                stats.events += 1
+    if untouched:  # one statement, one array parameter
+        db.execute(update(ThreatMatch).where(ThreatMatch.id == func.any(bindparam("ids", type_=ARRAY(PG_UUID))))
+                   .values(last_evaluated_at=now).execution_options(synchronize_session=False), {"ids": untouched})
     db.flush()
     return stats
 
 
-def _touch_campaign(db: Session, org: Organization, adv: ThreatAdvisory, now: datetime, gap: str | None) -> None:
-    c = db.execute(select(ThreatCampaign).where(ThreatCampaign.tenant_id == org.tenant_id,
-                                                ThreatCampaign.advisory_id == adv.id)).scalar_one_or_none()
+def _touch_campaign(db: Session, org: Organization, adv: ThreatAdvisory, now: datetime, gap: str | None,
+                    campaigns: dict[uuid.UUID, ThreatCampaign]) -> None:
+    c = campaigns.get(adv.id)
     if c is None:
-        c = ThreatCampaign(tenant_id=org.tenant_id, advisory_id=adv.id, incomplete_orgs={})
+        c = campaigns[adv.id] = ThreatCampaign(tenant_id=org.tenant_id, advisory_id=adv.id, incomplete_orgs={})
         db.add(c)
     c.evaluated_version, c.last_evaluated_at = adv.published_version, now
     gaps = {k: v for k, v in (c.incomplete_orgs or {}).items() if k != str(org.id)}
@@ -545,10 +613,42 @@ def evaluate_tenant(db: Session, tenant_id: uuid.UUID, advisory_ids: Iterable[uu
 
 
 def on_scan_finished(db: Session, scan: Scan, org: Organization | None) -> None:
-    """Called by the orchestrator (in a savepoint) when a scan ends or is cancelled."""
+    """Called by the orchestrator (in a savepoint) when a scan ends or is cancelled.
+
+    A finished check is recorded here, with the scan. Matching the organization's new
+    inventory against every advisory (there may be thousands) runs as its own job once
+    the scan has committed, so it never delays or holds up a scan's finalization."""
     sync_check_run(db, scan)
     if org is not None and scan.status in (ScanStatus.COMPLETED, ScanStatus.PARTIAL):
-        evaluate_org(db, org, published_advisories(db))
+        _after_outer_commit(db, ("threat-evaluate", org.tenant_id, org.id))
+
+
+def _after_outer_commit(db: Session, job: tuple[str, uuid.UUID, uuid.UUID]) -> None:
+    """Start ``job`` once this session's *outermost* transaction commits. SQLAlchemy also
+    reports a released savepoint as a commit; running then would wait for row locks the
+    still-open transaction holds. Any rollback (a failed savepoint too) drops it."""
+    db.info.setdefault("threat_jobs", set()).add(job)
+    if not db.info.get("threat_jobs_hooked"):
+        db.info["threat_jobs_hooked"] = True
+        event.listen(db, "after_commit", _run_jobs)
+        event.listen(db, "after_soft_rollback", _drop_jobs)
+
+
+def _run_jobs(session: Session) -> None:
+    if session.in_nested_transaction():
+        return
+    from app.workers import dispatch
+
+    for _kind, tenant_id, org_id in session.info.pop("threat_jobs", set()):
+        try:
+            dispatch.evaluate_organization(tenant_id, org_id)
+        except Exception:  # noqa: BLE001 - the daily evaluation repairs it
+            log.exception("could not start the Threat Center update for organization %s", org_id)
+
+
+def _drop_jobs(session: Session, _previous: Any) -> None:
+    # Any rollback, a failed savepoint included: what registered the job did not happen.
+    session.info.pop("threat_jobs", None)
 
 
 # ========================================================================= checks

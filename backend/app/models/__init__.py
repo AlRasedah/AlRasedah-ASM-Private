@@ -15,7 +15,15 @@ from .scans import Scan, ScanArtifact, ScanProfile, ScanSchedule, ScanStage, Sco
 from .scope import ScopeEntry, Secret
 from .screenshots import ScreenshotCapture, ScreenshotUsage, StorageDeletion
 from .tenancy import MetricSnapshot, Organization, Plan, Tenant, UsageRecord
-from .threats import ThreatAdvisory, ThreatAdvisoryVersion, ThreatCampaign, ThreatCheck, ThreatCheckRun, ThreatMatch
+from .threats import (
+    ThreatAdvisory,
+    ThreatAdvisoryVersion,
+    ThreatCampaign,
+    ThreatCheck,
+    ThreatCheckRun,
+    ThreatFeedItem,
+    ThreatMatch,
+)
 
 __all__ = [
     "Base", "Asset", "AssetObservation", "AssetRelationship", "AuditLog", "ApiToken", "PasswordResetToken",
@@ -25,7 +33,7 @@ __all__ = [
     "ScanArtifact", "ScanProfile", "ScanSchedule", "ScanStage", "ScopeDecision", "ScopeEntry", "Secret",
     "MetricSnapshot", "Organization", "Plan", "Tenant", "UsageRecord", "ThreatAdvisory", "ThreatAdvisoryVersion",
     "ThreatCampaign", "ThreatCheck", "ThreatCheckRun", "ThreatMatch", "ScreenshotCapture",
-    "ScreenshotUsage", "StorageDeletion",
+    "ScreenshotUsage", "StorageDeletion", "ThreatFeedItem",
 ]
 
 # Tables protected by the standard tenant-isolation RLS policy.

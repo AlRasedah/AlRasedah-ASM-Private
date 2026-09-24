@@ -62,6 +62,8 @@ class Action:
     ADVISORY_CHANGED = "threat_advisory.changed"
     ADVISORY_PUBLISHED = "threat_advisory.published"
     THREAT_CHECK_CHANGED = "threat_check.changed"
+    THREAT_FEED_CHANGED = "threat_feed.changed"
+    THREAT_FEED_RUN = "threat_feed.run"
     THREAT_CHECK_REQUESTED = "threat_check.requested"
     THREAT_REMEDIATION_UPDATED = "threat_match.updated"
     SCREENSHOT_REQUESTED = "screenshot.requested"

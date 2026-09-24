@@ -6,7 +6,11 @@ Safe-by-default:
 * out-of-band interaction (interactsh) is disabled by default, which also keeps
   scan data inside the deployment's jurisdiction;
 * code/headless/file templates are never enabled;
-* request/response bodies are not captured (``-omit-raw``).
+* request/response bodies are not captured (``-omit-raw``);
+* a run limited to named detections (a Threat Center check) first confirms each one
+  exists in the template set and is not excluded as intrusive. Otherwise the engine
+  would load nothing, report nothing, and the absence would read as "not detected";
+  instead the run fails and the check is inconclusive, saying why.
 
 Info-severity ``tech``-tagged detections are converted to technology
 observations instead of findings.
@@ -14,13 +18,16 @@ observations instead of findings.
 
 from __future__ import annotations
 
+import os
 import re
+from pathlib import Path
 from typing import Any
 
 from pydantic import Field, field_validator
 
 from ...base import (
     AdapterConfig,
+    ConfigurationError,
     ExecutionContext,
     RawOutput,
     ScannerAdapter,
@@ -96,6 +103,63 @@ def _category(tags: list[str], severity: Severity) -> FindingCategory:
     return FindingCategory.INFORMATION if severity == Severity.INFO else FindingCategory.VULNERABILITY
 
 
+_ID_LINE = re.compile(r"^id:\s*['\"]?([A-Za-z0-9_.-]+)", re.MULTILINE)
+_TAGS_LINE = re.compile(r"^\s+tags:\s*(.+)$", re.MULTILINE)
+
+
+def _template_meta(path: Path) -> tuple[str, set[str]] | None:
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            head = fh.read(16384)
+    except OSError:
+        return None
+    m = _ID_LINE.search(head)
+    if not m:
+        return None
+    tags = _TAGS_LINE.search(head)
+    return m.group(1), {x.strip().strip("'\"").lower() for x in (tags.group(1) if tags else "").split(",") if x.strip()}
+
+
+def resolve_templates(templates_dir: str, wanted: list[str], excluded: list[str]) -> tuple[list[str], list[str]]:
+    """Named detections → (exact ids to run, reasons for the ones that cannot run).
+
+    Looks for ``<id>.yaml`` first (how community CVE detections are named), then for a
+    template whose ``id:`` is the name."""
+    want = {w.lower() for w in wanted}
+    found: dict[str, tuple[str, set[str]]] = {}
+    files = []
+    for root, _dirs, names in os.walk(templates_dir):
+        for n in names:
+            if n.endswith((".yaml", ".yml")):
+                files.append(Path(root) / n)
+    for f in files:
+        if f.stem.lower() in want and f.stem.lower() not in found:
+            meta = _template_meta(f)
+            if meta and meta[0].lower() == f.stem.lower():
+                found[f.stem.lower()] = meta
+    missing = want - set(found)
+    for f in files if missing else ():
+        meta = _template_meta(f)
+        if meta and meta[0].lower() in missing:
+            found[meta[0].lower()] = meta
+            missing.discard(meta[0].lower())
+            if not missing:
+                break
+    run, reasons = [], []
+    blocked = {e.lower() for e in excluded}
+    for w in sorted(want):
+        if w not in found:
+            reasons.append(f"the detection {w} is not in this scanner's detection set")
+            continue
+        exact, tags = found[w]
+        hit = sorted(tags & blocked)
+        if hit:
+            reasons.append(f"the detection {w} is classified {', '.join(hit)} and is never run by checks")
+            continue
+        run.append(exact)
+    return run, reasons
+
+
 def _as_list(v: Any) -> list[str]:
     if v is None:
         return []
@@ -160,11 +224,16 @@ class NucleiAdapter(ScannerAdapter):
         return argv
 
     async def execute(self, targets: list[Target], config: NucleiConfig, ctx: ExecutionContext) -> RawOutput:  # type: ignore[override]
+        templates_dir = ctx.settings.get("nuclei_templates_dir")
+        if config.template_ids and templates_dir and os.path.isdir(templates_dir):
+            run, reasons = resolve_templates(templates_dir, config.template_ids, config.exclude_tags)
+            if not run:
+                raise ConfigurationError("; ".join(reasons) or "no detection to run")
+            config = config.model_copy(update={"template_ids": run})
         binary = resolve_binary("nuclei", self.binaries)
         tfile = write_targets_file(ctx.workdir, targets)
         out = ctx.workdir / "nuclei.jsonl"
-        argv = self.build_argv(binary, str(tfile), str(out), config, ctx.settings.get("nuclei_templates_dir"),
-                               identity_header(ctx.settings))
+        argv = self.build_argv(binary, str(tfile), str(out), config, templates_dir, identity_header(ctx.settings))
         proc = await run_process(argv, timeout=ctx.timeout_seconds, cwd=str(ctx.workdir),
                                  env=minimal_env(home=str(ctx.settings.get("nuclei_home") or ctx.workdir)),
                                  max_output_bytes=ctx.max_output_bytes)

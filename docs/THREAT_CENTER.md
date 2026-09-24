@@ -5,10 +5,64 @@ The Threat Center answers one question for each tenant:
 > A serious vulnerability was announced. Which of our assets may be affected, which have
 > been checked, and what remains unresolved?
 
-It is deliberately lean: **curated advisories** written by the platform team, matched
+Advisories are written **automatically** from free public data — every vulnerability in
+CISA's Known Exploited Vulnerabilities catalog, with affected products and version ranges
+from NVD — and platform administrators can add their own. They are matched
 **deterministically** against the inventory the platform has already recorded, with an
-optional **approved check** that runs through the ordinary scan pipeline. There is no
-intelligence subscription, no language model and no automatic campaign writing.
+**approved check** (by default the community detection for the CVE) that runs through the
+ordinary scan pipeline. There is no paid intelligence subscription and no language model.
+
+## Automatic advisories
+
+Every hour the feed asks NVD for vulnerabilities in CISA's Known Exploited Vulnerabilities
+catalog that are new or changed since the last run (the first run fetches all of them —
+about 1 500 — in one request). For each CVE it writes an advisory:
+
+| Advisory field | From |
+|---|---|
+| Title, required action | CISA KEV (vulnerability name, required action) |
+| Summary, severity, references | NVD (description, CVSS base score → critical ≥ 9, high ≥ 7, medium ≥ 4) |
+| Affected products and version ranges | NVD's CPE configurations — only the *vulnerable* entries, applications and operating systems (hardware is never fingerprinted by name) |
+| Names matched against inventory | NVD's `vendor product` and `product` (unless too generic, e.g. `http_server`), built-in aliases for common products whose scan names differ (e.g. NVD `apache:http_server` → `apache`, `apache httpd`), the platform's own aliases, and CISA's vendor/product name |
+| Approved check | the community detection named after the CVE (`cve-yyyy-nnnn`), unless turned off |
+
+- **Published automatically** for exploited-in-the-wild CVEs by default; other sources wait
+  as drafts. Settings: *publish exploited automatically* (default), *publish everything*, or
+  *keep everything as drafts*.
+- Optionally also **recent critical CVEs** (CVSS 9+, published in the last N days, 30 by
+  default) that are not known to be exploited yet — as drafts unless *publish everything*.
+- **Changes are followed.** When NVD revises a CVE (new ranges, new products), the next run
+  writes a new version; the rules of the previous section apply (a check result stays only
+  if the new version asks for the same detection and CVEs).
+- **Your advisories win.** The feed never edits an advisory a platform administrator wrote
+  for the same CVE (identifier `cve-yyyy-nnnn`), nor one you archived.
+- **No flood on day one.** Matches of long-known vulnerabilities (listed more than 30 days
+  before import) found during the first day after import do not notify; matches found later
+  — a new asset running an exploited product — do.
+- **A CVE NVD has not analysed yet** still becomes an advisory: it matches through findings
+  that name the CVE until NVD adds products, and is updated then. CISA sometimes lists a CVE
+  before NVD flags it; the feed looks those up individually (up to 10 per run).
+- **Checks never pretend.** The automatic check names the community detection for the CVE.
+  If the scanner's detection set has none, or classifies it intrusive, the scanner refuses
+  the run and the check is **inconclusive** with that reason — never "not detected".
+
+Tenants see **Affecting my assets** by default: advisories with at least one asset that may be
+affected. **All advisories** lists the whole catalog; the catalog is the same for every
+tenant, so it reveals nothing about another tenant's inventory. Advisories from CISA's
+catalog carry an **exploited** badge.
+
+**Settings → Threat Center → Manage advisories → Automatic advisories** (platform
+administrators): on/off, publishing mode, recent critical CVEs, automatic checks, an
+optional free **NVD API key** (write-only, encrypted; it raises NVD's limit from 5 to 50
+requests per 30 seconds, which only matters for the first import), and product-name
+aliases (`vendor:product = name, name`). **Update now** runs the feed immediately. The card
+shows how many CVEs are tracked, published, waiting as drafts or unusable, and the last
+error. Each run writes one summary entry to the platform audit chain.
+
+Data sources and terms: CISA KEV and NVD are US-government public-domain data; FIRST EPSS is
+free to use with attribution. The platform shows NVD's required notice: *This product uses
+the NVD API but is not endorsed or certified by the NVD.* Outbound access needed:
+`services.nvd.nist.gov` (the platform already fetches `www.cisa.gov` and `api.first.org`).
 
 ## For tenants
 
@@ -164,6 +218,8 @@ and is idempotent: a match is unique per tenant, advisory and asset.
 | Assets per "Check selected assets" | 50 | `MAX_CHECK_ASSETS` |
 | Affected products / version ranges / references / CVEs per advisory | 20 / 20 per product / 20 / 50 | `app/threats/content.py` |
 | CSV export rows | 10 000 | `app/api/v1/threats.py` |
+| Feed: CVEs per NVD page / advisories written per run / time per run | 2 000 / 3 000 / 10 min | `app/threats/feed.py` |
+| Feed: KEV entries looked up one by one per run | 10 | `MAX_DIRECT_LOOKUPS` |
 
 Checks additionally consume the tenant's normal scan quota and concurrency.
 
@@ -237,6 +293,23 @@ synthetic organization with 5 000 hostnames, 1 000 IPs, 3 000 ports and 5 000 we
 | First evaluation: 5 000 match rows written, 2 500 potentially affected, 1 event | 5.1 s | 52 MB |
 | Re-evaluation of the same inventory: 0 new matches, still 1 event | 1.6 s | 44 MB |
 
-This runs in the background (scan finalization or the Celery worker), never in a request.
+This runs in the background (its own Celery job after a scan commits, or the daily run),
+never in a request.
+
+At feed scale, same workstation, 24 September 2026, a deliberately heavy synthetic case:
+1 400 advisories (random products, about 115 of them for nginx, Apache, IIS, OpenSSH or Exim
+with wide ranges) against one organization with 5 000 web endpoints and 3 000 services —
+31 682 matches:
+
+| Operation | Time | Python peak memory |
+|---|---|---|
+| First feed run: 1 400 CVEs from one NVD response, 1 400 advisories written and published | 21 s | 24 MB |
+| First evaluation: 29 388 match rows written | 23 s | 213 MB |
+| Re-evaluation, nothing changed (the cost after each scan) | 5.2 s | 183 MB |
+| Hourly feed run with nothing new | 1.2 s | — |
+
+Times include memory tracing. After a scan, matching runs as its own job once the scan has
+committed, so a scan's finalization never waits for it; unchanged matches are not rewritten
+(one statement updates their timestamp).
 It grows linearly with matched assets and is capped per advisory and organization (above).
 Not measured: many advisories at once, concurrent evaluations, a production-sized database.

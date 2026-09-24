@@ -54,6 +54,9 @@ class AdvisorySummary(BaseModel):
     # Organizations whose last evaluation hit a bound: their assessment covers part of the
     # inventory, and nothing was marked "no longer observed" from it.
     incomplete: list[str] = []
+    # "feed": written automatically from CISA KEV / NVD; "manual": by a platform administrator.
+    origin: str = "manual"
+    kev: bool = False  # one of its CVEs is in CISA's known-exploited catalog
     has_check: bool = False
 
 
@@ -150,10 +153,23 @@ class AdvisoryAdminOut(BaseModel):
     version_published_at: datetime | None
     updated_at: datetime
     has_draft: bool
+    origin: str = "manual"
     draft: dict[str, Any] | None = None
     draft_version: int | None = None
     published: dict[str, Any] | None = None
     versions: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class FeedSettingsIn(Input):
+    enabled: bool | None = None
+    publish: str | None = Field(default=None, pattern="^(kev|all|none)$")
+    include_critical: bool | None = None
+    critical_days: int | None = Field(default=None, ge=1, le=110)
+    auto_checks: bool | None = None
+    aliases: dict[str, list[str]] | None = None
+    # Write-only. Empty/absent keeps the stored key; clear_nvd_api_key removes it.
+    nvd_api_key: str | None = Field(default=None, max_length=100)
+    clear_nvd_api_key: bool = False
 
 
 class CheckAdminIn(Input):

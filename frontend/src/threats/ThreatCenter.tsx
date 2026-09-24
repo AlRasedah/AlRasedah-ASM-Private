@@ -28,21 +28,27 @@ export default function ThreatCenter() {
   const nav = useNavigate();
   const [page, setPage] = useState(1);
   const [status, setStatus] = useState<"published" | "archived">("published");
+  const [scope, setScope] = useState<"relevant" | "all">("relevant");
   const [search, setSearch] = useState("");
   const q = useDebounced(search);
   const list = useQuery({
-    queryKey: ["threats", orgId, status, q, page],
-    queryFn: () => api<Page<AdvisorySummary>>("/threats", { query: { organization_id: orgId, status, q: q || undefined, page, page_size: 25 } }),
+    queryKey: ["threats", orgId, status, q, page, scope],
+    queryFn: () => api<Page<AdvisorySummary>>("/threats", { query: { organization_id: orgId, status, q: q || undefined, page, page_size: 25,
+                                                                     relevant: scope === "relevant" || undefined } }),
   });
 
   return (
     <>
       <PageHead title="Threat Center"
-                sub="Serious vulnerabilities curated by the platform team, matched against your recorded inventory. A match means “may be affected” until a check or scan confirms it."
+                sub="Vulnerabilities exploited in the wild (CISA KEV) and other advisories, matched automatically against your recorded inventory. A match means “may be affected” until a check or scan confirms it."
                 actions={can("intel:admin") && <Link className="btn" to="/threats/catalog"><Settings2 /> Manage advisories</Link>} />
       <Card flush>
         <div className="filters">
           <input placeholder="Search title or CVE…" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} aria-label="Search advisories" />
+          <select value={scope} onChange={(e) => { setScope(e.target.value as "relevant" | "all"); setPage(1); }} aria-label="Which advisories">
+            <option value="relevant">Affecting my assets</option>
+            <option value="all">All advisories</option>
+          </select>
           <select value={status} onChange={(e) => { setStatus(e.target.value as "published" | "archived"); setPage(1); }} aria-label="Advisory status">
             <option value="published">Current advisories</option>
             <option value="archived">Archived</option>
@@ -52,7 +58,9 @@ export default function ThreatCenter() {
           !list.data!.items.length ? (
             <Empty>{status === "archived" ? "No archived advisories." :
               q ? "No advisory matches that search." :
-                "No advisories have been published yet. Platform administrators publish curated advisories here when a serious vulnerability is announced."}</Empty>
+                scope === "relevant" ? <>None of the published advisories matches your recorded inventory. Matching sees only what scans
+                  fingerprinted, so keep a Standard ASM scan running. <button className="btn ghost sm" onClick={() => setScope("all")}>Show all advisories</button></> :
+                "No advisories have been published yet. They appear here automatically from CISA's known-exploited catalog once the feed has run."}</Empty>
           ) : (
             <>
               <div className="table-wrap">
@@ -72,7 +80,8 @@ export default function ThreatCenter() {
                         <tr key={a.id} className="clickable" onClick={() => nav(`/threats/${a.id}`)}>
                           <td><SeverityBadge value={a.severity} /></td>
                           <td>
-                            <div className="cell-main"><Link to={`/threats/${a.id}`} onClick={(e) => e.stopPropagation()}>{a.title}</Link></div>
+                            <div className="cell-main"><Link to={`/threats/${a.id}`} onClick={(e) => e.stopPropagation()}>{a.title}</Link>
+                              {a.kev && <span className="badge bad" style={{ marginInlineStart: 6 }} title="Listed in CISA's Known Exploited Vulnerabilities catalog">exploited</span>}</div>
                             <div className="cell-sub mono">{a.cves.slice(0, 4).join(", ")}{a.cves.length > 4 ? ` +${a.cves.length - 4}` : ""}</div>
                           </td>
                           <td className="small" title={a.source_updated_at ? `Updated ${fmtDay(a.source_updated_at)}` : undefined}>

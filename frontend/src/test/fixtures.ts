@@ -203,6 +203,14 @@ export const exposureMap = {
   notice: "Observed relationships only. A line never means one asset can be used to reach another.",
 };
 
+export const feedConfig = {
+  settings: { enabled: true, publish: "kev", include_critical: false, critical_days: 30, auto_checks: true,
+    aliases: { "acme:widget_server": ["acme widget"] } },
+  builtin_aliases: { "apache:http_server": ["apache", "apache http server"] },
+  status: { items: 1480, kev_items: 1450, by_status: { published: 1450, draft: 30 }, has_api_key: false,
+    sources: { kev: { last_success_at: now, last_attempt_at: now, last_error: null, records: 3 }, critical: null } },
+};
+
 export function mockApi(path: string): unknown {
   const routes: [RegExp, unknown][] = [
     [/^\/exposure-map$/, exposureMap],
@@ -215,6 +223,7 @@ export function mockApi(path: string): unknown {
     [/^\/threats\/[^/]+\/checks$/, advisoryDetail.check_runs],
     [/^\/threats\/[^/]+$/, advisoryDetail],
     [/^\/threat-catalog$/, [advisoryAdmin]],
+    [/^\/threat-catalog\/feed$/, feedConfig],
     [/^\/threat-catalog\/checks$/, [{ key: "cve-2099-0001", name: "Example VPN RCE detection", description: null, kind: "detection_template",
       template_id: "cve-2099-0001", enabled: true, updated_at: now }]],
     [/^\/threat-catalog\/[^/]+$/, advisoryAdmin],

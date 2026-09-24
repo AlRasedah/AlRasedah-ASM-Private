@@ -7,6 +7,7 @@ import type { AdvisoryAdmin, AdvisoryContent, AffectedProduct, ApprovedCheck } f
 import { useAuth } from "@/auth/AuthContext";
 import { Card, Confirm, Empty, ErrorBox, Field, Loading, Modal, PageHead, SeverityBadge, StatusBadge } from "@/components/ui";
 import { fmtDate, SEVERITIES, timeAgo } from "@/lib/format";
+import FeedSettings from "./FeedSettings";
 
 const BLANK: AdvisoryContent = {
   title: "", summary: "", severity: "high", cves: [], references: [], remediation: "", check_keys: [],
@@ -174,7 +175,12 @@ function Checks({ checks }: { checks: ApprovedCheck[] }) {
 export default function ThreatCatalog() {
   const { can } = useAuth();
   const [open, setOpen] = useState<string | "new" | null>(null);
-  const list = useQuery({ queryKey: ["threat-catalog"], queryFn: () => api<AdvisoryAdmin[]>("/threat-catalog"), enabled: can("intel:admin") });
+  const [origin, setOrigin] = useState<"all" | "manual" | "feed">("all");
+  const [search, setSearch] = useState("");
+  const [drafts, setDrafts] = useState(false);
+  const list = useQuery({ queryKey: ["threat-catalog", "list", origin, search, drafts],
+                          queryFn: () => api<AdvisoryAdmin[]>("/threat-catalog", { query: { origin, q: search || undefined, drafts: drafts || undefined } }),
+                          enabled: can("intel:admin") });
   const checks = useQuery({ queryKey: ["threat-catalog", "checks"], queryFn: () => api<ApprovedCheck[]>("/threat-catalog/checks"), enabled: can("intel:admin") });
   const item = useQuery({ queryKey: ["threat-catalog", open], queryFn: () => api<AdvisoryAdmin>(`/threat-catalog/${open}`),
                           enabled: !!open && open !== "new" });
@@ -182,10 +188,20 @@ export default function ThreatCatalog() {
   return (
     <>
       <div className="small" style={{ marginBottom: 8 }}><Link to="/threats"><ArrowLeft size={13} /> Threat Center</Link></div>
-      <PageHead title="Advisory catalog" sub="Curated advisories shared by every tenant. Only published versions are visible to tenants."
+      <PageHead title="Advisory catalog" sub="Advisories shared by every tenant: written automatically from public vulnerability data, or by you. Only published versions are visible to tenants."
                 actions={<button className="btn primary" onClick={() => setOpen("new")}><Plus /> New advisory</button>} />
       <div className="stack">
-        <Card flush title="Advisories">
+        <FeedSettings />
+        <Card flush title="Advisories" hint="the 500 most recently changed">
+          <div className="filters">
+            <input placeholder="Search title or CVE…" value={search} onChange={(e) => setSearch(e.target.value)} aria-label="Search the catalog" />
+            <select value={origin} onChange={(e) => setOrigin(e.target.value as "all" | "manual" | "feed")} aria-label="Source">
+              <option value="all">All sources</option>
+              <option value="feed">Automatic</option>
+              <option value="manual">Written here</option>
+            </select>
+            <label className="row small"><input type="checkbox" checked={drafts} onChange={(e) => setDrafts(e.target.checked)} /> Unpublished changes only</label>
+          </div>
           {list.isLoading ? <Loading /> : list.error ? <div className="card-body"><ErrorBox error={list.error} /></div> :
             !list.data!.length ? <Empty>No advisories yet.</Empty> : (
               <table className="data">
@@ -193,7 +209,8 @@ export default function ThreatCatalog() {
                 <tbody>{list.data!.map((a) => (
                   <tr key={a.id} className="clickable" onClick={() => setOpen(a.id)}>
                     <td><SeverityBadge value={a.severity} /></td>
-                    <td><div className="cell-main">{a.title}</div><div className="cell-sub mono">{a.slug}</div></td>
+                    <td><div className="cell-main">{a.title}</div>
+                      <div className="cell-sub mono">{a.slug}{a.origin === "feed" && <span className="badge neutral" style={{ marginInlineStart: 6 }}>automatic</span>}</div></td>
                     <td><StatusBadge value={a.status} /></td>
                     <td className="small">{a.published_version ? `v${a.published_version} · ${fmtDate(a.version_published_at)}` : "—"}</td>
                     <td>{a.has_draft ? <span className="badge accent">unpublished changes</span> : <span className="muted">—</span>}</td>
