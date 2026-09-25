@@ -1,0 +1,56 @@
+# Demo overlay for Exteriq ASM — customer demonstrations.
+#
+# Adds a one-shot service that seeds a demo tenant, admin, organization and scope
+# after the database is migrated, so the stack comes up with a ready demo login.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.demo.yml up -d
+#
+# Sign in with the credentials below, then populate the demo by running a scan
+# (Scans -> New scan). To wipe the demo data later:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.demo.yml run --rm asm-demo-reset
+#
+# or tear the whole environment down (removes ALL data and volumes):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.demo.yml down -v
+#
+# Override the demo login by setting ASM_DEMO_EMAIL / ASM_DEMO_PASSWORD / ASM_DEMO_TENANT.
+#
+# NOTE: YAML anchors do not cross compose files, so this overlay defines its own
+# platform block rather than reusing the base file's &platform anchor.
+
+x-demo-platform: &demo-platform
+  image: ${ASM_IMAGE_REGISTRY:-alrasedah}/asm-platform:${ASM_VERSION:-0.1.0}
+  build:
+    context: .
+    dockerfile: docker/backend/Dockerfile
+  env_file: .env
+  environment: &demo-platform-env
+    ASM_DATABASE_URL: postgresql+psycopg://${ASM_DB_USER:-asm}:${ASM_DB_PASSWORD:?set ASM_DB_PASSWORD}@postgres:5432/${ASM_DB_NAME:-asm}
+    ASM_REDIS_URL: redis://:${ASM_REDIS_PASSWORD:?set ASM_REDIS_PASSWORD}@redis:6379/0
+    ASM_DEMO_PASSWORD: ${ASM_DEMO_PASSWORD:-Demo-Passw0rd!}
+  read_only: true
+  tmpfs: [/tmp]
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  restart: "no"
+  networks: [data]
+
+services:
+  # Seeds the demo on `up` (structure only: tenant, admin, org, scope).
+  asm-demo-seed:
+    <<: *demo-platform
+    command: ["cli", "demo-seed",
+              "--email", "${ASM_DEMO_EMAIL:-admin@demo.local}",
+              "--tenant", "${ASM_DEMO_TENANT:-Demo Holding}"]
+    depends_on:
+      asm-migrate: { condition: service_completed_successfully }
+
+  # Run on demand to delete the demo tenant and all of its data (idempotent).
+  # In the "tools" profile so it never runs on a plain `up`.
+  asm-demo-reset:
+    <<: *demo-platform
+    command: ["cli", "demo-reset", "--tenant", "${ASM_DEMO_TENANT:-Demo Holding}"]
+    profiles: ["tools"]
+    depends_on:
+      postgres: { condition: service_healthy }
