@@ -81,6 +81,7 @@ from ...observations import (
     Severity,
 )
 from ...registry import register
+from ...stagelog import note
 from ...targets import Target, TargetKind, split_host_port
 from .._common import ObservationSet
 from ..httpx import endpoint_base
@@ -440,6 +441,7 @@ class ZapSpiderAdapter(ScannerAdapter):
                     # would be a login page and a false sense of coverage.
                     raise ConfigurationError(AUTH_UNAVAILABLE) from exc
             # Seed without following redirects: a redirect must never put another host on the request path.
+            note(f"Crawling {url}" + (" (signed in)" if auth else ""))
             await zap.call("core", "action", "accessUrl", {"url": url, "followRedirects": "false"})
 
             started = await zap.call("spider", "action", "scan", {
@@ -455,8 +457,10 @@ class ZapSpiderAdapter(ScannerAdapter):
                 if not spider_done:
                     raw.errors.append(f"zap_spider: crawl of {url} did not finish before its deadline")
                 results = await zap.call("spider", "view", "results", {"scanId": scan_id})
-                for u in results.get("results") or []:
+                pages = results.get("results") or []
+                for u in pages:
                     raw.records.append({"kind": "url", "root": url, "value": str(u)})
+                note(f"Crawl of {url} found {len(pages)} page(s)")
 
             if config.ajax_spider:
                 ajax_done = False
@@ -509,13 +513,18 @@ class ZapSpiderAdapter(ScannerAdapter):
         """Poll until the scan reports 100%; False if the deadline passed or the status was unreadable."""
         # The scanner's own max-duration option stops it; this is the outer safety deadline.
         deadline = time.monotonic() + config.max_duration_minutes * 60 + 60
+        shown = -1
         while time.monotonic() < deadline:
             st = await zap.call(component, "view", "status", params)
             try:
-                if int(st.get("status") or 0) >= 100:
-                    return True
+                pct = int(st.get("status") or 0)
             except (TypeError, ValueError):
                 return False
+            if pct // 10 != shown:
+                shown = pct // 10
+                note(f"Crawl {min(pct, 100)}% complete")
+            if pct >= 100:
+                return True
             await asyncio.sleep(config.poll_interval_seconds)
         return False
 
@@ -677,6 +686,7 @@ class ZapActiveAdapter(ScannerAdapter):
             if failed:
                 raw.errors.append(f"zap_active: {failed} known pages of {url} could not be reloaded before the scan; "
                                   "its results are incomplete")
+            note(f"Active testing of {url} started ({len(urls)} known page(s))")
             started = await zap.call("ascan", "action", "scan", {
                 "url": url, "recurse": str(config.recurse).lower(), "inScopeOnly": str(config.in_scope_only).lower(),
                 "scanPolicyName": config.scan_policy, "method": "", "postData": "", "contextId": context_id})
@@ -686,18 +696,26 @@ class ZapActiveAdapter(ScannerAdapter):
                 scan_id = ""
                 return
             deadline = time.monotonic() + config.max_duration_minutes * 60 + 120
+            shown = -1
             while time.monotonic() < deadline:
                 st = await zap.call("ascan", "view", "status", {"scanId": scan_id})
                 try:
-                    if int(st.get("status") or 0) >= 100:
-                        finished = True
-                        break
+                    pct = int(st.get("status") or 0)
                 except (TypeError, ValueError):
+                    break
+                if pct // 10 != shown:
+                    shown = pct // 10
+                    note(f"Active testing of {url}: {min(pct, 100)}% complete")
+                if pct >= 100:
+                    finished = True
                     break
                 await asyncio.sleep(config.poll_interval_seconds)
             if not finished:
                 raw.errors.append(f"zap_active: active scan of {url} did not finish before its deadline")
+            before = len(raw.records)
             await zap.alerts(url, config.max_alerts, raw, "zap_active")
+            note(f"Active testing of {url} {'finished' if finished else 'stopped at its deadline'}: "
+                 f"{len(raw.records) - before} alert(s)")
         finally:
             if scan_id and not finished:
                 await _stop(zap, "ascan", {"scanId": scan_id})

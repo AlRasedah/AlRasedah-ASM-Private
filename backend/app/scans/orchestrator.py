@@ -566,8 +566,17 @@ def run_inline(db: Session, scan_id: uuid.UUID, settings: dict[str, Any] | None 
         if nxt is None:
             break
         stage, job = nxt
-        key = crypto.pool_transport_key(stage.worker_pool or "default")
-        result = asyncio.run(execute_job(job, settings=sensor_settings, transport_key=key))
+        pool = stage.worker_pool or "default"
+        key = crypto.pool_transport_key(pool)
+
+        def send_output(chunk: dict, job: SensorJob = job, pool: str = pool, key: bytes = key) -> None:
+            from asm_sensors.jobs import seal_log
+
+            from app.scans import output
+
+            output.receive(seal_log(job, chunk, pool, key))
+
+        result = asyncio.run(execute_job(job, settings=sensor_settings, transport_key=key, log_sink=send_output))
         complete_stage(db, scan, stage, result)
         db.commit()
     finalize_scan(db, scan)

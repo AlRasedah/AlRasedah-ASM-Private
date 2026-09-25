@@ -12,10 +12,10 @@ from app.api.deps import Paging, Principal, get_db, require
 from app.auth.permissions import Permission
 from app.core.config import get_settings
 from app.core.errors import Conflict, NotFound
-from app.models import Scan, ScanArtifact, ScanProfile, ScanSchedule, ScopeDecision
+from app.models import Scan, ScanArtifact, ScanProfile, ScanSchedule, ScanStage, ScopeDecision
 from app.models.enums import DecisionResult, ScanStatus, ScanTrigger, StageType
 from app.scans import engines as engine_identity
-from app.scans import orchestrator, schedules
+from app.scans import orchestrator, output, schedules
 from app.scans.profiles import INTERNAL_SLUGS, STAGE_LABELS, profile_is_active, stage_time_limit, validate_stages
 from app.scans.schedules import next_run, validate_timezone
 from app.schemas.common import Message, Page, paginate
@@ -119,6 +119,34 @@ def decisions(scan_id: uuid.UUID, decision: DecisionResult | None = None, paging
     rows, total = paginate(db, stmt, paging.page, paging.page_size)
     return Page(items=[DecisionOut.model_validate(r) for r in rows], total=total, page=paging.page,
                 page_size=paging.page_size)
+
+
+def _stage(db: Session, scan_id: uuid.UUID, stage_id: uuid.UUID) -> ScanStage:
+    _scan(db, scan_id)
+    stage = db.get(ScanStage, stage_id)
+    if stage is None or stage.scan_id != scan_id:
+        raise NotFound("Stage not found")
+    return stage
+
+
+@router.get("/scans/{scan_id}/stages/{stage_id}/output")
+def stage_output(scan_id: uuid.UUID, stage_id: uuid.UUID, _: Principal = Depends(require(Permission.SCANS_READ)),
+                 db: Session = Depends(get_db)) -> dict:
+    """The stage's verbose output: first and last lines, cleaned (no engine names, no secrets)."""
+    return output.read(db, _stage(db, scan_id, stage_id))
+
+
+@router.get("/scans/{scan_id}/stages/{stage_id}/output.txt")
+def stage_output_text(scan_id: uuid.UUID, stage_id: uuid.UUID, _: Principal = Depends(require(Permission.SCANS_READ)),
+                      db: Session = Depends(get_db)) -> Response:
+    stage = _stage(db, scan_id, stage_id)
+    label = engine_identity.label_for(stage.engine, STAGE_LABELS.get(stage.stage_type, ""))
+    body = output.as_text(label, output.read(db, stage))
+    audit.record(db, Action.DATA_EXPORTED, object_type="scan_stage", object_id=stage.id,
+                 new={"format": "text", "kind": "stage_output"})
+    db.commit()
+    return Response(body, media_type="text/plain; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="scan-{scan_id}-stage-{stage.position}.txt"'})
 
 
 @router.get("/scans/{scan_id}/artifacts", response_model=list[ArtifactOut])

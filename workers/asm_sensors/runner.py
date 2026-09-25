@@ -4,23 +4,26 @@ by the platform's inline mode (development/tests)."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import ipaddress
 import logging
 import os
 import socket
 import tempfile
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from . import logs
+from . import logs, stagelog
 from .base import ConfigurationError, ExecutionContext
 from .coordination import Coordinator, local_coordinator
 from .execution import BinaryNotFound, ExecutionError
 from .jobs import SealingError, SensorJob, unseal_credentials
 from .observations import SensorResult
 from .registry import get_adapter
+from .stagelog import StageLog
 from .targets import Target, TargetKind
 
 log = logging.getLogger(__name__)
@@ -119,8 +122,49 @@ async def egress_filter(targets: Sequence[Target], *, allow_non_public: bool,
 
 async def execute_job(
     job: SensorJob, settings: dict[str, Any] | None = None, transport_key: bytes | None = None,
-    coordinator: Coordinator | None = None,
+    coordinator: Coordinator | None = None, log_sink: Callable[[dict[str, Any]], None] | None = None,
 ) -> SensorResult:
+    """Run one job. With ``log_sink``, the stage's cleaned verbose output is handed to it in
+    chunks while the job runs (``stagelog``), and a final chunk once it has finished."""
+    if log_sink is None:
+        return await _execute(job, settings, transport_key, coordinator, None)
+    stage_log = StageLog()
+    token = stagelog.CURRENT.set(stage_log)
+    stop = asyncio.Event()
+
+    async def send(final: bool) -> None:
+        for chunk in stage_log.chunks(final):
+            try:
+                await asyncio.to_thread(log_sink, chunk)
+            except Exception:  # noqa: BLE001 - output is best effort; the scan itself is not
+                log.warning("job %s: could not send stage output", job.job_id)
+
+    async def flusher() -> None:
+        while not stop.is_set():
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(stop.wait(), stagelog.FLUSH_SECONDS)
+            if not stop.is_set():
+                await send(False)
+
+    task = asyncio.create_task(flusher())
+    t0 = time.monotonic()
+    try:
+        stage_log.info(f"Stage started with {len(job.targets)} target(s)")
+        result = await _execute(job, settings, transport_key, coordinator, stage_log)
+        for e in result.errors[:20]:
+            stage_log.warning(e)
+        stage_log.info(f"Stage finished: {result.status}, {len(result.observations)} observation(s) "
+                       f"in {time.monotonic() - t0:.0f} s")
+        return result
+    finally:
+        stop.set()
+        await task
+        await send(True)
+        stagelog.CURRENT.reset(token)
+
+
+async def _execute(job: SensorJob, settings: dict[str, Any] | None, transport_key: bytes | None,
+                   coordinator: Coordinator | None, stage_log: StageLog | None) -> SensorResult:
     started = datetime.now(UTC)
     if job.not_after is not None and started > job.not_after:
         # Before any lease, browser or connection: the platform has already given up on it.
@@ -138,6 +182,8 @@ async def execute_job(
             credentials = unseal_credentials(job.sealed_credentials, job.job_id, transport_key)
         except (SealingError, ValueError) as exc:
             return _failed(job, f"could not open the job's credential envelope: {exc}", started)
+    if stage_log is not None:  # never shown, even in part
+        stage_log.secrets = [v for values in credentials.values() for v in values if v]
     max_rate = int(os.environ.get("ASM_SCANNER_MAX_RATE", "2000"))
     max_out = int(os.environ.get("ASM_SCANNER_MAX_OUTPUT_MB", "64")) * 1024 * 1024
     max_raw = int(os.environ.get("ASM_RAW_OUTPUT_MAX_MB", "20")) * 1024 * 1024

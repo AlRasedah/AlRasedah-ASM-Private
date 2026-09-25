@@ -18,8 +18,10 @@ import shutil
 import signal
 import sys
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+
+from . import stagelog
 
 DEFAULT_MAX_OUTPUT = 64 * 1024 * 1024
 _SAFE_ENV_KEYS = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "SYSTEMROOT", "TEMP", "TMP")
@@ -71,16 +73,28 @@ def minimal_env(extra: Mapping[str, str] | None = None, home: str | None = None)
     return env
 
 
-async def _drain(stream: asyncio.StreamReader | None, limit: int) -> tuple[bytes, bool]:
+async def _drain(stream: asyncio.StreamReader | None, limit: int,
+                 on_line: Callable[[str], None] | None = None) -> tuple[bytes, bool]:
     if stream is None:
         return b"", False
     chunks: list[bytes] = []
     size = 0
     truncated = False
+    pending = b""
     while True:
         chunk = await stream.read(65536)
         if not chunk:
+            if on_line is not None and pending:
+                on_line(pending.decode("utf-8", "replace"))
             break
+        if on_line is not None:
+            # Every line reaches the stage log (which bounds itself), even past the capture cap.
+            *lines, pending = (pending + chunk).split(b"\n")
+            if len(pending) > 65536:
+                lines.append(pending)
+                pending = b""
+            for line in lines:
+                on_line(line.decode("utf-8", "replace"))
         if size < limit:
             keep = chunk[: limit - size]
             chunks.append(keep)
@@ -138,8 +152,11 @@ async def run_process(
             proc.stdin.write(stdin_data)
             await proc.stdin.drain()
             proc.stdin.close()
+        log = stagelog.current()
         out, err = await asyncio.gather(
-            _drain(proc.stdout, max_output_bytes), _drain(proc.stderr, 1024 * 1024)
+            _drain(proc.stdout, max_output_bytes),
+            # The engines' diagnostic stream is the stage's verbose output (results go to files).
+            _drain(proc.stderr, 1024 * 1024, log.add if log is not None else None),
         )
         await proc.wait()
         return out, err

@@ -87,7 +87,7 @@ class NaabuAdapter(ScannerAdapter):
     config_model = NaabuConfig
 
     def build_argv(self, binary: str, tfile: str, out: str, cfg: NaabuConfig) -> list[str]:
-        argv = [binary, "-l", tfile, "-json", "-o", out, "-silent", "-nc",
+        argv = [binary, "-l", tfile, "-json", "-o", out, "-v", "-nc",
                 "-p", cfg.port_spec, "-rate", str(cfg.rate), "-c", str(cfg.workers),
                 "-retries", str(cfg.retries), "-timeout", str(cfg.timeout_ms),
                 "-s", "s" if cfg.scan_type == "syn" else "c"]

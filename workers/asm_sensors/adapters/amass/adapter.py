@@ -102,7 +102,7 @@ class AmassAdapter(ScannerAdapter):
 
     def build_argv(self, binary: str, targets_file: str, out_file: str, db_dir: str, cfg: AmassConfig) -> list[str]:
         argv = [binary, "enum", "-df", targets_file, "-o", out_file, "-dir", db_dir,
-                "-timeout", str(cfg.timeout_minutes), "-nocolor"]
+                "-timeout", str(cfg.timeout_minutes), "-nocolor", "-v"]
         if cfg.mode == "active":
             argv.append("-active")
         if cfg.brute_force:

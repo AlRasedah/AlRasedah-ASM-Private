@@ -44,13 +44,14 @@ def _record_jobs(monkeypatch) -> dict[str, dict]:
     handed: dict[str, dict] = {}
     original = runner.execute_job
 
-    async def capture(job, settings=None, transport_key=None, coordinator=None):
+    async def capture(job, settings=None, transport_key=None, coordinator=None, log_sink=None):
         handed[job.adapter] = {
             "config": job.config,
             "credentials": (unseal_credentials(job.sealed_credentials, job.job_id, transport_key)
                             if job.sealed_credentials else {}),
         }
-        return await original(job, settings=settings, transport_key=transport_key, coordinator=coordinator)
+        return await original(job, settings=settings, transport_key=transport_key, coordinator=coordinator,
+                              log_sink=log_sink)
 
     monkeypatch.setattr(runner, "execute_job", capture)
     return handed

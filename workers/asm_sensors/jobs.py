@@ -32,7 +32,7 @@ import os
 import re
 from collections.abc import Callable
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -202,3 +202,65 @@ def open_result(envelope: Any, key_for_pool: Callable[[str], bytes]) -> tuple[Re
         return env, SensorResult.model_validate(env.result)
     except ValueError as exc:
         raise ResultRejected(f"invalid sensor result for job {env.job_id}: {exc}") from exc
+
+
+# ------------------------------------------------------------------ stage output
+# A stage's verbose output travels on the same result queue and task as results, but
+# as its own envelope kind with its own MAC key (a different HKDF label), so a log
+# envelope can never be taken for a result or the other way round.
+LogLine = tuple[float, str, str]
+
+
+class LogChunk(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    seq: int = Field(ge=1, le=100_000)
+    head: list[LogLine] = Field(default_factory=list, max_length=400)
+    tail: list[LogLine] | None = Field(default=None, max_length=2000)
+    total: int = Field(ge=0)
+    omitted: int = Field(ge=0)
+    final: bool = False
+
+
+class LogEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["log"]
+    job_id: str = Field(min_length=1, max_length=64)
+    tenant_id: str = Field(max_length=64)
+    scan_id: str = Field(max_length=64)
+    stage_id: str = Field(max_length=64)
+    pool: str
+    chunk: dict[str, Any]
+    mac: str = Field(max_length=128)
+
+
+_LOG_SIGNED = ("kind", "job_id", "tenant_id", "scan_id", "stage_id", "pool", "chunk")
+
+
+def _log_mac(key: bytes, envelope: dict[str, Any]) -> str:
+    body = json.dumps({k: envelope[k] for k in _LOG_SIGNED}, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hmac.new(_hkdf(key, "stage-log-mac"), body.encode(), hashlib.sha256).hexdigest()
+
+
+def seal_log(job: SensorJob, chunk: dict[str, Any], pool: str, key: bytes | None = None) -> dict[str, Any]:
+    envelope: dict[str, Any] = {"kind": "log", "job_id": job.job_id, "tenant_id": job.tenant_id,
+                                "scan_id": job.scan_id, "stage_id": job.stage_id, "pool": validate_pool(pool),
+                                "chunk": LogChunk.model_validate(chunk).model_dump(mode="json")}
+    envelope = json.loads(json.dumps(envelope))
+    envelope["mac"] = _log_mac(_transport_key(key), envelope)
+    return envelope
+
+
+def open_log(envelope: Any, key_for_pool: Callable[[str], bytes]) -> tuple[LogEnvelope, LogChunk]:
+    try:
+        env = LogEnvelope.model_validate(envelope)
+        validate_pool(env.pool)
+    except ValueError as exc:
+        raise ResultRejected(f"malformed log envelope: {exc}") from exc
+    if not hmac.compare_digest(_log_mac(key_for_pool(env.pool), envelope), env.mac):
+        raise ResultRejected(f"log envelope for job {env.job_id} failed authentication (pool {env.pool})")
+    try:
+        return env, LogChunk.model_validate(env.chunk)
+    except ValueError as exc:
+        raise ResultRejected(f"invalid log chunk for job {env.job_id}: {exc}") from exc

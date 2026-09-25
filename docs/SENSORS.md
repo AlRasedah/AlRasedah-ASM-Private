@@ -110,6 +110,35 @@ class MyToolAdapter(ScannerAdapter):
   `identity.identity_header(ctx.settings)` — never a hardcoded user agent or product header.
 - Set `historical=True` on the result if the data describes what a third party saw, not what
   this run saw; the platform then refuses to let it refresh, revive or close anything.
+- Run the tool in **verbose mode** (its `-v`/`--verbose` flag, never `-silent`) and keep results
+  in files: whatever the tool writes to stderr becomes the stage's output on the scan page
+  (below). Adapters without a process (API clients, the web application scanner) narrate
+  progress with `stagelog.note("…")`.
+
+## Stage output (verbose mode)
+
+Every stage runs its engine in verbose mode, and the scan page shows the output per stage
+(**Pipeline → Show output**, updated every few seconds while the stage runs, with a
+download). The output never names the engine behind a capability (ADR-022):
+
+1. **In the scanner** (`asm_sensors/stagelog.py`), each stderr line is cleaned as it is read:
+   colour codes, ASCII-art banners, version announcements and lines that are only a vendor's
+   site are dropped; engine and project names become "engine"; install paths become
+   `[path]`; content-set names and vendor links are replaced; `Authorization`/cookie/API-key
+   values, `key=`/`token=`-style query values and every credential the job carried are
+   redacted. Log levels (`[INF]`, `[WRN]`, `[ERR]`, …) become info/warning/error/debug.
+2. **Bounded** whatever the engine prints: the first 2 000 lines and the last 2 000, with a
+   count of the lines in between that were not kept. While a stage runs only the latest 200
+   tail lines travel every 5 seconds; the full tail comes with the final chunk.
+3. **Sent** on the pool's result queue as its own envelope kind (`kind: "log"`), signed with
+   a key derived separately from the result key, so a log chunk can never be taken for a
+   result. `asm-ingest` still registers exactly one task.
+4. **On arrival** the platform accepts a chunk only from the job it dispatched for that stage,
+   from that pool, while the stage runs or up to 15 minutes after it ended; it cleans every
+   line again (the scanner is not trusted to have done it) and enforces the same bounds.
+
+Output is stored per stage (`scan_stage_outputs`, tenant-isolated by RLS), deleted with the
+scan, readable with `scans:read`, and each download is audited (`data.exported`).
 
 ## Tool notes
 

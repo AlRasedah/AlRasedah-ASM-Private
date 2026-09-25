@@ -67,7 +67,7 @@ class DnsxAdapter(ScannerAdapter):
         binary = resolve_binary("dnsx", self.binaries)
         tfile = write_targets_file(ctx.workdir, targets)
         out = ctx.workdir / "dnsx.jsonl"
-        argv = [binary, "-l", str(tfile), "-json", "-o", str(out), "-silent", "-nc", "-resp",
+        argv = [binary, "-l", str(tfile), "-json", "-o", str(out), "-v", "-nc", "-resp",
                 "-rl", str(config.rate_limit), "-t", str(config.threads), "-retry", str(config.retries)]
         argv += [f"-{rt}" for rt in config.record_types]
         if config.resolvers:

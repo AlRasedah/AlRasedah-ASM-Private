@@ -80,6 +80,12 @@ const scan = {
     error: null, stats: { duration_seconds: 3.2 } }],
 };
 
+export const stageOutput = {
+  head: [[0, "info", "Stage started with 6 target(s)"], [1.2, "warning", "engine: 2 resolvers answered slowly"]],
+  tail: [[3.2, "info", "Stage finished: completed, 18 observation(s) in 3 s"]],
+  total: 5003, omitted: 5000, final: true, running: false, updated_at: now,
+};
+
 const profile = {
   id: "p1", slug: "standard-asm", name: "Standard ASM", description: "Recommended", is_builtin: true,
   is_active_scanning: true, retain_raw_output: false, tenant_id: null,
@@ -255,6 +261,7 @@ export function mockApi(path: string): unknown {
     [/^\/events$/, page([event])],
     [/^\/scans$/, page([scan])],
     [/^\/scans\/[^/]+\/decisions$/, page([{ id: 1, stage_id: "st1", target: "dev-api.example.com", decision: "rejected", reason: "hostname excluded from scope", active: false, created_at: now }])],
+    [/^\/scans\/[^/]+\/stages\/[^/]+\/output$/, stageOutput],
     [/^\/scans\/[^/]+$/, scan],
     [/^\/scan-profiles$/, [profile]],
     [/^\/schedules$/, [{ id: "sch1", organization_id: "o1", profile_id: "p1", name: "Nightly", cron: "0 2 * * *", description: "Every day at 02:00", recurrence: { frequency: "daily", hour: 2, minute: 0, weekday: null, day: null }, timezone: "Asia/Riyadh", enabled: true, next_run_at: now, last_run_at: earlier, last_scan_id: "s1" }]],

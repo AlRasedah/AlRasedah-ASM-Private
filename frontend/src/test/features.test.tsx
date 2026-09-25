@@ -9,7 +9,7 @@ import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { advisoryDetail, capture, me, mockApi, screenshotStatus as shotStatus, threatMatches } from "./fixtures";
 const screenshotStatus = () => structuredClone(shotStatus);
-import { api, ApiError } from "@/api/client";
+import { api, ApiError, download } from "@/api/client";
 
 vi.mock("@/api/client", async () => {
   const actual = await vi.importActual<typeof import("@/api/client")>("@/api/client");
@@ -59,6 +59,21 @@ function renderAt(route: string) {
 
 beforeEach(() => { vi.mocked(api).mockImplementation((async (p: string) => mockApi(p)) as never); });
 afterEach(() => cleanup());
+
+describe("Scan output", () => {
+  it("each stage shows its verbose output on request, with a download", async () => {
+    const calls = serve(() => undefined);
+    renderAt("/scans/s1");
+    fireEvent.click(await screen.findByRole("button", { name: /Show output/ }));
+    const log = await screen.findByRole("log", { name: "DNS resolution output" });
+    expect(log.textContent).toContain("2 resolvers answered slowly");
+    expect(log.textContent).toContain("5000 line(s) not kept");
+    expect(screen.getByText(/5003 line\(s\)/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Download/ }));
+    expect(vi.mocked(download)).toHaveBeenCalledWith("/scans/s1/stages/st1/output.txt", {}, "scan-s1-stage-0.txt");
+    expect(calls.some((c) => c.path === "/scans/s1/stages/st1/output")).toBe(true);
+  });
+});
 
 describe("Threat Center", () => {
   it("a viewer sees assessments but no check, remediation or catalog actions", async () => {
