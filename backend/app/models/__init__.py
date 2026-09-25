@@ -9,9 +9,9 @@ from .events import AssetEvent
 from .findings import Finding, FindingActivity
 from .integrations import Integration, NotificationDelivery, NotificationPolicy
 from .intel import IntelFeedState, VulnIntel
+from .observability import EventExportState, OpsEvent, SetupToken, SupportBundle
 from .platform import PlatformSetting, UserAlertPreference
 from .reports import Report
-from .observability import EventExportState, OpsEvent, SetupToken, SupportBundle
 from .scans import Scan, ScanArtifact, ScanProfile, ScanSchedule, ScanStage, ScanStageOutput, ScopeDecision
 from .scope import ScopeEntry, Secret
 from .screenshots import ScreenshotCapture, ScreenshotUsage, StorageDeletion

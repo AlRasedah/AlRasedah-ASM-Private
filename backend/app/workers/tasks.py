@@ -31,8 +31,8 @@ from sqlalchemy import exists, or_, select
 from app.core.config import get_settings
 from app.db.session import new_session, system_session
 from app.models import Organization, Scan, ScanStage
-from app.observability import codes
 from app.models.enums import ScanStatus, StageStatus
+from app.observability import codes
 from app.scans import orchestrator
 from app.services import maintenance
 from app.workers.celery_app import celery_app
@@ -140,6 +140,14 @@ def stage_failed(scan_id: str, stage_id: str, reason: str = "Sensor task failed,
         orchestrator.fail_stage(db, scan, stage, reason)
         db.commit()
     advance_scan.delay(scan_id)
+
+
+@celery_app.task(shared=False, name="asm.core.support_bundle", soft_time_limit=240, time_limit=300)
+def support_bundle(bundle_id: str, tenant_id: str = "") -> None:
+    """Build one support bundle (bounded in size and time; see app/diagnostics/bundles.py)."""
+    from app.diagnostics.bundles import generate
+
+    generate(uuid.UUID(bundle_id), uuid.UUID(tenant_id) if tenant_id else None)
 
 
 @celery_app.task(shared=False, name="asm.core.export_events")

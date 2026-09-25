@@ -134,6 +134,11 @@ def purge_retention() -> dict[str, int]:
 
         removed["ops_events"] = opsdb.prune(db, now)
         db.commit()
+    from app.diagnostics.bundles import purge_expired
+
+    removed["support_bundles"] = purge_expired(now)
+    with system_session() as db:
+        db.commit()
         tenant_ids = list(db.execute(select(Tenant.id)).scalars())
     # Website screenshots: every tenant, suspended ones included (their storage still counts).
     from app.screenshots.service import apply_retention

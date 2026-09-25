@@ -37,7 +37,10 @@ class Permission(StrEnum):
     USERS_WRITE = "users:write"
     SETTINGS_WRITE = "settings:write"
     AUDIT_READ = "audit:read"
+    DIAGNOSTICS_READ = "diagnostics:read"
+    SUPPORT_BUNDLES = "support:bundles"
     # Platform level
+    PLATFORM_DIAGNOSTICS = "platform:diagnostics"
     TENANTS_ADMIN = "tenants:admin"
     INTEL_ADMIN = "intel:admin"
 
@@ -53,7 +56,8 @@ _ANALYST = _VIEWER | {
 _TENANT_ADMIN = _ANALYST | {
     Permission.FINDINGS_ACCEPT_RISK, Permission.PROFILES_WRITE, Permission.SCHEDULES_WRITE,
     Permission.SCOPE_WRITE, Permission.ORGS_WRITE, Permission.INTEGRATIONS_WRITE, Permission.CREDENTIALS_WRITE,
-    Permission.USERS_WRITE, Permission.SETTINGS_WRITE, Permission.AUDIT_READ,
+    Permission.USERS_WRITE, Permission.SETTINGS_WRITE, Permission.AUDIT_READ, Permission.DIAGNOSTICS_READ,
+    Permission.SUPPORT_BUNDLES,
 }
 _PLATFORM_ADMIN = set(Permission)
 

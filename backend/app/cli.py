@@ -203,6 +203,22 @@ def cmd_verify_audit(a: argparse.Namespace) -> None:
     sys.exit(0 if r.intact else 1)
 
 
+def cmd_setup_token(a: argparse.Namespace) -> None:
+    """Print a one-time setup token (only its hash is stored). Used by the installer."""
+    from datetime import timedelta
+
+    from app import setup
+    from app.db.session import system_session
+
+    with system_session() as db:
+        if not setup.needed(db):
+            print("setup is already complete", file=sys.stderr)
+            raise SystemExit(3)
+        token = setup.issue(db, timedelta(minutes=a.ttl_minutes))
+        db.commit()
+    print(token)
+
+
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="asm", description="Exteriq ASM administration")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -233,6 +249,9 @@ def main(argv: list[str] | None = None) -> None:
     r.add_argument("--organization", required=True)
     r.add_argument("--profile", default="standard-asm")
     r.set_defaults(fn=cmd_run_scan)
+    st = sub.add_parser("setup-token", help="one-time link for creating the first platform administrator")
+    st.add_argument("--ttl-minutes", type=int, default=30, choices=range(5, 241), metavar="5-240")
+    st.set_defaults(fn=cmd_setup_token)
     v = sub.add_parser("verify-audit")
     v.add_argument("--tenant")
     v.set_defaults(fn=cmd_verify_audit)

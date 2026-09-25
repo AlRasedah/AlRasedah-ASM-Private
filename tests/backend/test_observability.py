@@ -107,7 +107,6 @@ class Gate(io.StringIO):
 
 def test_a_stalled_stdout_never_blocks_the_caller_and_drops_are_counted(monkeypatch):
     monkeypatch.setattr(eventlog, "QUEUE_SIZE", 50)
-    eventlog._take_drops()
     gate = Gate()
     writer = eventlog._Writer(gate)
     handler = eventlog._QueueHandler(writer.q)
@@ -120,7 +119,7 @@ def test_a_stalled_stdout_never_blocks_the_caller_and_drops_are_counted(monkeypa
         for i in range(500):
             log.warning("event %d", i)
         assert time.monotonic() - t0 < 2.0  # returned although nothing could be written
-        assert eventlog._dropped_events >= 400
+        assert writer.q.full()  # nothing more fits; the rest were dropped (and counted)
         gate.open.set()
         time.sleep(0.2)
         log.warning("after the stall")
@@ -129,7 +128,7 @@ def test_a_stalled_stdout_never_blocks_the_caller_and_drops_are_counted(monkeypa
             time.sleep(0.05)
         out = [json.loads(x) for x in gate.getvalue().splitlines()]
         drops = [e for e in out if e["event"] == "logging.events_dropped"]
-        assert drops and drops[0]["count"] >= 400 and drops[0]["error_code"] == "ASM-OPS-003"
+        assert sum(e["count"] for e in drops) >= 400 and {e["error_code"] for e in drops} == {"ASM-OPS-003"}
         assert out[-1]["msg"] == "after the stall"
     finally:
         log.removeHandler(handler)

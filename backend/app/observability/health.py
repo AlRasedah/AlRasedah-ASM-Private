@@ -174,7 +174,7 @@ def host() -> dict[str, Any]:
     from app.core.config import get_settings
 
     disks = {}
-    for label, path in (("data", get_settings().storage_local_path), ("tmp", "/tmp")):
+    for label, path in (("data", get_settings().storage_local_path), ("tmp", "/tmp")):  # noqa: S108 (read-only statvfs)
         try:
             du = shutil.disk_usage(path)
             disks[label] = {"path_label": label, "total_bytes": du.total, "free_bytes": du.free}

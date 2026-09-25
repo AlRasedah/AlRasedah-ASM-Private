@@ -161,21 +161,28 @@ def bound(**fields: Any) -> Iterator[None]:
 
 
 # --------------------------------------------------------------- formatting
-_dropped_events = 0
-_dropped_lock = threading.Lock()
+class _LineQueue(queue.Queue):  # type: ignore[type-arg]
+    """The bounded hand-off between callers and one writer thread. Lines that could not be
+    queued (full, or unformattable) are counted here, per writer, and the writer reports the
+    count before the next line that does get through."""
 
+    def __init__(self, maxsize: int) -> None:
+        super().__init__(maxsize=maxsize)
+        self._dropped = 0
+        self._dropped_lock = threading.Lock()
 
-def _count_drop() -> None:
-    global _dropped_events
-    with _dropped_lock:
-        _dropped_events += 1
+    def count_drop(self) -> None:
+        with self._dropped_lock:
+            self._dropped += 1
 
+    def take_drops(self) -> int:
+        with self._dropped_lock:
+            n, self._dropped = self._dropped, 0
+        return n
 
-def _take_drops() -> int:
-    global _dropped_events
-    with _dropped_lock:
-        n, _dropped_events = _dropped_events, 0
-    return n
+    @property
+    def dropped(self) -> int:
+        return self._dropped
 
 
 def _exception(exc_info: Any) -> dict[str, Any] | None:
@@ -248,7 +255,7 @@ _STANDARD = set(logging.LogRecord("x", 0, "", 0, "", (), None).__dict__) | {"mes
 class _QueueHandler(logging.Handler):
     """Formats in the caller (so context is captured) and hands the line to a writer thread."""
 
-    def __init__(self, q: queue.Queue[str | None]) -> None:
+    def __init__(self, q: _LineQueue) -> None:
         super().__init__()
         self.q = q
 
@@ -256,18 +263,18 @@ class _QueueHandler(logging.Handler):
         try:
             line = self.format(record)
         except Exception:  # noqa: BLE001 - a bad record must never break the caller
-            _count_drop()
+            self.q.count_drop()
             return
         try:
             self.q.put_nowait(line)
         except queue.Full:
-            _count_drop()
+            self.q.count_drop()
 
 
 class _Writer:
     def __init__(self, stream: TextIO) -> None:
         self.stream = stream
-        self.q: queue.Queue[str | None] = queue.Queue(maxsize=QUEUE_SIZE)
+        self.q = _LineQueue(QUEUE_SIZE)
         self.thread: threading.Thread | None = None
         self.start()
 
@@ -282,17 +289,17 @@ class _Writer:
             if line is None:
                 return
             try:
-                drops = _take_drops()
+                drops = q.take_drops()
                 if drops:  # said before the next line that does get through
                     self.stream.write(_drop_event(drops) + "\n")
                 self.stream.write(line + "\n")
                 self.stream.flush()
             except Exception:  # noqa: BLE001 - stdout closed or broken: count, keep draining
-                _count_drop()
+                q.count_drop()
 
     def after_fork(self) -> None:
         # A forked child (Celery prefork) inherits the queue but not the thread.
-        self.q = queue.Queue(maxsize=QUEUE_SIZE)
+        self.q = _LineQueue(QUEUE_SIZE)
         for h in logging.getLogger().handlers:
             if isinstance(h, _QueueHandler):
                 h.q = self.q
@@ -303,7 +310,7 @@ class _Writer:
             self.q.put_nowait(None)
         if self.thread is not None:
             self.thread.join(timeout)
-        drops = _take_drops()
+        drops = self.q.take_drops()
         if drops:
             with contextlib.suppress(Exception):
                 self.stream.write(_drop_event(drops) + "\n")

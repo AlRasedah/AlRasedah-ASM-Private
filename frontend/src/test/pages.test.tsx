@@ -58,6 +58,9 @@ const pages: [string, string | RegExp][] = [
   ["/audit", "scope.added"],
   ["/account", "Two-factor authentication"],
   ["/platform", "Tenants"],
+  ["/diagnostics", "Diagnostics & Support"],
+  ["/platform/diagnostics", "Scanner pools"],
+  ["/setup", "Create administrator"],
 ];
 
 describe("pages render with API data", () => {
