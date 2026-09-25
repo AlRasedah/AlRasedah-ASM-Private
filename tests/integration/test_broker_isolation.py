@@ -118,7 +118,7 @@ def _decode(raw: bytes) -> tuple[str, list]:
 
 def test_sensor_pool_is_confined(broker, tmp_path):
     import redis
-    from asm_sensors.jobs import open_result, pool_key
+    from asm_sensors.jobs import open_log, open_result, pool_key
 
     key = pool_key(MASTER, "default")
     scanner = _start(["-A", "asm_sensors.worker", "worker", "-Q", "scanners.default", "--pool", "solo",
@@ -132,11 +132,26 @@ def test_sensor_pool_is_confined(broker, tmp_path):
         job = _job(uuid.uuid4().hex)
         core.send_task("asm.sensors.run", args=[job.model_dump(mode="json")], task_id=job.job_id,
                        queue="scanners.default")
-        _wait(lambda: broker.llen("results.default") >= 1, what="the sensor result")
-        task, args = _decode(broker.rpop("results.default"))
-        assert task == "asm.results.submit"
-        env, result = open_result(args[0], lambda pool: pool_key(MASTER, pool))
+        # The stage's output travels ahead of the result, on the same queue and task, as
+        # separately signed log envelopes.
+        logs: list = []
+        found: list = []
+
+        def result_arrived() -> bool:
+            while (raw := broker.rpop("results.default")) is not None:
+                task, args = _decode(raw)
+                assert task == "asm.results.submit"
+                if args[0].get("kind") == "log":
+                    logs.append(open_log(args[0], lambda pool: pool_key(MASTER, pool)))
+                else:
+                    found.append(args[0])
+            return bool(found)
+
+        _wait(result_arrived, what="the sensor result")
+        env, result = open_result(found[0], lambda pool: pool_key(MASTER, pool))
         assert env.job_id == job.job_id and env.pool == "default" and result.status == "failed"
+        assert logs and all(e.job_id == job.job_id and e.pool == "default" for e, _ in logs)
+        assert any(chunk.final for _, chunk in logs)
 
         # A redelivery of the same job is not executed again.
         core.send_task("asm.sensors.run", args=[job.model_dump(mode="json")], task_id=job.job_id,
