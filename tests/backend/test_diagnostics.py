@@ -73,10 +73,16 @@ def test_tenant_diagnostics_show_only_the_tenants_own_activity(env):
         assert c.get(f"/api/v1/diagnostics/platform/{path}", headers=env["alpha"]).status_code == 403
 
 
-def test_platform_diagnostics_report_missing_telemetry_as_unavailable(env):
+def test_platform_diagnostics_report_missing_telemetry_as_unavailable(env, monkeypatch):
+    from app.observability import health
+
+    def no_broker():  # whatever happens to listen on this machine, the broker is "down" here
+        raise ConnectionError("broker unreachable")
+
+    monkeypatch.setattr(health, "_redis", no_broker)
     c = env["c"]
     h = c.get("/api/v1/diagnostics/platform/health", headers=env["root"]).json()
-    assert h["broker"]["status"] == "unavailable"  # no broker in the test environment
+    assert h["broker"]["status"] == "unavailable"
     assert all(v["status"] == "unavailable" for v in h["services"].values())
     assert h["queues"]["status"] == "unavailable" and h["units"]["status"] == "unavailable"
     assert h["database"]["schema_version"] == h["database"]["expected_schema"]
@@ -313,3 +319,71 @@ def test_setup_token_cli(db_clean, capsys):
     with pytest.raises(SystemExit) as exc:
         cli.main(["setup-token"])
     assert exc.value.code == 3
+
+
+def test_expected_head_is_found_where_each_deployment_keeps_migrations(tmp_path, monkeypatch):
+    """The app package lives in site-packages, so the migrations must be found by
+    deployment layout (source tree, container /app/alembic, native release), never
+    relative to the package — that would find the alembic *library* instead."""
+    import shutil
+    from pathlib import Path
+
+    from app.db import migrations
+
+    source = migrations.versions_dir()
+    assert source is not None and any(source.glob("0001_*.py"))
+    migrations.expected_head.cache_clear()
+    head = migrations.expected_head()
+    assert head and head >= "0013"
+
+    # A native release: <release>/platform/{venv,alembic}; nothing next to the package.
+    release = tmp_path / "platform"
+    shutil.copytree(source.parent, release / "alembic")
+    (release / "venv").mkdir()
+    monkeypatch.setattr(migrations, "__file__", str(tmp_path / "site-packages" / "app" / "db" / "migrations.py"))
+    monkeypatch.setattr(migrations.sys, "prefix", str(release / "venv"))
+    migrations.expected_head.cache_clear()
+    assert migrations.versions_dir() == release / "alembic" / "versions"
+    assert migrations.expected_head() == head
+
+    monkeypatch.setattr(migrations.sys, "prefix", str(tmp_path / "elsewhere"))
+    migrations.expected_head.cache_clear()
+    assert migrations.expected_head() is None  # unknown, never a wrong answer
+    monkeypatch.setenv("ASM_ALEMBIC_DIR", str(release / "alembic"))
+    migrations.expected_head.cache_clear()
+    assert migrations.expected_head() == head
+    migrations.expected_head.cache_clear()
+
+
+def test_a_scanner_whose_engines_cannot_run_is_degraded_not_healthy(monkeypatch):
+    """A sandbox that kills an engine (SIGSYS) must show up as a problem, never as a healthy
+    pool — and tenants learn only that a capability is missing, not which engine."""
+    import json as _json
+
+    from asm_sensors import health as scanner_health
+
+    from app.observability import health
+
+    beat = {"host": "h", "pid": 1, "version": "1", "ts": datetime.now(UTC).isoformat(),
+            "detection_rules": {"available": True, "count": 10},
+            "engines": {"naabu": "failed to run (killed by signal 31)", "httpx": "Current Version: v1.6.8",
+                        "nuclei": "not installed"}}
+    assert scanner_health.engine_problems(beat["engines"]) == [
+        "naabu: failed to run (killed by signal 31)", "nuclei: not installed"]
+
+    class Client:
+        def scan_iter(self, match=None, count=None):  # noqa: ANN001
+            yield "asm.pool.p1.health.h-1"
+
+        def get(self, key):  # noqa: ANN001
+            return _json.dumps(beat)
+
+        def mget(self, keys):  # noqa: ANN001
+            return [_json.dumps(beat) for _ in keys]
+
+    monkeypatch.setattr(health, "_redis", lambda: Client())
+    pool = health.scanners(Client(), ["p1"])["p1"]
+    assert pool["status"] == "degraded" and any("signal 31" in p for p in pool["problems"])
+    tenant = health.tenant_view("p1", shared=False)["scanner"]
+    assert tenant["status"] == "degraded" and "cannot run" in tenant["capabilities"]
+    assert "naabu" not in _json.dumps(tenant) and "nuclei" not in _json.dumps(tenant)

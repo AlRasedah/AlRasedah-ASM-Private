@@ -30,6 +30,11 @@ high-value target. This document lists the threats considered and the controls i
 | Tampering with evidence | `audit_logs` append-only (trigger blocks UPDATE/DELETE/TRUNCATE) and hash-chained per tenant (`verify-audit`); finding history is immutable activity records |
 | Abuse / DoS of the API | nginx request limits (stricter on `/auth`), application rate limiter (Redis-backed), request size limits, pagination caps |
 | Supply chain | Tools compiled from pinned upstream versions; image build args to pin/upgrade; third-party inventory in THIRD_PARTY_LICENSES.md |
+| Secrets in logs | Log events carry allowlisted fields only; the finished event is redacted as a whole (URL credentials, auth headers, cookies, tokens, JWTs, PEM); no request/response bodies; `http.request` omits query strings; nginx (native) logs paths without query strings ([LOGGING.md](LOGGING.md)) |
+| Cross-tenant diagnostics | Tenant diagnostics, events and support bundles run in the caller's tenant session (RLS); platform diagnostics need `platform:diagnostics`; bundle ownership is checked at creation, status, download and deletion; tenant bundles exclude engine names ([DIAGNOSTICS.md](DIAGNOSTICS.md)) |
+| Support bundle leakage | Never included: environment files and secrets, database dumps, screenshots, raw evidence, raw HTTP traffic; allowlisted configuration summary; size/time/concurrency limits; 7-day expiry; generated member names (no path traversal); nothing is sent anywhere automatically |
+| First-run takeover | No default passwords: the first administrator is created with a single-use, 30-minute setup token stored only as a hash; the link carries it in the URL fragment (never in server logs); setup closes once a platform administrator exists |
+| Native install privilege | Services run as `exteriq`, `exteriq-scanner`, `exteriq-valkey` without capabilities, with `NoNewPrivileges`, `ProtectSystem=strict`, syscall filters and private listeners; scanners hold no database credentials and cannot see platform secrets, stored data or the database socket; per-pool broker ACL users ([NATIVE_INSTALL.md](NATIVE_INSTALL.md)) |
 
 ## Hardening recommendations
 

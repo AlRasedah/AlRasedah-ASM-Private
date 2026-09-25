@@ -95,7 +95,7 @@ interface TenantOverviewData {
   window_days: number; scans: Record<string, number>;
   stages: { finished: number; partial: number; failed: number; timeouts: number };
   queue_wait_ms_p50: number | Unavailable; execution_ms_p50: number | Unavailable; notification_failures: number;
-  scanner: Unavailable | { status: string; instances: number; detection_content: string; dedicated: boolean };
+  scanner: Unavailable | { status: string; instances: number; detection_content: string; capabilities?: string; dedicated: boolean };
 }
 
 function TenantOverview() {
@@ -128,6 +128,7 @@ function TenantOverview() {
             <dt>Status</dt><dd><span className={`badge ${d.scanner.status === "ok" ? "ok" : "warn"}`}>{d.scanner.status}</span></dd>
             <dt>Instances</dt><dd>{d.scanner.instances}</dd>
             <dt>Detection content</dt><dd>{d.scanner.detection_content}</dd>
+            {d.scanner.capabilities && (<><dt>Scan capabilities</dt><dd>{d.scanner.capabilities}</dd></>)}
             <dt>Scanner pool</dt><dd>{d.scanner.dedicated ? "Dedicated to your organization" : "Shared"}</dd>
           </dl>
         )}
@@ -315,7 +316,7 @@ type Health = Record<string, unknown> & {
     disks: Record<string, Unavailable | { total_bytes: number; free_bytes: number }>; cgroup_oom_kills: number | Unavailable };
   units: Unavailable | Record<string, Unavailable | { active: string; sub: string; restarts: number; last_result: string; oom_killed: boolean; since: string; memory_bytes: number | null }>;
   services: Record<string, Unavailable | { status: string; instances: number; versions: string[]; last_seen_seconds: number }>;
-  scanners: Record<string, Unavailable | { status: string; instances: Record<string, unknown>[]; recent_errors: { ts: string; msg: string; error_code?: string | null }[] }>;
+  scanners: Record<string, Unavailable | { status: string; problems?: string[]; instances: Record<string, unknown>[]; recent_errors: { ts: string; msg: string; error_code?: string | null }[] }>;
   queues: Unavailable | Record<string, { depth: number; oldest_age_seconds: number | null; age_note: string | null }>;
 };
 
@@ -365,7 +366,8 @@ function PlatformHealth() {
         <table className="data">
           <thead><tr><th>Pool</th><th>Status</th><th>Instances</th><th>Detection content</th><th>Last job</th><th>Recent errors</th></tr></thead>
           <tbody>{Object.entries(h.scanners).map(([pool, s]) => (
-            <tr key={pool}><td>{pool}</td><td><Status value={s} /><Reason value={s} /></td>
+            <tr key={pool}><td>{pool}</td><td><Status value={s} /><Reason value={s} />
+              {!isUnavailable(s) && s.problems?.map((p) => <div key={p} className="small subtle">{p}</div>)}</td>
               {isUnavailable(s) ? <td colSpan={4} /> : (<>
                 <td>{s.instances.length}</td>
                 <td className="small">{s.instances.map((i, n) => {

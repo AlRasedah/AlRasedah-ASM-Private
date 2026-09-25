@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+case "$1" in
+    remove|purge)
+        systemctl daemon-reload >/dev/null 2>&1 || true
+        if systemctl is-active --quiet rsyslog; then systemctl restart rsyslog || true; fi
+        echo "Exteriq ASM removed. Kept: the database (exteriq), /etc/exteriq (secrets and keys),"
+        echo "/var/lib/exteriq (data and backups) and /var/log/exteriq. Delete them only deliberately:"
+        echo "  reinstall and run 'exteriqctl purge-data --yes-delete-all-data', or remove them by hand."
+        ;;
+esac
+exit 0

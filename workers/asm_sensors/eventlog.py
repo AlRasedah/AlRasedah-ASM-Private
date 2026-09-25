@@ -161,6 +161,10 @@ def bound(**fields: Any) -> Iterator[None]:
 
 
 # --------------------------------------------------------------- formatting
+# Every write to the process's output stream holds this, so lines are never interleaved.
+_stream_lock = threading.Lock()
+
+
 class _LineQueue(queue.Queue):  # type: ignore[type-arg]
     """The bounded hand-off between callers and one writer thread. Lines that could not be
     queued (full, or unformattable) are counted here, per writer, and the writer reports the
@@ -290,10 +294,11 @@ class _Writer:
                 return
             try:
                 drops = q.take_drops()
-                if drops:  # said before the next line that does get through
-                    self.stream.write(_drop_event(drops) + "\n")
-                self.stream.write(line + "\n")
-                self.stream.flush()
+                with _stream_lock:  # whole lines only, even with write_sync() writing too
+                    if drops:  # said before the next line that does get through
+                        self.stream.write(_drop_event(drops) + "\n")
+                    self.stream.write(line + "\n")
+                    self.stream.flush()
             except Exception:  # noqa: BLE001 - stdout closed or broken: count, keep draining
                 q.count_drop()
 
@@ -384,8 +389,9 @@ def write_sync(logger_name: str, level: int, msg: str, **fields: Any) -> bool:
     try:
         line = fmt.format(record)
         out = _writer.stream if _writer is not None else sys.stdout
-        out.write(line + "\n")
-        out.flush()
+        with _stream_lock:
+            out.write(line + "\n")
+            out.flush()
         return True
     except Exception:  # noqa: BLE001 - reported as a failed export by the caller
         return False

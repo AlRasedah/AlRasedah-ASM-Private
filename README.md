@@ -193,6 +193,9 @@ No test touches the internet: scanner behaviour is covered with recorded tool ou
 | [docs/developer/](docs/developer/README.md) | **Developer handbook**: setup, codebase tour, internals, scan pipeline walk-through, data model, recipes, testing, design decisions, build log |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Components, data model, pipeline, tenancy, SaaS readiness |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Installation, TLS, scaling sensors, backups, upgrades, air-gapped/in-Kingdom notes |
+| [docs/NATIVE_INSTALL.md](docs/NATIVE_INSTALL.md) | Docker-free installation on Ubuntu 26.04 (packages, systemd, exteriqctl): install, upgrade, rollback rules, backup/restore, uninstall |
+| [docs/LOGGING.md](docs/LOGGING.md) | Structured events (`exteriq.event/1`), streams, correlation, durability, error codes |
+| [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md) | Diagnostics & Support page, platform diagnostics, support bundles, diagnostic CLI |
 | [docs/SECURITY.md](docs/SECURITY.md) | Threat model and controls |
 | [docs/SENSORS.md](docs/SENSORS.md) | Sensor adapter contract, adding a scanner, tool-specific notes |
 | [docs/CHANGE_DETECTION.md](docs/CHANGE_DETECTION.md) | Coverage model, inactivity rules, event catalogue |

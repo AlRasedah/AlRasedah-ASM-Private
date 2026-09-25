@@ -1,0 +1,26 @@
+#!/bin/sh
+# exteriq (tooling package): accounts, directories, units. It never starts, restarts or
+# migrates the platform — `exteriqctl install` / `exteriqctl upgrade` do that, explicitly.
+set -e
+
+if [ "$1" = "configure" ]; then
+    for u in exteriq exteriq-scanner exteriq-valkey; do
+        if ! getent passwd "$u" >/dev/null; then
+            adduser --system --group --quiet --no-create-home --home /var/lib/exteriq \
+                --shell /usr/sbin/nologin --gecos "Exteriq ASM ($u)" "$u"
+        fi
+    done
+    install -d -m 0755 -o root -g root /etc/exteriq /var/lib/exteriq /opt/exteriq /opt/exteriq/releases
+    install -d -m 0750 -o syslog -g adm /var/log/exteriq
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    # A pre-release collector config left a state directory that crashes rsyslog 8.2512.
+    if [ -d /var/spool/rsyslog/exteriq-imjournal.state ]; then rm -rf /var/spool/rsyslog/exteriq-imjournal.state; fi
+    # Pick up the collector configuration (it only files output of exteriq-* units).
+    if systemctl is-active --quiet rsyslog; then systemctl restart rsyslog || true; fi
+    if [ -z "$2" ]; then
+        echo "Exteriq ASM tooling installed. Next: sudo exteriqctl install [--hostname <name>]"
+    else
+        echo "Exteriq ASM tooling updated. Activate a newly installed release with: sudo exteriqctl upgrade"
+    fi
+fi
+exit 0

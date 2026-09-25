@@ -137,6 +137,51 @@ def test_a_stalled_stdout_never_blocks_the_caller_and_drops_are_counted(monkeypa
             writer.q.put_nowait(None)
 
 
+class SlowStream(io.StringIO):
+    """A stdout that writes in small pieces and yields between them, as a pipe may."""
+
+    def write(self, s: str) -> int:
+        for i in range(0, len(s), 7):
+            super().write(s[i:i + 7])
+            time.sleep(0)
+        return len(s)
+
+
+def test_concurrent_writers_never_interleave_lines(monkeypatch):
+    stream = SlowStream()
+    writer = eventlog._Writer(stream)
+    monkeypatch.setattr(eventlog, "_writer", writer)
+    handler = eventlog._QueueHandler(writer.q)
+    handler.setFormatter(eventlog.EventFormatter("worker", "1"))
+    log = logging.getLogger("concurrency-test")
+    log.addHandler(handler)
+    log.propagate = False
+
+    def queued(n: int) -> None:
+        for i in range(200):
+            log.warning("queued %d-%d %s", n, i, "x" * (i % 50))
+
+    def direct(n: int) -> None:
+        for i in range(200):
+            assert eventlog.write_sync("exteriq.alerts", logging.INFO, f"direct {n}-{i}", stream="alerts")
+
+    try:
+        threads = [threading.Thread(target=f, args=(n,)) for n in range(4) for f in (queued, direct)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        deadline = time.monotonic() + 10
+        while stream.getvalue().count("\n") < 1600 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        lines = stream.getvalue().splitlines()
+        assert len(lines) == 1600
+        assert all(json.loads(x)["schema"] == eventlog.SCHEMA for x in lines)  # every line whole
+    finally:
+        log.removeHandler(handler)
+        writer.close()
+
+
 # ------------------------------------------------------------------ correlation
 def test_task_context_comes_from_headers_for_correlation_only_and_never_leaks():
     from app.observability import celery_hooks

@@ -183,7 +183,7 @@ mapping back, for operators:
 
 | What the user sees | What actually happened | Do |
 |---|---|---|
-| "Detection content is not installed yet. It downloads when the scanner starts (about 1 GB)…" | Nuclei has no templates | Give the scanner internet access on start-up (the entrypoint runs `-update-templates` into `ASM_NUCLEI_TEMPLATES_DIR`), or mount a populated templates directory; then rescan |
+| "Detection content is not installed yet. It downloads when the scanner starts (about 1 GB)…" | Nuclei has no templates | Give the scanner internet access on start-up (the entrypoint runs `-update-templates` into `ASM_NUCLEI_TEMPLATES_DIR`), or mount a populated templates directory; then rescan. Before this release the entrypoint passed `-duc`, with which nuclei 3.3 skips the download entirely even online: update, rebuild the scanner image (`docker compose build asm-scanner`) and recreate it (`docker compose up -d asm-scanner`); it downloads on start. Native: `exteriqctl diag` shows the template count; `systemctl restart exteriq-scanner@<pool>` retries the download |
 | "This capability is not installed in the scanner deployed here." | the engine's binary is missing from the image | `docker compose run --rm asm-scanner versions`; rebuild the scanner image |
 | "The web application scanner is not enabled in this deployment." | `ASM_ZAP_URL`/`ASM_ZAP_API_KEY` unset, or the ZAP container is down | issue 13 above |
 | "Open-source intelligence enrichment is not enabled in this deployment." | `ASM_SPIDERFOOT_URL` unset or that container is down | `docker compose --profile enrichment up -d` |

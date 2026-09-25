@@ -1,5 +1,9 @@
 # Deployment guide
 
+This guide covers the Docker Compose deployment. To install on Ubuntu 26.04 without Docker
+(Debian packages, systemd services, `exteriqctl`), see [NATIVE_INSTALL.md](NATIVE_INSTALL.md). Logging and
+diagnostics work the same in both: [LOGGING.md](LOGGING.md), [DIAGNOSTICS.md](DIAGNOSTICS.md).
+
 ## 1. Sizing
 
 | Deployment | Assets | CPU / RAM | Sensor replicas |

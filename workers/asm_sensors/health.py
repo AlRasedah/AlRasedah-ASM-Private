@@ -58,11 +58,26 @@ def _engine_versions() -> dict[str, str]:
     for name in ENGINES:
         try:
             p = subprocess.run([name, "-version"], capture_output=True, timeout=10, check=False)  # noqa: S603
-            text = (p.stdout + p.stderr).decode("utf-8", "replace").strip().splitlines()
-            out[name] = (text[-1] if text else "unknown")[:120]
-        except (OSError, subprocess.SubprocessError):
+        except FileNotFoundError:
             out[name] = "not installed"
+            continue
+        except (OSError, subprocess.SubprocessError) as exc:
+            out[name] = f"failed to run ({type(exc).__name__})"
+            continue
+        text = (p.stdout + p.stderr).decode("utf-8", "replace").strip().splitlines()
+        if p.returncode < 0:  # killed: e.g. a sandbox refusing a system call (SIGSYS)
+            out[name] = f"failed to run (killed by signal {-p.returncode})"
+        elif not text:
+            out[name] = f"failed to run (exit {p.returncode}, no output)"
+        else:
+            out[name] = text[-1][:120]
     return out
+
+
+def engine_problems(engines: dict[str, str]) -> list[str]:
+    """Engines a scanner reported as unusable (see _engine_versions)."""
+    return [f"{n}: {v}" for n, v in sorted(engines.items())
+            if v == "not installed" or v.startswith("failed to run")]
 
 
 def _count_rules() -> dict[str, Any]:

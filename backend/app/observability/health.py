@@ -23,6 +23,8 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
+from asm_sensors.health import engine_problems
+
 from app import __version__
 
 INTERVAL = 30
@@ -111,8 +113,11 @@ def scanners(client: Any, pools: list[str]) -> dict[str, Any]:
             out[pool] = unavailable("no scanner of this pool reported in the last 2 minutes")
             continue
         rules = [i.get("detection_rules") or {} for i in items]
+        broken = sorted({p for i in items for p in engine_problems(i.get("engines") or {})})
         out[pool] = {
-            "status": "ok" if all(r.get("available") for r in rules) else "degraded",
+            "status": "ok" if all(r.get("available") for r in rules) and not broken else "degraded",
+            "problems": broken + (["detection content is not installed on at least one scanner"]
+                                  if not all(r.get("available") for r in rules) else []),
             "instances": [{k: i.get(k) for k in ("host", "pid", "version", "engines", "detection_rules", "browser",
                                                  "last_job", "ts")} for i in items],
             "recent_errors": sorted((e for i in items for e in (i.get("recent_errors") or [])),
@@ -250,6 +255,10 @@ def tenant_view(pool: str, shared: bool) -> dict[str, Any]:
     if not items:
         return {"scanner": unavailable("no scanner for your scans reported recently")}
     rules_ok = all((i.get("detection_rules") or {}).get("available") for i in items)
-    return {"scanner": {"status": "ok" if rules_ok else "degraded", "instances": len(items),
+    # Whether every scan capability can run — never which engine could not (tenants never see engines).
+    capable = not any(engine_problems(i.get("engines") or {}) for i in items)
+    return {"scanner": {"status": "ok" if rules_ok and capable else "degraded", "instances": len(items),
                         "detection_content": "installed" if rules_ok else "missing on at least one scanner",
+                        "capabilities": "all available" if capable else "some scan capabilities cannot run; "
+                                                                        "your platform operator has been told",
                         "dedicated": not shared}}

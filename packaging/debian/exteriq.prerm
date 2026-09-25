@@ -1,0 +1,13 @@
+#!/bin/sh
+set -e
+if [ "$1" = "remove" ]; then
+    # Stop and disable the services; data, configuration and the database stay.
+    systemctl stop 'exteriq-scanner@*.service' exteriq.target exteriq-api exteriq-worker exteriq-ingest \
+        exteriq-scheduler exteriq-valkey exteriq-logrotate.timer >/dev/null 2>&1 || true
+    systemctl disable exteriq.target exteriq-api exteriq-worker exteriq-ingest exteriq-scheduler \
+        exteriq-valkey exteriq-logrotate.timer >/dev/null 2>&1 || true
+    for u in $(systemctl list-unit-files 'exteriq-scanner@*' --no-legend 2>/dev/null | awk '{print $1}'); do
+        systemctl disable "$u" >/dev/null 2>&1 || true
+    done
+fi
+exit 0

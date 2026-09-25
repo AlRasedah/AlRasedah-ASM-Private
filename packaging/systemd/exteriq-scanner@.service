@@ -1,0 +1,78 @@
+# One instance per worker pool: exteriq-scanner@<pool>.service. A pool is a trust domain:
+# its instance holds only that pool's broker user and transport key
+# (/etc/exteriq/scanner/<pool>.env) and has no database credentials, no platform secrets
+# and no access to stored data.
+[Unit]
+Description=Exteriq ASM scanner (pool %i)
+PartOf=exteriq.target
+After=network-online.target exteriq-valkey.service
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=exec
+User=exteriq-scanner
+Group=exteriq-scanner
+EnvironmentFile=/etc/exteriq/scanner/%i.env
+Environment=ASM_SENSOR_POOL=%i ASM_SERVICE=scanner EXTERIQ_NATIVE=1 PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+Environment=PATH=/opt/exteriq/current/scanner/bin:/opt/exteriq/current/scanner/venv/bin:/usr/bin:/bin
+Environment=ASM_BIN_HTTPX=/opt/exteriq/current/scanner/bin/httpx
+Environment=HOME=/var/lib/exteriq/scanner/%i/home ASM_NUCLEI_HOME=/var/lib/exteriq/scanner/%i/home
+Environment=ASM_NUCLEI_TEMPLATES_DIR=/var/lib/exteriq/scanner/%i/templates
+StateDirectory=exteriq/scanner/%i exteriq/scanner/%i/home exteriq/scanner/%i/templates
+StateDirectoryMode=0750
+WorkingDirectory=/var/lib/exteriq/scanner/%i
+SyslogIdentifier=exteriq-scanner
+# Detection content (network feature): refreshed at start when auto-update is on or none is
+# installed yet. Offline, the existing set is used and diagnostics report its age.
+ExecStartPre=-/opt/exteriq/current/scanner/bin/exteriq-update-templates
+ExecStart=/opt/exteriq/current/scanner/venv/bin/celery -A asm_sensors.worker worker -Q scanners.%i \
+    --concurrency ${ASM_SENSOR_CONCURRENCY} --loglevel ${ASM_LOG_LEVEL} \
+    --without-gossip --without-mingle --without-heartbeat --hostname sensor-%i@%H
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=900
+KillMode=mixed
+TimeoutStopSec=900
+InaccessiblePaths=-/etc/exteriq/exteriq.env -/etc/exteriq/tls -/etc/exteriq/valkey.conf -/etc/exteriq/valkey-users.acl
+InaccessiblePaths=-/var/lib/exteriq/storage -/var/lib/exteriq/exports -/var/lib/exteriq/backups -/var/lib/exteriq/valkey
+InaccessiblePaths=-/var/lib/postgresql -/run/postgresql -/var/log/exteriq
+# Scanning is outbound TCP/UDP connect() only: no raw sockets, no capabilities.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+MemoryMax=2G
+CPUQuota=200%
+TasksMax=512
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=20000
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+# A refused call fails with EPERM (the program can report it) instead of killing the process.
+SystemCallErrorNumber=EPERM
+# @resources stays allowed: the Go runtime raises its own open-files soft limit at start
+# (setrlimit); without capabilities it can never exceed the hard limit set here.
+SystemCallFilter=~@privileged
+LimitNOFILE=65536
+UMask=0027
+
+[Install]
+WantedBy=exteriq.target

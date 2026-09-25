@@ -1,0 +1,8 @@
+[Unit]
+Description=Exteriq ASM (all services)
+Documentation=file:///opt/exteriq/current/docs/NATIVE_INSTALL.md
+Wants=exteriq-valkey.service exteriq-api.service exteriq-worker.service exteriq-ingest.service exteriq-scheduler.service
+After=network.target
+
+[Install]
+WantedBy=multi-user.target

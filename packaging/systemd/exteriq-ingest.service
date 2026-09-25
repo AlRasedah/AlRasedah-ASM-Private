@@ -1,0 +1,62 @@
+[Unit]
+Description=Exteriq ASM result ingestion (results.<pool> consumer)
+PartOf=exteriq.target
+After=postgresql.service exteriq-valkey.service
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=exec
+User=exteriq
+Group=exteriq
+EnvironmentFile=/etc/exteriq/exteriq.env
+Environment=ASM_SERVICE=ingest EXTERIQ_NATIVE=1 PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 HOME=/var/lib/exteriq
+WorkingDirectory=/var/lib/exteriq
+SyslogIdentifier=exteriq-ingest
+Restart=on-failure
+RestartSec=5
+# The platform account never needs scanner keys, TLS keys or backups.
+InaccessiblePaths=-/etc/exteriq/scanner -/etc/exteriq/tls -/var/lib/exteriq/backups -/var/lib/exteriq/valkey
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+# A refused call fails with EPERM (the program can report it) instead of killing the process.
+SystemCallErrorNumber=EPERM
+SystemCallFilter=~@privileged @resources
+UMask=0027
+ExecStart=/opt/exteriq/current/platform/venv/bin/celery -A app.workers.results:results_app worker \
+    --concurrency ${ASM_INGEST_CONCURRENCY} --loglevel ${ASM_LOG_LEVEL} --without-gossip --without-mingle \
+    --hostname ingest@%H --max-tasks-per-child 200
+ReadWritePaths=/var/lib/exteriq/storage
+# Talks to PostgreSQL and the broker on this host only.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+KillMode=mixed
+TimeoutStopSec=300
+MemoryMax=2G
+CPUQuota=200%
+TasksMax=128
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=20000
+
+[Install]
+WantedBy=exteriq.target
