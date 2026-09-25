@@ -51,7 +51,7 @@ class BbotAdapter(ScannerAdapter):
         binary = resolve_binary("bbot", self.binaries)
         outdir = ctx.workdir / "bbot"
         outdir.mkdir(exist_ok=True)
-        argv = [binary, "-t", *[t.value for t in targets], "-p", config.preset, "-y", "--silent",
+        argv = [binary, "-t", *[t.value for t in targets], "-p", config.preset, "-y", "-v",
                 "-om", "json", "-o", str(outdir), "-n", "asm"]
         if config.passive_only:
             argv += ["-rf", "passive"]

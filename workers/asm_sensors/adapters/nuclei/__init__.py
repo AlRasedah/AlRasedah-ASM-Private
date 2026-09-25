@@ -204,7 +204,7 @@ class NucleiAdapter(ScannerAdapter):
 
     def build_argv(self, binary: str, tfile: str, out: str, cfg: NucleiConfig, templates_dir: str | None,
                    identity: str | None = None) -> list[str]:
-        argv = [binary, "-l", tfile, "-jsonl", "-o", out, "-silent", "-nc", "-duc", "-omit-raw",
+        argv = [binary, "-l", tfile, "-jsonl", "-o", out, "-v", "-nc", "-duc", "-omit-raw",
                 "-severity", ",".join(s.value for s in cfg.severities),
                 "-rl", str(cfg.rate_limit), "-c", str(cfg.concurrency), "-bs", str(cfg.bulk_size),
                 "-timeout", str(cfg.timeout_seconds), "-retries", str(cfg.retries)]

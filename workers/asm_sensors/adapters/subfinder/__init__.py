@@ -68,7 +68,7 @@ class SubfinderAdapter(ScannerAdapter):
         binary = resolve_binary("subfinder", self.binaries)
         tfile = write_targets_file(ctx.workdir, targets)
         out = ctx.workdir / "subfinder.jsonl"
-        argv = [binary, "-dL", str(tfile), "-oJ", "-o", str(out), "-silent", "-nc", "-cs",
+        argv = [binary, "-dL", str(tfile), "-oJ", "-o", str(out), "-v", "-nc", "-cs",
                 "-timeout", str(config.source_timeout_seconds), "-max-time", str(config.max_time_minutes)]
         if config.all_sources:
             argv.append("-all")

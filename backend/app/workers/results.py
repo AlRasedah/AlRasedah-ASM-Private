@@ -96,6 +96,13 @@ def _send_core(name: str, *args: str) -> None:
 
 @results_app.task(name=RESULT_TASK_NAME, shared=False)
 def submit_result(envelope: dict) -> None:
+    # A stage's verbose output arrives on the same task, as its own envelope kind with its
+    # own MAC key; it never advances a scan.
+    if isinstance(envelope, dict) and envelope.get("kind") == "log":
+        from app.scans import output
+
+        output.receive(envelope)
+        return
     scan_id = receive_result(envelope)
     if scan_id is not None:
         from app.workers.celery_app import celery_app

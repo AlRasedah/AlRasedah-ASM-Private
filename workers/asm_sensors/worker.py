@@ -25,7 +25,16 @@ from kombu import Queue
 
 from . import logs
 from .coordination import RedisCoordinator
-from .jobs import RESULT_TASK_NAME, TASK_NAME, SensorJob, job_queue, result_queue, seal_result, validate_pool
+from .jobs import (
+    RESULT_TASK_NAME,
+    TASK_NAME,
+    SensorJob,
+    job_queue,
+    result_queue,
+    seal_log,
+    seal_result,
+    validate_pool,
+)
 from .observations import SensorResult
 from .runner import execute_job
 
@@ -91,8 +100,14 @@ def run_sensor(self, job: dict) -> None:  # type: ignore[no-untyped-def]
         log.warning("job %s was already claimed by a worker; ignoring the redelivery", parsed.job_id)
         return
     started = datetime.now(UTC)
+
+    def send_output(chunk: dict) -> None:  # the stage's cleaned verbose output, as it runs
+        app.send_task(RESULT_TASK_NAME, args=[seal_log(parsed, chunk, POOL)], queue=RESULTS)
+
+    # Website captures are not scan stages; their progress is shown on the capture itself.
+    sink = None if parsed.adapter == "screenshot" else send_output
     try:
-        result = asyncio.run(execute_job(parsed, coordinator=coordinator))
+        result = asyncio.run(execute_job(parsed, coordinator=coordinator, log_sink=sink))
     except SoftTimeLimitExceeded:
         result = SensorResult(adapter=parsed.adapter, status="failed", started_at=started,
                               finished_at=datetime.now(UTC), target_count=len(parsed.targets),

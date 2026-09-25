@@ -281,6 +281,21 @@ browser download, unsandboxed as root, no per-connection control); a shared scre
 a CDP client (a large dependency for one screenshot); `--no-sandbox` in a locked-down
 container (rejected by requirement).
 
+## ADR-030 Every stage runs verbose; its output is cleaned in the scanner and bounded
+**Decision**: engines run with their verbose flag; the runner streams their stderr line by line
+into a per-stage log that cleans each line in the scanner (engine names, banners, versions,
+paths, secrets), keeps the first and last 2 000 lines, and hands chunks to the platform every
+few seconds as a separately signed envelope on the existing result queue. The platform binds
+each chunk to the dispatched job and pool, cleans it again and stores it per stage.
+**Consequences**: tenants can see what a scan did, live, without learning which engines run.
+Verbose engines print far more, but memory and storage stay bounded; the middle of very long
+outputs is counted, not kept. Cleaning is a denylist and can miss an unusual line; the
+platform-side pass and the disclosure test (every output checked for every engine name) guard
+it. Scanners and platform must be upgraded together (the envelope kind is new).
+**Alternatives**: showing raw tool output (discloses engines and secrets); storing everything
+in object storage (unbounded, and still disclosing); a second queue or task for logs (a new
+entry point into the ingest process, which deliberately registers only one).
+
 ## ADR-029 Threat Center advisories are generated from CISA KEV and NVD
 **Decision**: an hourly job writes advisories from NVD's CVE API filtered to CISA's Known
 Exploited Vulnerabilities (`hasKev`, incremental by modification date), optionally plus recent

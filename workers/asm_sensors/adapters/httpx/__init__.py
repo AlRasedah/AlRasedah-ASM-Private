@@ -94,7 +94,7 @@ class HttpxAdapter(ScannerAdapter):
 
     def build_argv(self, binary: str, tfile: str, out: str, cfg: HttpxConfig, need_ports: bool,
                    identity: str | None = None) -> list[str]:
-        argv = [binary, "-l", tfile, "-json", "-o", out, "-silent", "-nc",
+        argv = [binary, "-l", tfile, "-json", "-o", out, "-v", "-nc",
                 "-sc", "-cl", "-ct", "-title", "-server", "-ip", "-cname", "-cdn", "-location",
                 "-rl", str(cfg.rate_limit), "-t", str(cfg.threads),
                 "-timeout", str(cfg.timeout_seconds), "-retries", str(cfg.retries)]

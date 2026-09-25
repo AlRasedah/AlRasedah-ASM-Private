@@ -162,3 +162,20 @@ class ScanArtifact(UUIDPk, TenantScoped, Base):
     truncated: Mapped[bool] = mapped_column(default=False)
     expires_at: Mapped[datetime | None]
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class ScanStageOutput(TenantScoped, Timestamps, Base):
+    """A stage's verbose output, cleaned in the scanner and again on arrival (no engine
+    names, no secrets). Bounded: the first lines, the last lines, and how many were left
+    out between them. Lines are ``[seconds since the stage started, level, text]``."""
+
+    __tablename__ = "scan_stage_outputs"
+
+    stage_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scan_stages.id", ondelete="CASCADE"), primary_key=True)
+    scan_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scans.id", ondelete="CASCADE"), index=True)
+    head: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    tail: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    total: Mapped[int] = mapped_column(Integer, default=0)
+    omitted: Mapped[int] = mapped_column(Integer, default=0)
+    last_seq: Mapped[int] = mapped_column(Integer, default=0)
+    final: Mapped[bool] = mapped_column(default=False)

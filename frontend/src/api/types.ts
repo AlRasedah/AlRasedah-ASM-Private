@@ -707,3 +707,14 @@ export interface ExposureMap {
   notice: string;
   cached?: boolean;
 }
+
+/** A scan stage's verbose output. Lines are [seconds since the stage started, level, text]. */
+export interface StageOutput {
+  head: [number, string, string][];
+  tail: [number, string, string][];
+  total: number;
+  omitted: number;
+  final: boolean;
+  running: boolean;
+  updated_at: string | null;
+}
