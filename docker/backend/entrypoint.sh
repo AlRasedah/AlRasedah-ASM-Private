@@ -4,6 +4,8 @@ set -eu
 
 role="${1:-api}"
 shift || true
+# Names the service in every structured log event (app/observability/setup.py).
+export ASM_SERVICE="$role"
 
 case "$role" in
   api)

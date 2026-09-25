@@ -11,6 +11,7 @@ from .integrations import Integration, NotificationDelivery, NotificationPolicy
 from .intel import IntelFeedState, VulnIntel
 from .platform import PlatformSetting, UserAlertPreference
 from .reports import Report
+from .observability import EventExportState, OpsEvent, SetupToken, SupportBundle
 from .scans import Scan, ScanArtifact, ScanProfile, ScanSchedule, ScanStage, ScanStageOutput, ScopeDecision
 from .scope import ScopeEntry, Secret
 from .screenshots import ScreenshotCapture, ScreenshotUsage, StorageDeletion
@@ -33,7 +34,8 @@ __all__ = [
     "ScanArtifact", "ScanProfile", "ScanSchedule", "ScanStage", "ScanStageOutput", "ScopeDecision", "ScopeEntry", "Secret",
     "MetricSnapshot", "Organization", "Plan", "Tenant", "UsageRecord", "ThreatAdvisory", "ThreatAdvisoryVersion",
     "ThreatCampaign", "ThreatCheck", "ThreatCheckRun", "ThreatMatch", "ScreenshotCapture",
-    "ScreenshotUsage", "StorageDeletion", "ThreatFeedItem",
+    "ScreenshotUsage", "StorageDeletion", "ThreatFeedItem", "OpsEvent", "EventExportState", "SupportBundle",
+    "SetupToken",
 ]
 
 # Tables protected by the standard tenant-isolation RLS policy.

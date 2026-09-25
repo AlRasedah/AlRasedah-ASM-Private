@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import logging
+import os
+import time
 import uuid
 
+from asm_sensors import eventlog
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,6 +23,10 @@ from app.core.logging import configure_logging, request_id_var
 from app.core.rate_limit import get_rate_limiter
 
 log = logging.getLogger("app")
+access = logging.getLogger("exteriq.access")
+# One structured event per request (method, route template, status, duration). The native
+# install turns it on and gunicorn's own text access log off; Docker keeps gunicorn's.
+_LOG_REQUESTS = os.environ.get("ASM_LOG_REQUESTS", "false").lower() == "true"
 
 
 def _field_name(err: dict) -> str | None:
@@ -77,6 +84,16 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
                              user_agent=request.headers.get("user-agent"))
         set_context(ctx)
         request_id_var.set(rid)
+        # A fresh correlation context per request; authentication adds tenant and user.
+        token = eventlog.bind(request_id=rid, correlation_id=rid)
+        try:
+            return await self._handle(request, call_next, rid, ctx)
+        finally:
+            eventlog.reset(token)
+
+    async def _handle(self, request: Request, call_next: RequestResponseEndpoint, rid: str,
+                      ctx: RequestContext) -> Response:
+        started = time.monotonic()
 
         s = get_settings()
         if request.url.path.startswith("/api/") and not request.url.path.startswith("/api/v1/health"):
@@ -85,6 +102,12 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
                 return JSONResponse({"error": {"code": "rate_limited", "message": "Too many requests"}},
                                     status_code=429, headers={"Retry-After": "60", "X-Request-ID": rid})
         response = await call_next(request)
+        if _LOG_REQUESTS:
+            route = request.scope.get("route")
+            access.info("%s %s %s", request.method, getattr(route, "path", "unmatched"), response.status_code,
+                        extra={"event": "http.request", "method": request.method,
+                               "route": getattr(route, "path", "unmatched"), "http_status": response.status_code,
+                               "duration_ms": round((time.monotonic() - started) * 1000)})
         response.headers["X-Request-ID"] = rid
         for k, v in SECURITY_HEADERS.items():
             response.headers.setdefault(k, v)
@@ -97,7 +120,11 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
 
 def create_app() -> FastAPI:
     s = get_settings()
-    configure_logging(s.log_level, s.log_json)
+    configure_logging(s.log_level, s.log_json, service="api")
+    if os.environ.get("ASM_HEARTBEAT", "true").lower() != "false":
+        from app.observability.health import start_heartbeat
+
+        start_heartbeat("api")
     app = FastAPI(
         title="Exteriq ASM API",
         version=__version__,

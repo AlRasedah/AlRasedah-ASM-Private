@@ -130,6 +130,9 @@ def purge_retention() -> dict[str, int]:
         res = db.execute(delete(AssetObservation).where(
             AssetObservation.observed_at < now - timedelta(days=s.observation_retention_days)))
         removed["observations"] = res.rowcount or 0
+        from app.observability import opsdb
+
+        removed["ops_events"] = opsdb.prune(db, now)
         db.commit()
         tenant_ids = list(db.execute(select(Tenant.id)).scalars())
     # Website screenshots: every tenant, suspended ones included (their storage still counts).

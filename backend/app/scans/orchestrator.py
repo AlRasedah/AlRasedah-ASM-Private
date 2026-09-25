@@ -43,6 +43,7 @@ from app.models.enums import (
     StageType,
     TenantStatus,
 )
+from app.observability import codes
 from app.risk.service import recompute_organization
 from app.scans import engines, messages
 from app.scans.profiles import INTERNAL_SLUGS, validate_stages
@@ -431,6 +432,53 @@ def _merge_stats(scan: Scan, stats: Counter | dict[str, int]) -> None:
     scan.stats = dict(merged)
 
 
+scans_log = logging.getLogger("exteriq.scans")
+_TIMEOUT_WORDS = ("timed out", "time limit", "deadline", "did not finish before")
+
+
+def _ms(later: datetime | None, earlier: datetime | None) -> int | None:
+    if later is None or earlier is None:
+        return None
+    return max(0, round((later - earlier).total_seconds() * 1000))
+
+
+def stage_timing(stage: ScanStage, result: SensorResult | None, now: datetime) -> dict[str, Any]:
+    """Queue wait (published → the scanner started), execution (on the scanner) and ingestion
+    (the scanner finished → recorded here). Scanner and platform clocks may differ slightly."""
+    queued_from = stage.dispatched_at or stage.started_at
+    out: dict[str, Any] = {"queue_wait_ms": _ms(result.started_at, queued_from) if result else None,
+                           "execution_ms": _ms(result.finished_at, result.started_at) if result else None,
+                           "ingestion_ms": _ms(now, result.finished_at) if result else None,
+                           "total_ms": _ms(now, stage.started_at)}
+    if result is not None:
+        text = " ".join(result.errors).lower()
+        out["timed_out"] = any(w in text for w in _TIMEOUT_WORDS)
+        out["retries"] = int(result.stats.get("retries", 0) or 0) if isinstance(result.stats, dict) else 0
+    return out
+
+
+def stage_event(scan: Scan, stage: ScanStage, timing: dict[str, Any] | None = None, result: SensorResult | None = None,
+                error_code: str | None = None) -> None:
+    """One ``scans`` stream event per finished stage (docs/LOGGING.md)."""
+    status = stage.status.value
+    coverage = ("complete" if status == "completed" else "partial" if status == "partial" else "none")
+    level = logging.INFO if status in ("completed", "skipped") else logging.WARNING
+    code = error_code or (codes.SCAN_STAGE_TIMEOUT if (timing or {}).get("timed_out")
+                          else codes.SCAN_STAGE_FAILED if status == "failed"
+                          else codes.SCAN_STAGE_PARTIAL if status == "partial"
+                          else codes.SCAN_SKIPPED_OPTIONAL if status == "skipped" and stage.error else None)
+    t = timing or {}
+    scans_log.log(level, "stage %s %s", stage.stage_type.value, status, extra={
+        "event": "scan.stage.finished", "stream": "scans", "tenant_id": str(scan.tenant_id), "scan_id": str(scan.id),
+        "stage_id": str(stage.id), "job_id": stage.task_id, "pool": stage.worker_pool, "stage_type":
+        stage.stage_type.value, "adapter": stage.engine, "status": status, "coverage": coverage,
+        "error_code": code, "target_count": stage.target_count, "rejected_count": stage.rejected_count,
+        "observation_count": stage.observation_count, "duration_ms": t.get("total_ms"),
+        "queue_wait_ms": t.get("queue_wait_ms"), "execution_ms": t.get("execution_ms"),
+        "ingestion_ms": t.get("ingestion_ms"), "retries": t.get("retries", 0),
+        "component_version": (result.tool_version if result else None)})
+
+
 def complete_stage(db: Session, scan: Scan, stage: ScanStage, result: SensorResult) -> None:
     if stage.status != StageStatus.RUNNING or scan.status != ScanStatus.RUNNING:
         log.info("discarding result for stage %s (scan %s is %s)", stage.id, scan.id, scan.status)
@@ -451,8 +499,10 @@ def complete_stage(db: Session, scan: Scan, stage: ScanStage, result: SensorResu
         # that does not name the engine (see app/scans/messages.py).
         log.info("stage %s (%s) failed: %s", stage.id, stage.engine, "; ".join(result.errors)[:1000])
         stage.error = messages.friendly(result.errors, capability) or f"{capability} did not finish successfully."
-        stage.stats = {}
+        timing = stage_timing(stage, result, now)
+        stage.stats = {"timing": timing}
         db.flush()
+        stage_event(scan, stage, timing, result)
         return
     if result.status != "completed" and result.coverage:
         # Only a run that proved it finished may vouch for absence (port closed,
@@ -482,8 +532,9 @@ def complete_stage(db: Session, scan: Scan, stage: ScanStage, result: SensorResu
 
     stage.status = StageStatus.COMPLETED if result.status == "completed" else StageStatus.PARTIAL
     stage.observation_count = len(result.observations)
+    timing = stage_timing(stage, result, now)
     stage.stats = {**dict(ingest.stats), "sensor": result.stats, "duration_seconds":
-                   round((result.finished_at - result.started_at).total_seconds(), 1)}
+                   round((result.finished_at - result.started_at).total_seconds(), 1), "timing": timing}
     if result.errors:
         log.info("stage %s (%s) reported: %s", stage.id, stage.engine, "; ".join(result.errors)[:1000])
         stage.error = messages.friendly(result.errors, capability)
@@ -491,15 +542,19 @@ def complete_stage(db: Session, scan: Scan, stage: ScanStage, result: SensorResu
     tenants.record_usage(db, scan.tenant_id, "sensor_seconds",
                          int((result.finished_at - result.started_at).total_seconds()), scan.id, engine=stage.engine)
     db.flush()
+    stage_event(scan, stage, timing, result)
 
 
-def fail_stage(db: Session, scan: Scan, stage: ScanStage, error: str) -> None:
+def fail_stage(db: Session, scan: Scan, stage: ScanStage, error: str, error_code: str | None = None) -> None:
     if stage.status != StageStatus.RUNNING:
         return
     stage.status = StageStatus.SKIPPED if stage.config.get("_optional") else StageStatus.FAILED
     stage.error = error[:4000]
     stage.finished_at = _now()
+    timing = stage_timing(stage, None, stage.finished_at)
+    stage.stats = {**(stage.stats or {}), "timing": timing}
     db.flush()
+    stage_event(scan, stage, timing, None, error_code or codes.SCAN_STAGE_LOST)
 
 
 def finalize_scan(db: Session, scan: Scan) -> None:
@@ -543,6 +598,14 @@ def finalize_scan(db: Session, scan: Scan) -> None:
                           details={}, occurred_at=now, is_baseline=scan.is_baseline))
     snapshot_organization(db, org)
     db.flush()
+    st = scan.stats or {}
+    scans_log.log(logging.INFO if scan.status == ScanStatus.COMPLETED else logging.WARNING,
+                  "scan %s", scan.status.value, extra={
+                      "event": "scan.finished", "stream": "scans", "tenant_id": str(scan.tenant_id),
+                      "organization_id": str(scan.organization_id), "scan_id": str(scan.id),
+                      "status": scan.status.value, "duration_ms": _ms(now, scan.started_at),
+                      "coverage": "complete" if scan.status == ScanStatus.COMPLETED else "partial",
+                      "count": len(stages), "data": {k: st.get(k, 0) for k in ("new_assets", "new_findings", "events")}})
     _after_scan(db, scan, org)
 
 

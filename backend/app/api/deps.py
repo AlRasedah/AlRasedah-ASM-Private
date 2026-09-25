@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 import jwt
+from asm_sensors import eventlog
 from fastapi import Depends, Query, Request
 from sqlalchemy.orm import Session
 
@@ -98,6 +99,8 @@ def get_principal(request: Request) -> Principal:
                                   session_id=session.id, permissions=permissions_for(role))
     ctx = get_context()
     ctx.user_id, ctx.actor, ctx.tenant_id = principal.user_id, principal.email, principal.tenant_id
+    # Tenant and user in operational events come from the authenticated principal only.
+    eventlog.annotate(tenant_id=principal.tenant_id, user_id=principal.user_id)
     return principal
 
 

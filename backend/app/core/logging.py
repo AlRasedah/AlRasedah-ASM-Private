@@ -55,12 +55,11 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, default=str)
 
 
-def configure_logging(level: str = "INFO", json_logs: bool = True) -> None:
-    handler = logging.StreamHandler(sys.stdout)
-    handler.addFilter(RedactingFilter())
-    handler.setFormatter(JsonFormatter() if json_logs else logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
-    root = logging.getLogger()
-    root.handlers[:] = [handler]
-    root.setLevel(level.upper())
-    for noisy in ("httpx", "httpcore", "urllib3"):
-        logging.getLogger(noisy).setLevel("WARNING")
+def configure_logging(level: str = "INFO", json_logs: bool = True, service: str = "api") -> None:
+    """Every process now logs ``exteriq.event/1`` events (see app/observability, docs/LOGGING.md).
+
+    ``redact``, ``RedactingFilter`` and ``JsonFormatter`` above stay for the audit log's
+    value redaction (its output is part of the hash chain) and for compatibility."""
+    from app.observability.setup import configure
+
+    configure(service)
