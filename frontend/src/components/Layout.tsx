@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   Activity, AppWindow, BookOpen, Boxes, Building2, FileText, Gauge, Globe2, LogOut, Megaphone, Network, Plug, Radar, ScrollText, Settings,
   ShieldAlert, Siren, SlidersHorizontal, Users, Workflow,
+  HeartPulse, Stethoscope,
 } from "lucide-react";
 import { useAuth } from "@/auth/AuthContext";
 import { useOrg } from "@/auth/OrgContext";
@@ -27,7 +28,7 @@ export function Brand() {
 
 function Nav({ to, icon: Icon, children, count }: { to: string; icon: typeof Gauge; children: string; count?: number }) {
   return (
-    <NavLink to={to} end={to === "/"}>
+    <NavLink to={to} end={to === "/" || to === "/platform"}>
       <Icon /> {children}
       {count ? <span className="count">{count > 999 ? "999+" : count}</span> : null}
     </NavLink>
@@ -66,7 +67,9 @@ export default function Layout() {
           {can("users:read") && <Nav to="/users" icon={Users}>Users</Nav>}
           {can("settings:write") && <Nav to="/settings" icon={Settings}>Settings</Nav>}
           {can("audit:read") && <Nav to="/audit" icon={ScrollText}>Audit log</Nav>}
-          {can("tenants:admin") && (<><div className="nav-section">Platform</div><Nav to="/platform" icon={Globe2}>Tenants</Nav></>)}
+          {can("diagnostics:read") && <Nav to="/diagnostics" icon={Stethoscope}>Diagnostics & Support</Nav>}
+          {can("tenants:admin") && (<><div className="nav-section">Platform</div><Nav to="/platform" icon={Globe2}>Tenants</Nav>
+            {can("platform:diagnostics") && <Nav to="/platform/diagnostics" icon={HeartPulse}>Platform diagnostics</Nav>}</>)}
           <div className="nav-section">Help</div>
           <a href="/user-guide.html" target="_blank" rel="noopener noreferrer" title="Open the user guide (works offline)">
             <BookOpen /> Documentation

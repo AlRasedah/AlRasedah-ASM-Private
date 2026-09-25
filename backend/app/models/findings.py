@@ -91,3 +91,5 @@ class FindingActivity(UUIDPk, TenantScoped, Base):
     comment: Mapped[str | None] = mapped_column(Text)
     scan_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("scans.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    # Transactional outbox for the alerts log: set once the event was written (export.py).
+    exported_at: Mapped[datetime | None]

@@ -23,6 +23,7 @@ os.environ.setdefault("ASM_SCANNER_ISOLATION", "shared")
 os.environ.setdefault("ASM_COOKIE_SECURE", "false")
 os.environ.setdefault("ASM_LOG_JSON", "false")
 os.environ.setdefault("ASM_STORAGE_LOCAL_PATH", tempfile.mkdtemp(prefix="asm-test-storage-"))
+os.environ.setdefault("ASM_HEARTBEAT", "false")  # no broker heartbeat threads in tests
 os.environ.setdefault("ASM_TEST_ADMIN_URL", "postgresql://postgres:postgres@127.0.0.1:55432/postgres")
 os.environ.setdefault("ASM_TEST_DB_NAME", "asm_test")
 os.environ.setdefault("ASM_TEST_DB_ROLE", "asm_test")

@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import uuid
 
+from asm_sensors import eventlog
 from asm_sensors.jobs import RESULT_TASK_NAME, ResultRejected, open_result, result_queue
 from celery import Celery
 from kombu import Queue
@@ -29,6 +30,7 @@ from app.core import crypto
 from app.core.config import get_settings
 from app.db.session import new_session
 from app.models import Scan, ScanStage
+from app.observability import celery_hooks, codes
 from app.scans import orchestrator
 from app.screenshots import service as screenshots
 from app.screenshots.service import ADAPTER as SCREENSHOT_ADAPTER
@@ -37,6 +39,7 @@ from app.workers.celery_app import transport_options
 log = logging.getLogger(__name__)
 s = get_settings()
 
+celery_hooks.connect()
 results_app = Celery("asm-results", broker=s.broker_url, backend=None, set_as_current=False)
 results_app.conf.update(
     task_serializer="json",
@@ -50,6 +53,7 @@ results_app.conf.update(
     task_queues=[Queue(result_queue(p)) for p in s.worker_pools],
     task_default_queue=result_queue(s.worker_pools[0]),
     worker_enable_remote_control=False,
+    worker_hijack_root_logger=False,
     timezone="UTC",
 )
 
@@ -75,9 +79,14 @@ def receive_result(envelope: object) -> uuid.UUID | None:
         stage = db.get(ScanStage, stage_id)
         problem = orchestrator.result_binding_error(scan, stage, env, result)
         if problem:
-            log.warning("rejected sensor result for job %s (stage %s): %s", env.job_id, env.stage_id, problem)
+            log.warning("rejected sensor result for job %s (stage %s): %s", env.job_id, env.stage_id, problem,
+                        extra={"event": "scan.result.rejected", "error_code": codes.SCAN_RESULT_REJECTED,
+                               "pool": env.pool})
             return None
         assert scan is not None and stage is not None
+        # Only now — the result proved it answers this tenant's job — are its ids trusted.
+        eventlog.annotate(tenant_id=scan.tenant_id, scan_id=scan.id, stage_id=stage.id, job_id=env.job_id,
+                          pool=env.pool)
         orchestrator.complete_stage(db, scan, stage, result)
         db.commit()
     return scan_id

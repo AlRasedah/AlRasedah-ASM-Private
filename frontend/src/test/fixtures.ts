@@ -11,6 +11,7 @@ export const me = {
     "scans:read", "scans:run", "profiles:write", "schedules:write", "scope:read", "scope:write", "orgs:read", "orgs:write",
     "reports:read", "reports:create", "integrations:read", "integrations:write", "credentials:write", "users:read",
     "users:write", "settings:write", "audit:read", "tenants:admin", "intel:admin",
+    "diagnostics:read", "support:bundles", "platform:diagnostics",
   ],
   memberships: [{ tenant: { id: "t1", name: "Acme", slug: "acme" }, role: "tenant_admin" }],
   session_idle_minutes: 30,
@@ -217,8 +218,55 @@ export const feedConfig = {
     sources: { kev: { last_success_at: now, last_attempt_at: now, last_error: null, records: 3 }, critical: null } },
 };
 
+
+const unavailable = (reason: string) => ({ status: "unavailable", reason });
+const diagStage = { id: "st1", position: 0, stage_type: "discovery", label: "Passive subdomain discovery", status: "partial",
+  coverage: "partial", target_count: 1, rejected_count: 0, observation_count: 12, error: "timed out after 600s",
+  started_at: earlier, dispatched_at: earlier, finished_at: now,
+  timing: { queue_wait_ms: 1200, execution_ms: 600000, ingestion_ms: 340, total_ms: 601540, timed_out: true, retries: 0 },
+  timed_out: true, retries: 0 };
+export const diagScan = { id: "s1", organization_id: "o1", profile: "Standard ASM", status: "partial", trigger: "manual",
+  created_at: earlier, started_at: earlier, finished_at: now, stages: [diagStage],
+  summary: { queue_wait_ms: 1200, execution_ms: 600000, partial_stages: 1, failed_stages: 0, timeouts: 1 } };
+export const readyBundle = { id: "b1", scope: "tenant", status: "ready", progress: 100, error: null, window_start: earlier, window_end: now,
+  scan_ids: ["s1"], size: 4096, sha256: "ab".repeat(32), filename: "exteriq-support-tenant-20260925-1200-b1.zip",
+  created_at: now, finished_at: now, expires_at: now,
+  contents: { files: [{ name: "scans.jsonl", bytes: 900, sha256: "cd".repeat(32) }, { name: "stage-output/s1-0.txt", bytes: 1200, sha256: "ef".repeat(32) }],
+    truncated: [], included: ["scan timelines"], omitted: ["database dumps"] } };
+export const bundlePreview = { scope: "tenant", window_start: earlier, window_end: now,
+  included: ["scan timelines", "diagnostic events"], excluded: ["environment files, keys and every other secret", "database dumps"],
+  counts: { scans_selected: 1, scans_in_window: 3, audit_actions: 12 }, limits: { max_mb: 50, max_seconds: 120, retention_days: 7 } };
+const platformHealth = { collected_at: now, version: "1.4.0",
+  database: { status: "ok", server_version: "18.1", schema_version: "0013", expected_schema: "0013", size_bytes: 52428800, connections: 9 },
+  host: { hostname: "asm-1", cpus: 4, load: [0.4, 0.3, 0.2], memory: { total_bytes: 8589934592, available_bytes: 4294967296 },
+    disks: { data: { path_label: "data", total_bytes: 100e9, free_bytes: 60e9 }, tmp: unavailable("tmp storage is not accessible from this process") },
+    cgroup_oom_kills: 0 },
+  units: unavailable("not a native install (systemd unit data is available on native installs only)"),
+  broker: { status: "ok" },
+  services: { api: { status: "ok", instances: 2, versions: ["1.4.0"], last_seen_seconds: 4 },
+    worker: { status: "ok", instances: 1, versions: ["1.4.0"], last_seen_seconds: 10 },
+    ingest: unavailable("no heartbeat in the last 90 seconds"),
+    scheduler: { status: "ok", instances: 1, versions: ["1.4.0"], last_seen_seconds: 12 } },
+  scanners: { default: { status: "ok", instances: [{ host: "scan-1", pid: 7, version: "1.4.0", detection_rules: { available: true, count: 9000 },
+    last_job: { status: "completed", ts: now }, ts: now }], recent_errors: [] } },
+  queues: { core: { depth: 0, oldest_age_seconds: null, age_note: null }, "scanners.default": { depth: 3, oldest_age_seconds: 42, age_note: null } } };
+
 export function mockApi(path: string): unknown {
   const routes: [RegExp, unknown][] = [
+    [/^\/diagnostics\/tenant\/overview$/, { window_days: 7, scans: { completed: 4, partial: 1 },
+      stages: { finished: 30, partial: 1, failed: 0, timeouts: 1 }, queue_wait_ms_p50: 1200,
+      execution_ms_p50: unavailable("no stage timing recorded in the last 7 days"), notification_failures: 0,
+      scanner: { status: "ok", instances: 1, detection_content: "installed", dedicated: true } }],
+    [/^\/diagnostics\/(tenant|platform)\/scans$/, { items: [diagScan], total: 1, page: 1, page_size: 50 }],
+    [/^\/diagnostics\/tenant\/events$/, { items: [{ ts: now, kind: "scan_stage", level: "warning", title: "Passive subdomain discovery: partial",
+      detail: "timed out after 600s", scan_id: "s1" }], page: 1, page_size: 50, has_more: false }],
+    [/^\/diagnostics\/platform\/health$/, platformHealth],
+    [/^\/diagnostics\/platform\/events$/, { items: [{ id: 1, event_id: "e1", ts: now, level: "ERROR", service: "worker", event: "notification.failed",
+      error_code: "ASM-NTF-001", message: "delivery failed", tenant_id: "t1", request_id: null, scan_id: null, pool: null, data: null }],
+      total: 1, page: 1, page_size: 50 }],
+    [/^\/diagnostics\/bundles\/preview$/, bundlePreview],
+    [/^\/diagnostics\/bundles$/, [readyBundle]],
+    [/^\/setup$/, { needed: true }],
     [/^\/exposure-map$/, exposureMap],
     [/^\/screenshots\/status$/, screenshotStatus],
     [/^\/assets\/[^/]+\/screenshots$/, { status: screenshotStatus, latest: capture("sc1", "succeeded"), captures: [capture("sc1", "succeeded")] }],

@@ -6,6 +6,7 @@ import Layout from "@/components/Layout";
 import { Loading } from "@/components/ui";
 import Login from "@/pages/Login";
 import ResetPassword from "@/pages/ResetPassword";
+import Setup from "@/pages/Setup";
 
 // Route-level code splitting keeps the initial bundle small.
 const Dashboard = lazy(() => import("@/dashboard/Dashboard"));
@@ -32,6 +33,7 @@ const SettingsPage = lazy(() => import("@/pages/Settings"));
 const Audit = lazy(() => import("@/pages/Audit"));
 const Account = lazy(() => import("@/pages/Account"));
 const Platform = lazy(() => import("@/pages/Platform"));
+const Diagnostics = lazy(() => import("@/diagnostics/Diagnostics"));
 
 function RequireAuth({ children }: { children: JSX.Element }) {
   const { me, ready } = useAuth();
@@ -48,6 +50,7 @@ export default function App() {
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/reset-password" element={<ResetPassword />} />
+      <Route path="/setup" element={<Setup />} />
       <Route element={<RequireAuth><OrgProvider><Layout /></OrgProvider></RequireAuth>}>
         <Route index element={page(<Dashboard />)} />
         <Route path="inventory" element={page(<Inventory />)} />
@@ -73,6 +76,8 @@ export default function App() {
         <Route path="audit" element={page(<Audit />)} />
         <Route path="account" element={page(<Account />)} />
         <Route path="platform" element={page(<Platform />)} />
+        <Route path="diagnostics" element={page(<Diagnostics scope="tenant" />)} />
+        <Route path="platform/diagnostics" element={page(<Diagnostics key="platform" scope="platform" />)} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

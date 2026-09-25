@@ -1,0 +1,10 @@
+#!/bin/sh
+# exteriq-release-@VERSION@: refuse to remove the active release while it is running.
+set -e
+if [ "$1" = "remove" ] && [ "$(readlink /opt/exteriq/current 2>/dev/null)" = "/opt/exteriq/releases/@VERSION@" ] \
+        && systemctl is-active --quiet exteriq-api 2>/dev/null; then
+    echo "Release @VERSION@ is the active, running release. Activate another one (exteriqctl upgrade /" >&2
+    echo "rollback) or stop Exteriq (exteriqctl stop) before removing it." >&2
+    exit 1
+fi
+exit 0

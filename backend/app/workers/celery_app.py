@@ -16,6 +16,7 @@ from celery import Celery
 from celery.schedules import crontab
 
 from app.core.config import get_settings
+from app.observability import celery_hooks
 
 s = get_settings()
 
@@ -36,6 +37,7 @@ def transport_options(consumer: str) -> dict:
     }
 
 
+celery_hooks.connect()
 celery_app = Celery("asm-core", broker=s.broker_url, backend=s.result_backend, include=["app.workers.tasks"])
 celery_app.conf.update(
     task_serializer="json",
@@ -53,8 +55,12 @@ celery_app.conf.update(
     # Core workers accept no remote-control commands: nothing on the broker may
     # redirect them (e.g. add_consumer) to a queue that sensor workers can write.
     worker_enable_remote_control=False,
+    # Logging is configured by app.observability (structured events), not by Celery.
+    worker_hijack_root_logger=False,
     timezone="UTC",
     beat_schedule={
+        # Alerts (finding lifecycle) and audit exports to the log streams (app/observability/export.py).
+        "export-events": {"task": "asm.core.export_events", "schedule": 60.0},
         "dispatch-schedules": {"task": "asm.core.dispatch_schedules", "schedule": 60.0},
         "dispatch-queued-scans": {"task": "asm.core.dispatch_queued_scans", "schedule": 60.0},
         "dispatch-notifications": {"task": "asm.core.dispatch_notifications", "schedule": 60.0},

@@ -1,0 +1,64 @@
+[Unit]
+Description=Exteriq ASM API
+PartOf=exteriq.target
+After=network.target postgresql.service exteriq-valkey.service
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=exec
+User=exteriq
+Group=exteriq
+EnvironmentFile=/etc/exteriq/exteriq.env
+Environment=ASM_SERVICE=api EXTERIQ_NATIVE=1 PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 HOME=/var/lib/exteriq
+WorkingDirectory=/var/lib/exteriq
+SyslogIdentifier=exteriq-api
+Restart=on-failure
+RestartSec=5
+# The platform account never needs scanner keys, TLS keys or backups.
+InaccessiblePaths=-/etc/exteriq/scanner -/etc/exteriq/tls -/var/lib/exteriq/backups -/var/lib/exteriq/valkey
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+# A refused call fails with EPERM (the program can report it) instead of killing the process.
+SystemCallErrorNumber=EPERM
+SystemCallFilter=~@privileged @resources
+UMask=0027
+# One http.request event per request (method, route, status, duration; never query strings or
+# bodies) replaces the gunicorn access log.
+Environment=ASM_LOG_REQUESTS=true
+# Private listener: only nginx on this host talks to it.
+ExecStart=/opt/exteriq/current/platform/venv/bin/gunicorn app.main:app \
+    --worker-class uvicorn.workers.UvicornWorker --bind 127.0.0.1:8000 \
+    --workers ${ASM_API_WORKERS} --timeout 120 --forwarded-allow-ips 127.0.0.1 \
+    --worker-tmp-dir /dev/shm --no-control-socket
+ReadWritePaths=/var/lib/exteriq/storage /var/lib/exteriq/exports
+# Egress: DNS ownership checks of scope entries and SMTP for password resets.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+TimeoutStopSec=30
+MemoryMax=1G
+CPUQuota=200%
+TasksMax=256
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=20000
+
+[Install]
+WantedBy=exteriq.target

@@ -66,7 +66,8 @@ def receive(envelope: object) -> bool:
         scan, stage = db.get(Scan, scan_id), db.get(ScanStage, stage_id)
         problem = binding_error(scan, stage, env)
         if problem:
-            log.warning("rejected stage output for job %s (stage %s): %s", env.job_id, env.stage_id, problem)
+            log.warning("rejected stage output for job %s (stage %s): %s", env.job_id, env.stage_id, problem,
+                        extra={"event": "scan.output.rejected", "error_code": "ASM-SCAN-007", "pool": env.pool})
             return False
         db.execute(insert(ScanStageOutput).values(stage_id=stage_id, tenant_id=tenant_id, scan_id=scan_id, head=[],
                                                   tail=[]).on_conflict_do_nothing(index_elements=["stage_id"]))

@@ -9,8 +9,12 @@ update_templates() {
   # Detection templates live on a volume so they can be updated without rebuilding.
   if [ "${ASM_NUCLEI_AUTO_UPDATE:-true}" = "true" ] || [ -z "$(ls -A "$ASM_NUCLEI_TEMPLATES_DIR" 2>/dev/null)" ]; then
     # Same HOME as the adapter uses at scan time, so nuclei sees templates as installed.
-    HOME="$ASM_NUCLEI_HOME" nuclei -update-templates -ud "$ASM_NUCLEI_TEMPLATES_DIR" -duc -silent || \
+    # No -duc here: with it, nuclei 3.3 skips even an explicit -update-templates and
+    # downloads nothing (scans keep -duc, where suppressing update checks is right).
+    HOME="$ASM_NUCLEI_HOME" nuclei -update-templates -ud "$ASM_NUCLEI_TEMPLATES_DIR" -silent || \
       echo "warning: could not update detection templates (offline?); using the existing set" >&2
+    [ -n "$(find "$ASM_NUCLEI_TEMPLATES_DIR" -name '*.yaml' -print -quit 2>/dev/null)" ] || \
+      echo "warning: no detection templates are installed; vulnerability detection stages will be skipped" >&2
   fi
 }
 

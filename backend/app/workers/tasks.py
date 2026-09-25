@@ -24,6 +24,7 @@ import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 
+from asm_sensors import eventlog
 from asm_sensors.jobs import JOB_HARD_LIMIT_GRACE, TASK_NAME, SensorJob, job_queue
 from sqlalchemy import exists, or_, select
 
@@ -31,6 +32,7 @@ from app.core.config import get_settings
 from app.db.session import new_session, system_session
 from app.models import Organization, Scan, ScanStage
 from app.models.enums import ScanStatus, StageStatus
+from app.observability import codes
 from app.scans import orchestrator
 from app.services import maintenance
 from app.workers.celery_app import celery_app
@@ -44,8 +46,12 @@ STRANDED_GRACE = timedelta(minutes=5)
 
 
 def _scan_tenant(scan_id: uuid.UUID) -> uuid.UUID | None:
+    """The scan's tenant, from the database — the only source of tenant identity for a task."""
     with system_session() as db:
-        return db.execute(select(Scan.tenant_id).where(Scan.id == scan_id)).scalar_one_or_none()
+        tid = db.execute(select(Scan.tenant_id).where(Scan.id == scan_id)).scalar_one_or_none()
+    if tid is not None:
+        eventlog.annotate(tenant_id=tid, scan_id=scan_id)
+    return tid
 
 
 @celery_app.task(shared=False, name="asm.core.start_scan")
@@ -93,6 +99,7 @@ def advance_scan(scan_id: str) -> None:
             return
         stage, job = nxt
         stage_id, pool = stage.id, stage.worker_pool or "default"
+        eventlog.annotate(stage_id=stage_id, job_id=job.job_id, pool=pool)
         # The RUNNING state and the job binding are durable *before* the job exists on
         # the broker, so even an immediate result finds the stage ready to accept it.
         db.commit()
@@ -104,7 +111,8 @@ def advance_scan(scan_id: str) -> None:
             scan = db.get(Scan, sid, with_for_update=True)
             stage = db.get(ScanStage, stage_id)
             if scan is not None and stage is not None and stage.task_id == job.job_id:
-                orchestrator.fail_stage(db, scan, stage, "The sensor job could not be dispatched")
+                orchestrator.fail_stage(db, scan, stage, "The sensor job could not be dispatched",
+                                        codes.SCAN_DISPATCH_FAILED)
             db.commit()
         advance_scan.delay(scan_id)
         return
@@ -113,6 +121,9 @@ def advance_scan(scan_id: str) -> None:
         if stage is not None and stage.task_id == job.job_id and stage.dispatched_at is None:
             stage.dispatched_at = datetime.now(UTC)
             db.commit()
+            logging.getLogger("exteriq.scans").info("stage %s dispatched", stage.stage_type.value, extra={
+                "event": "scan.stage.dispatched", "stream": "scans", "queue": f"scanners.{pool}",
+                "stage_type": stage.stage_type.value, "target_count": len(job.targets)})
 
 
 @celery_app.task(shared=False, name="asm.core.stage_failed")
@@ -129,6 +140,22 @@ def stage_failed(scan_id: str, stage_id: str, reason: str = "Sensor task failed,
         orchestrator.fail_stage(db, scan, stage, reason)
         db.commit()
     advance_scan.delay(scan_id)
+
+
+@celery_app.task(shared=False, name="asm.core.support_bundle", soft_time_limit=240, time_limit=300)
+def support_bundle(bundle_id: str, tenant_id: str = "") -> None:
+    """Build one support bundle (bounded in size and time; see app/diagnostics/bundles.py)."""
+    from app.diagnostics.bundles import generate
+
+    generate(uuid.UUID(bundle_id), uuid.UUID(tenant_id) if tenant_id else None)
+
+
+@celery_app.task(shared=False, name="asm.core.export_events")
+def export_events() -> dict:
+    """Finding-lifecycle (alerts) and audit records to the log streams (at least once, deduplicated by id)."""
+    from app.observability import export
+
+    return export.run()
 
 
 @celery_app.task(shared=False, name="asm.core.dispatch_queued_scans")

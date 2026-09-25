@@ -4,6 +4,7 @@ from . import (
     assets,
     auth,
     dashboard,
+    diagnostics,
     events,
     exposure,
     findings,
@@ -14,6 +15,7 @@ from . import (
     scopes,
     screenshots,
     settings,
+    setup,
     tenants,
     threats,
     users,
@@ -21,5 +23,6 @@ from . import (
 
 api_router = APIRouter()
 for module in (auth, organizations, scopes, assets, findings, scans, events, dashboard, reports, integrations, users,
-               tenants, settings, threats, screenshots, exposure):
+               tenants, settings, threats, screenshots, exposure, diagnostics,
+               setup):
     api_router.include_router(module.router)

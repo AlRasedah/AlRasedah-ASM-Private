@@ -178,3 +178,39 @@ already covered by the suites is left out on purpose.
 **D. Delivery**
 13. Wazuh: point a test manager at the syslog channel, validate with `wazuh-logtest`.
 14. Generate each report type, including PDF (WeasyPrint only exists inside the image).
+
+## 9.9 Native packages (Ubuntu 26.04)
+
+The packaging is tested on real, disposable Ubuntu 26.04 systems with systemd — never on a
+machine that runs anything else, and never against real scan targets.
+
+1. **Build host** (disposable Ubuntu 26.04 amd64 with `build-essential libpcap-dev golang
+   nodejs npm python3.14-venv dpkg-dev`):
+   ```bash
+   sudo packaging/build-scanner-tools.sh /root/engines            # pinned Go toolchain, checksummed
+   sudo packaging/build-deb.sh out/0.1.0 --engines /root/engines
+   # upgrade/recovery test builds (never shipped):
+   sudo packaging/build-deb.sh out/0.1.1 --engines /root/engines --version 0.1.1
+   sudo packaging/build-deb.sh "out/0.1.2~failmig" --engines /root/engines --version "0.1.2~failmig" \
+        --extra-migration packaging/tests/migrations/0014_failing.py
+   sudo packaging/build-deb.sh out/0.1.2 --engines /root/engines --version 0.1.2 \
+        --extra-migration packaging/tests/migrations/0014_upgrade_probe.py
+   ```
+2. **Target** (a *fresh* Ubuntu 26.04 with systemd): `sudo sh out/0.1.0/install.sh`, reboot, then
+   ```bash
+   sudo packaging/tests/verify-native.sh          # units, listeners, permissions, sandboxes, RLS role,
+                                                  # broker ACLs, engines inside the sandbox, TLS, logs, secrets
+   sudo python3 packaging/tests/native-fixture-scan.py   # setup link, a scan of a local fixture
+                                                  # (127.0.0.2:18081), diagnostics, bundles, cross-tenant denial
+   sudo packaging/tests/upgrade-recovery.sh out 0.1.0 0.1.1 "0.1.2~failmig" 0.1.2
+                                                  # upgrade, rollback, failed migration, restore,
+                                                  # uninstall keeping data, failed and recovered reinstall
+   ```
+
+On Windows the same runs in WSL distributions imported from the official Ubuntu 26.04 cloud
+root image with `systemd=true` in `/etc/wsl.conf`. Two WSL-specific adjustments, neither part
+of the product: mask `systemd-networkd-wait-online.service` (WSL has no networkd-managed
+interface, so it would hold boot for two minutes), and keep a `wsl -d <distro> -- sleep
+infinity` running (WSL otherwise shuts an idle distribution down between commands). A
+"reboot" is `wsl --terminate <distro>` followed by a new start, which boots systemd afresh.
+WSL distributions share one network namespace: services of one are reachable from the others.

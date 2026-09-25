@@ -69,6 +69,10 @@ class Action:
     SCREENSHOT_REQUESTED = "screenshot.requested"
     SCREENSHOT_DELETED = "screenshot.deleted"
     SCREENSHOT_POLICY_CHANGED = "screenshot_policy.changed"
+    SUPPORT_BUNDLE_CREATED = "support_bundle.created"
+    SUPPORT_BUNDLE_DOWNLOADED = "support_bundle.downloaded"
+    SUPPORT_BUNDLE_DELETED = "support_bundle.deleted"
+    SETUP_COMPLETED = "setup.completed"
 
 
 def _jsonable(value: Any) -> Any:

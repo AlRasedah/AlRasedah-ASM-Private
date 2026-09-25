@@ -77,6 +77,15 @@ def refresh_intel() -> None:
     _send("asm.core.refresh_intel")
 
 
+def generate_support_bundle(bundle_id: uuid.UUID, tenant_id: uuid.UUID | None) -> None:
+    if _inline():
+        from app.diagnostics.bundles import generate
+
+        generate(bundle_id, tenant_id)
+        return
+    _send("asm.core.support_bundle", str(bundle_id), str(tenant_id) if tenant_id else "")
+
+
 def run_threat_feed() -> None:
     """Fetch automatic advisories now (inline: fetch, write and evaluate here)."""
     if _inline():

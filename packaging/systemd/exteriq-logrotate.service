@@ -1,0 +1,9 @@
+[Unit]
+Description=Rotate Exteriq ASM log files
+Documentation=file:///opt/exteriq/current/docs/LOGGING.md
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/logrotate --state /var/lib/exteriq/logrotate.state /usr/share/exteriq/logrotate.conf
+Nice=10
+IOSchedulingClass=idle

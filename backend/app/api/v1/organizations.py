@@ -105,6 +105,10 @@ def delete_organization(org_id: uuid.UUID, _: Principal = Depends(require(Permis
 
     tenant_id = org.tenant_id
     queue_organization_objects(db, org.id)
+    # Support bundles holding this organization's data go with it (same transaction).
+    from app.diagnostics.bundles import queue_organization_bundles
+
+    queue_organization_bundles(db, org.id)
     db.delete(org)
     db.commit()
     left = purge_pending_deletions(db, tenant_id)["storage_pending"]

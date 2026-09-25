@@ -1,0 +1,1261 @@
+#!/usr/bin/python3
+"""exteriqctl — install, operate, upgrade and recover a native Exteriq ASM installation.
+
+Supported target: Ubuntu 26.04 LTS (amd64). Standard library only, so it keeps working
+when a release, the database or the broker is broken.
+
+Layout
+  /opt/exteriq/releases/<version>/   one immutable release each (package exteriq-release-<version>)
+  /opt/exteriq/current               symlink to the active release
+  /etc/exteriq/                      configuration and secrets (never printed)
+  /var/lib/exteriq/                  data: storage, exports, broker, backups, diagnostics
+  /var/log/exteriq/                  categorized JSON logs (written by rsyslog only)
+
+Every command is idempotent: re-running `install` after a failure continues where it
+stopped. Nothing here deletes data except `restore` (after a safety dump) and
+`purge-data --yes-delete-all-data`.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import contextlib
+import datetime as dt
+import functools
+import hashlib
+import hmac
+import ipaddress
+import json
+import os
+import re
+import secrets
+import shutil
+import socket
+import ssl
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+import urllib.request
+from pathlib import Path
+
+OPT = Path("/opt/exteriq")
+RELEASES = OPT / "releases"
+CURRENT = OPT / "current"
+ETC = Path("/etc/exteriq")
+ENV_FILE = ETC / "exteriq.env"
+SCANNER_ETC = ETC / "scanner"
+TLS_DIR = ETC / "tls"
+VALKEY_CONF = ETC / "valkey.conf"
+VALKEY_ACL = ETC / "valkey-users.acl"
+INSTALL_JSON = ETC / "install.json"
+STATE = Path("/var/lib/exteriq")
+BACKUPS = STATE / "backups"
+LOG_DIR = Path("/var/log/exteriq")
+SHARE = Path("/usr/share/exteriq")
+NGINX_SITE = Path("/etc/nginx/sites-available/exteriq.conf")
+NGINX_ENABLED = Path("/etc/nginx/sites-enabled/exteriq.conf")
+MARKER = "# managed-by: exteriqctl"
+
+DB_NAME = DB_ROLE = "exteriq"
+VALKEY_PORT = 6380
+API_ADDR = ("127.0.0.1", 8000)
+PLATFORM_UNITS = ["exteriq-api", "exteriq-worker", "exteriq-ingest", "exteriq-scheduler"]
+REQUIRED_PACKAGES = ["python3.14", "postgresql", "valkey-server", "nginx", "rsyslog", "logrotate", "openssl",
+                     "libpcap0.8t64"]
+POOL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62})$")
+
+
+class Failure(Exception):
+    """A step failed; the message says what to do. No traceback for the operator."""
+
+
+# ------------------------------------------------------------------ output
+def say(msg: str) -> None:
+    print(msg, flush=True)
+
+
+def step(n: int | str, msg: str) -> None:
+    print(f"\n[{n}] {msg}", flush=True)
+
+
+def ok(msg: str) -> None:
+    print(f"    ok  {msg}", flush=True)
+
+
+def warn(msg: str) -> None:
+    print(f"    !!  {msg}", flush=True)
+
+
+# ------------------------------------------------------------------ helpers
+def run(cmd: list[str], *, check: bool = True, capture: bool = True, input: str | None = None,
+        timeout: float | None = 600, env: dict[str, str] | None = None, stdout=None) -> subprocess.CompletedProcess:
+    try:
+        p = subprocess.run(cmd, input=input, text=True, timeout=timeout, env=env,
+                           stdout=stdout if stdout is not None else (subprocess.PIPE if capture else None),
+                           stderr=subprocess.PIPE if capture else None, check=False)
+    except FileNotFoundError as exc:
+        raise Failure(f"{cmd[0]} is not installed") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise Failure(f"{' '.join(cmd[:3])} did not finish within {timeout:.0f}s") from exc
+    if check and p.returncode != 0:
+        err = (p.stderr or "").strip()[-2000:] if capture else ""
+        raise Failure(f"{' '.join(cmd[:4])} failed (exit {p.returncode}){': ' + err if err else ''}")
+    return p
+
+
+def systemctl(*args: str, check: bool = True) -> subprocess.CompletedProcess:
+    return run(["systemctl", *args], check=check)
+
+
+def is_active(unit: str) -> bool:
+    return run(["systemctl", "is-active", "--quiet", unit], check=False).returncode == 0
+
+
+def write_secret(path: Path, text: str, mode: int, group: str | None = None) -> None:
+    """Write a file that holds secrets: created with its final mode, replaced atomically."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        os.fchmod(fd, mode)
+        if group:
+            os.fchown(fd, 0, _gid(group))
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp)
+        raise
+
+
+def _gid(group: str) -> int:
+    import grp
+
+    return grp.getgrnam(group).gr_gid
+
+
+def _uid(user: str) -> int:
+    import pwd
+
+    return pwd.getpwnam(user).pw_uid
+
+
+def read_env(path: Path = ENV_FILE) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if not path.exists():
+        return out
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            out[k.strip()] = v.strip()
+    return out
+
+
+def render_env(values: dict[str, str], header: str) -> str:
+    for k, v in values.items():
+        if any(c in v for c in "\n\"'\\ $`"):
+            raise Failure(f"refusing to write {k}: value contains characters an environment file cannot hold")
+    return header + "".join(f"{k}={v}\n" for k, v in values.items())
+
+
+def b64key() -> str:
+    return base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip("=")
+
+
+def pool_key(master_b64: str, pool: str) -> str:
+    """HKDF-SHA256 (RFC 5869, no salt, 32 bytes) — identical to asm_sensors.jobs.pool_key."""
+    master = base64.urlsafe_b64decode(master_b64 + "=" * (-len(master_b64) % 4))
+    prk = hmac.new(b"\x00" * 32, master, hashlib.sha256).digest()
+    okm = hmac.new(prk, f"exteriq-asm/scanner-pool/v1/{pool}".encode() + b"\x01", hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(okm).decode().rstrip("=")
+
+
+def scram_verifier(password: str, iterations: int = 4096) -> str:
+    """A PostgreSQL SCRAM-SHA-256 verifier, so the plain password never reaches the server's logs."""
+    salt = os.urandom(16)
+    salted = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, iterations)
+    client_key = hmac.new(salted, b"Client Key", hashlib.sha256).digest()
+    stored_key = hashlib.sha256(client_key).digest()
+    server_key = hmac.new(salted, b"Server Key", hashlib.sha256).digest()
+    b = lambda x: base64.b64encode(x).decode()  # noqa: E731
+    return f"SCRAM-SHA-256${iterations}:{b(salt)}${b(stored_key)}:{b(server_key)}"
+
+
+def load_install() -> dict:
+    if INSTALL_JSON.exists():
+        return json.loads(INSTALL_JSON.read_text())
+    return {}
+
+
+def save_install(data: dict) -> None:
+    INSTALL_JSON.write_text(json.dumps(data, indent=2) + "\n")
+    INSTALL_JSON.chmod(0o644)
+
+
+def now_utc() -> dt.datetime:
+    return dt.datetime.now(dt.UTC)
+
+
+# ------------------------------------------------------------------ releases
+def releases() -> list[str]:
+    if not RELEASES.exists():
+        return []
+    return sorted((p.name for p in RELEASES.iterdir() if (p / "VERSION").exists()), key=_vkey)
+
+
+def _vcmp(a: str, b: str) -> int:
+    """Debian version ordering (so 0.2.0~rc1 sorts before 0.2.0), as dpkg decides it."""
+    if a == b:
+        return 0
+    return -1 if run(["dpkg", "--compare-versions", a, "lt", b], check=False).returncode == 0 else 1
+
+
+_vkey = functools.cmp_to_key(_vcmp)
+
+
+def current_release() -> str | None:
+    if CURRENT.is_symlink():
+        return Path(os.readlink(CURRENT)).name
+    return None
+
+
+def pkg_name(version: str) -> str:
+    """Debian package names cannot contain "~" (versions can)."""
+    return "exteriq-release-" + version.replace("~", "-")
+
+
+def release_dir(version: str) -> Path:
+    d = RELEASES / version
+    if not (d / "VERSION").exists():
+        raise Failure(f"release {version} is not installed (apt install ./{pkg_name(version)}_*.deb)")
+    return d
+
+
+def schema_head(version: str) -> str:
+    return (release_dir(version) / "platform" / "SCHEMA_HEAD").read_text().strip()
+
+
+def release_revisions(version: str) -> set[str]:
+    revs = set()
+    for f in (release_dir(version) / "platform" / "alembic" / "versions").glob("*.py"):
+        m = re.search(r'^revision\s*(?::\s*str\s*)?=\s*["\']([^"\']+)', f.read_text(), re.M)
+        if m:
+            revs.add(m.group(1))
+    return revs
+
+
+def verify_release(version: str) -> None:
+    """Every file of the release against the manifest written at build time."""
+    d = release_dir(version)
+    manifest = d / "MANIFEST.sha256"
+    if not manifest.exists():
+        raise Failure(f"release {version} has no MANIFEST.sha256; reinstall its package")
+    bad, count = [], 0
+    for line in manifest.read_text().splitlines():
+        digest, name = line.split("  ", 1)
+        p = d / name
+        count += 1
+        try:
+            h = hashlib.sha256()
+            with open(p, "rb") as fh:
+                for chunk in iter(lambda: fh.read(1 << 20), b""):
+                    h.update(chunk)
+            if h.hexdigest() != digest:
+                bad.append(name)
+        except OSError:
+            bad.append(name)
+    if bad:
+        raise Failure(f"release {version} failed its integrity check ({len(bad)} of {count} files differ, e.g. "
+                      f"{bad[0]}); reinstall the package: apt install --reinstall {pkg_name(version)}")
+    ok(f"release {version}: {count} files match the build manifest")
+
+
+def switch_current(version: str) -> None:
+    target = release_dir(version)
+    tmp = OPT / f".current-{os.getpid()}"
+    with contextlib.suppress(FileNotFoundError):
+        tmp.unlink()
+    tmp.symlink_to(target)
+    os.replace(tmp, CURRENT)  # atomic
+    ok(f"active release is now {version}")
+
+
+# ------------------------------------------------------------------ database
+def psql(sql: str, db: str = "postgres", *, check: bool = True) -> str:
+    """As the postgres OS user over the local socket; SQL on stdin, never in argv."""
+    p = run(["runuser", "-u", "postgres", "--", "psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", "-tA", "-d", db],
+            input=sql, check=check)
+    return (p.stdout or "").strip()
+
+
+def pg_port() -> int:
+    return int(psql("SHOW port;"))
+
+
+def db_revision() -> str | None:
+    out = psql("SELECT version_num FROM alembic_version;", DB_NAME, check=False)
+    return out or None
+
+
+def ensure_database(password: str) -> None:
+    def ready(seconds: int) -> bool:
+        for _ in range(seconds):
+            if run(["runuser", "-u", "postgres", "--", "pg_isready", "-q"], check=False).returncode == 0:
+                return True
+            time.sleep(1)
+        return False
+
+    # On Ubuntu `postgresql` is an umbrella unit that stays "active" while a cluster
+    # (postgresql@<ver>-main) is stopped, so readiness is judged by pg_isready, not the unit.
+    if not ready(3):
+        systemctl("restart", "postgresql", check=False)
+        if not ready(30):
+            raise Failure("PostgreSQL is not accepting connections and did not start; check: "
+                          "pg_lsclusters; journalctl -u 'postgresql*' -n 50")
+    version = psql("SHOW server_version_num;")
+    if int(version) < 160000:
+        raise Failure(f"PostgreSQL 16 or newer is required (found {version})")
+    owner = psql(f"SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = '{DB_NAME}';")
+    if owner and owner != DB_ROLE:
+        raise Failure(f"a database named {DB_NAME!r} already exists and belongs to {owner!r}; it is not ours, "
+                      "so nothing was changed. Rename or remove it, then re-run.")
+    verifier = scram_verifier(password)
+    psql(f"""
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{DB_ROLE}') THEN
+    CREATE ROLE {DB_ROLE} LOGIN;
+  END IF;
+END $$;
+ALTER ROLE {DB_ROLE} WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
+  CONNECTION LIMIT 200 PASSWORD '{verifier}';
+""")
+    if not owner:
+        psql(f"CREATE DATABASE {DB_NAME} OWNER {DB_ROLE} ENCODING 'UTF8' TEMPLATE template0;")
+    psql(f"REVOKE ALL ON DATABASE {DB_NAME} FROM PUBLIC; GRANT CONNECT, TEMPORARY ON DATABASE {DB_NAME} TO {DB_ROLE};")
+    psql(f"REVOKE ALL ON SCHEMA public FROM PUBLIC; GRANT ALL ON SCHEMA public TO {DB_ROLE};", DB_NAME)
+    flags = psql(f"SELECT rolsuper, rolbypassrls, rolcreaterole FROM pg_roles WHERE rolname = '{DB_ROLE}';")
+    if flags != "f|f|f":
+        raise Failure(f"role {DB_ROLE} has elevated attributes ({flags}); refusing to continue")
+    ok(f"database {DB_NAME} and role {DB_ROLE} (no superuser, no BYPASSRLS) ready")
+
+
+def as_platform(args: list[str], *, release: str | None = None, check: bool = True, timeout: float = 1800,
+                capture: bool = True) -> subprocess.CompletedProcess:
+    """Run a platform command as the exteriq account with the platform environment, in a
+    transient unit (same account, environment file and hardening basis as the services)."""
+    rel = release_dir(release) if release else CURRENT
+    venv = rel / "platform" / "venv" / "bin"
+    exe = str(venv / args[0]) if (venv / args[0]).exists() else args[0]
+    cmd = ["systemd-run", "--quiet", "--wait", "--pipe", "--collect", "--service-type=exec",
+           "-p", "User=exteriq", "-p", "Group=exteriq", "-p", f"EnvironmentFile={ENV_FILE}",
+           "-p", "WorkingDirectory=/var/lib/exteriq", "-p", "NoNewPrivileges=yes", "-p", "PrivateTmp=yes",
+           "-p", "ProtectHome=yes", "-p", "ProtectSystem=strict",
+           "-p", "ReadWritePaths=/var/lib/exteriq/storage /var/lib/exteriq/exports",
+           "-p", "SyslogIdentifier=exteriq-ctl",
+           "-E", "ASM_SERVICE=cli", "-E", "EXTERIQ_NATIVE=1", "-E", "ASM_HEARTBEAT=false",
+           "-E", "ASM_OPS_EVENTS=false", "-E", "PYTHONDONTWRITEBYTECODE=1", "-E", "HOME=/var/lib/exteriq",
+           "-E", f"EXTERIQ_RELEASE_DIR={rel}",
+           "--working-directory", str(rel / "platform"),
+           exe, *args[1:]]
+    return run(cmd, check=check, timeout=timeout, capture=capture)
+
+
+def migrate(release: str) -> None:
+    before = db_revision()
+    p = as_platform(["alembic", "-c", str(release_dir(release) / "platform" / "alembic.ini"), "upgrade", "head"],
+                    release=release, check=False)
+    after = db_revision()
+    if p.returncode != 0:
+        tail = (p.stderr or "").strip().splitlines()[-15:]
+        raise MigrationFailed(before, after, "\n".join(tail))
+    ok(f"database schema at {after} (was {before or 'empty'})")
+
+
+class MigrationFailed(Failure):
+    def __init__(self, before: str | None, after: str | None, detail: str) -> None:
+        self.before, self.after = before, after
+        super().__init__(f"database migration failed (schema before: {before}, now: {after})\n{detail}")
+
+
+# ------------------------------------------------------------------ broker
+ACL_SCANNER = ("resetkeys resetchannels ~scanners.{p} ~_kombu.binding.scanners.{p} ~unacked.scanners.{p} "
+               "~unacked_index.scanners.{p} ~unacked_mutex.scanners.{p} ~results.{p} ~_kombu.binding.results.{p} "
+               "~asm.pool.{p}.* ~*.asm-{p}.pidbox ~_kombu.binding.asm-{p}.pidbox &/0.asm-{p}.pidbox "
+               "-@all +@connection +@read +@write +@list +@set +@sortedset +@hash +@string +@transaction "
+               "+@pubsub +@scripting -@dangerous -@admin -scan -randomkey -script|flush -script|kill -function")
+
+
+def write_valkey(platform_pw: str, pools: dict[str, str]) -> None:
+    conf = f"""# managed-by: exteriqctl — Exteriq's own broker instance (not the system valkey-server).
+bind 127.0.0.1 -::1
+port {VALKEY_PORT}
+protected-mode yes
+daemonize no
+supervised systemd
+dir /var/lib/exteriq/valkey
+aclfile {VALKEY_ACL}
+appendonly yes
+appendfsync everysec
+save ""
+maxmemory 768mb
+maxmemory-policy noeviction
+logfile ""
+enable-debug-command no
+enable-module-command no
+"""
+    lines = [f"user default on #{hashlib.sha256(platform_pw.encode()).hexdigest()} ~* &* +@all"]
+    for pool, pw in sorted(pools.items()):
+        lines.append(f"user scanner-{pool} on #{hashlib.sha256(pw.encode()).hexdigest()} "
+                     + ACL_SCANNER.format(p=pool))
+    write_secret(VALKEY_CONF, conf, 0o640, "exteriq-valkey")
+    write_secret(VALKEY_ACL, "\n".join(lines) + "\n", 0o640, "exteriq-valkey")
+
+
+def valkey_cli(*args: str) -> str:
+    pw = read_env()["ASM_REDIS_URL"].split(":", 2)[2].split("@", 1)[0]
+    env = {**os.environ, "REDISCLI_AUTH": pw}
+    return run(["valkey-cli", "-p", str(VALKEY_PORT), "--no-auth-warning", *args], env=env).stdout.strip()
+
+
+# ------------------------------------------------------------------ scanners
+def scanner_env(pool: str) -> Path:
+    return SCANNER_ETC / f"{pool}.env"
+
+
+def pool_passwords() -> dict[str, str]:
+    out = {}
+    for f in sorted(SCANNER_ETC.glob("*.env")):
+        url = read_env(f).get("ASM_CELERY_BROKER_URL", "")
+        m = re.match(r"redis://scanner-([a-z0-9-]+):([^@]+)@", url)
+        if m:
+            out[m.group(1)] = m.group(2)
+    return out
+
+
+def ensure_pool(pool: str, env: dict[str, str]) -> None:
+    if not POOL_RE.match(pool):
+        raise Failure(f"invalid pool name {pool!r} (lowercase letters, digits and '-')")
+    f = scanner_env(pool)
+    if f.exists():
+        return
+    values = {
+        "ASM_CELERY_BROKER_URL": f"redis://scanner-{pool}:{secrets.token_urlsafe(32)}@127.0.0.1:{VALKEY_PORT}/0",
+        "ASM_SCANNER_TRANSPORT_KEY": pool_key(env["ASM_SCANNER_TRANSPORT_KEY"], pool),
+        "ASM_BROKER_VISIBILITY_TIMEOUT": "21600",
+        "ASM_SENSOR_CONCURRENCY": "2",
+        "ASM_LOG_LEVEL": "INFO",
+        "ASM_NUCLEI_AUTO_UPDATE": "true",
+        "ASM_SCANNER_MAX_RATE": "2000",
+        "ASM_SCANNER_ALLOW_NON_PUBLIC": "false",
+    }
+    SCANNER_ETC.mkdir(mode=0o750, exist_ok=True)
+    os.chown(SCANNER_ETC, 0, _gid("exteriq-scanner"))
+    SCANNER_ETC.chmod(0o750)
+    write_secret(f, render_env(values, f"# Scanner pool {pool}: its broker user and pool key only. No database access.\n"),
+                 0o640, "exteriq-scanner")
+
+
+# ------------------------------------------------------------------ TLS / nginx
+def host_ips() -> list[str]:
+    ips: set[str] = set()
+    with contextlib.suppress(OSError):
+        for info in socket.getaddrinfo(socket.gethostname(), None):
+            ips.add(info[4][0])
+    p = run(["ip", "-o", "addr", "show", "scope", "global"], check=False)
+    for m in re.finditer(r"inet6? ([0-9a-f.:]+)/", p.stdout or ""):
+        ips.add(m.group(1))
+    return sorted(ip for ip in ips if not ipaddress.ip_address(ip).is_loopback)
+
+
+def self_signed(hostname: str) -> None:
+    TLS_DIR.mkdir(mode=0o750, exist_ok=True)
+    san = [f"DNS:{hostname}"] + [f"IP:{ip}" for ip in host_ips()] + ["DNS:localhost", "IP:127.0.0.1"]
+    with tempfile.TemporaryDirectory(dir=TLS_DIR) as tmp:
+        key, crt = Path(tmp) / "tls.key", Path(tmp) / "tls.crt"
+        run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes",
+             "-days", "397", "-subj", f"/CN={hostname}", "-addext", "subjectAltName=" + ",".join(san),
+             "-addext", "extendedKeyUsage=serverAuth", "-keyout", str(key), "-out", str(crt)])
+        key.chmod(0o600)
+        crt.chmod(0o644)
+        os.replace(key, TLS_DIR / "tls.key")
+        os.replace(crt, TLS_DIR / "tls.crt")
+    ok(f"self-signed certificate for {hostname} (replace it: exteriqctl tls install --cert ... --key ...)")
+
+
+def write_nginx(install: dict) -> None:
+    if NGINX_SITE.exists() and MARKER not in NGINX_SITE.read_text():
+        raise Failure(f"{NGINX_SITE} exists and was not created by exteriqctl; nothing was changed")
+    https = int(install["https_port"])
+    tpl = (SHARE / "nginx" / "exteriq.conf.in").read_text()
+    names = " ".join(dict.fromkeys([install["hostname"], "_"]))
+    conf = (tpl.replace("@HTTP_PORT@", str(install["http_port"])).replace("@HTTPS_PORT@", str(https))
+            .replace("@SERVER_NAME@", names).replace("@HTTPS_SUFFIX@", "" if https == 443 else f":{https}"))
+    old = NGINX_SITE.read_text() if NGINX_SITE.exists() else None
+    NGINX_SITE.write_text(conf)
+    if not NGINX_ENABLED.exists():
+        NGINX_ENABLED.symlink_to(NGINX_SITE)
+    p = run(["nginx", "-t", "-q"], check=False)
+    if p.returncode != 0:
+        if old is None:
+            NGINX_ENABLED.unlink(missing_ok=True)
+            NGINX_SITE.unlink(missing_ok=True)
+        else:
+            NGINX_SITE.write_text(old)
+        raise Failure(f"nginx rejected the configuration; the previous state was restored:\n{p.stderr.strip()}")
+    systemctl("enable", "--quiet", "nginx")
+    systemctl("reload-or-restart", "nginx")
+    ok(f"nginx serves https on port {https} (http {install['http_port']} redirects)")
+
+
+def public_url(install: dict) -> str:
+    https = int(install["https_port"])
+    return f"https://{install['hostname']}" + ("" if https == 443 else f":{https}")
+
+
+# ------------------------------------------------------------------ readiness
+def _https_get(install: dict, path: str, timeout: float = 5) -> tuple[int, str]:
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE  # local readiness probe of our own listener
+    req = urllib.request.Request(f"https://127.0.0.1:{install['https_port']}{path}",
+                                 headers={"Host": install["hostname"]})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:  # noqa: S310
+            return r.status, r.read(4096).decode(errors="replace")
+    except urllib.error.HTTPError as exc:
+        return exc.code, ""
+    except (OSError, urllib.error.URLError) as exc:
+        return 0, str(exc)
+
+
+HEALTH_SNIPPET = """
+import json
+from app.core.config import get_settings
+from app.observability import health
+from app.db.migrations import expected_head
+from app.db.session import system_session
+from sqlalchemy import text
+out = {"expected_schema": expected_head()}
+try:
+    with system_session() as db:
+        out["schema"] = db.execute(text("SELECT version_num FROM alembic_version")).scalar()
+except Exception as exc:
+    out["schema"] = None; out["db_error"] = type(exc).__name__
+try:
+    c = health._redis(); c.ping()
+    out["services"] = health.services(c)
+    out["scanners"] = health.scanners(c, list(get_settings().worker_pools))
+except Exception as exc:
+    out["broker_error"] = type(exc).__name__
+print(json.dumps(out, default=str))
+"""
+
+
+def health_report() -> dict:
+    p = as_platform(["python", "-c", HEALTH_SNIPPET], check=False, timeout=60)
+    try:
+        return json.loads((p.stdout or "").strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return {"error": (p.stderr or "no output").strip()[-500:]}
+
+
+def wait_ready(install: dict, timeout: float = 900) -> list[str]:
+    """Empty list when ready, else what is not."""
+    units = [*PLATFORM_UNITS, "exteriq-valkey", *(f"exteriq-scanner@{p}" for p in install.get("pools", []))]
+    deadline = time.monotonic() + timeout
+    problems: list[str] = []
+    while time.monotonic() < deadline:
+        problems = [f"{u} is not running" for u in units if not is_active(u)]
+        status, body = _https_get(install, "/api/v1/health")
+        if status != 200:
+            problems.append(f"API health through nginx returned {status or body}")
+        status, body = _https_get(install, "/")
+        if status != 200 or 'id="root"' not in body:
+            problems.append("web app is not served")
+        if not problems:
+            h = health_report()
+            if h.get("schema") != h.get("expected_schema"):
+                problems.append(f"database schema {h.get('schema')} != expected {h.get('expected_schema')}")
+            for name, s in (h.get("services") or {}).items():
+                if s.get("status") != "ok":
+                    problems.append(f"{name}: {s.get('reason', 'no heartbeat')}")
+            for pool, s in (h.get("scanners") or {}).items():
+                if s.get("status") == "unavailable":
+                    problems.append(f"scanner pool {pool}: {s.get('reason')}")
+            for k in ("error", "db_error", "broker_error"):
+                if h.get(k):
+                    problems.append(f"{k}: {h[k]}")
+            if not problems:
+                return []
+        time.sleep(5)
+    return problems
+
+
+def failure_hints(problems: list[str]) -> None:
+    say("\nNot ready:")
+    for p in problems:
+        say(f"  - {p}")
+    say("\nFind out why:\n  exteriqctl diag            (summary; add --archive for a support archive)\n"
+        "  journalctl -u 'exteriq-*' -p warning -n 100\n  tail /var/log/exteriq/errors.json")
+
+
+# ------------------------------------------------------------------ commands
+def preflight(install: dict) -> None:
+    if os.geteuid() != 0:
+        raise Failure("run as root (sudo exteriqctl ...)")
+    osr = dict(line.split("=", 1) for line in Path("/etc/os-release").read_text().splitlines() if "=" in line)
+    if osr.get("ID") != "ubuntu" or osr.get("VERSION_ID", "").strip('"') != "26.04":
+        raise Failure(f"unsupported OS {osr.get('PRETTY_NAME', '?')}: this package supports Ubuntu 26.04 LTS")
+    arch = run(["dpkg", "--print-architecture"]).stdout.strip()
+    if arch != "amd64":
+        raise Failure(f"unsupported architecture {arch}: this package supports amd64")
+    state = run(["systemctl", "is-system-running"], check=False).stdout.strip()
+    if state not in ("running", "degraded"):
+        raise Failure(f"systemd is {state or 'not running'}; a booted systemd is required")
+    missing = [p for p in REQUIRED_PACKAGES
+               if "install ok installed" not in run(["dpkg-query", "-W", "-f=${Status}", p], check=False).stdout]
+    if missing:
+        raise Failure(f"missing packages: {' '.join(missing)} (apt install them, or install the exteriq package with apt)")
+    for path, need_gb in ((Path("/var/lib"), 5), (Path("/opt"), 2)):
+        free = shutil.disk_usage(path).free / 1e9
+        if free < need_gb:
+            raise Failure(f"{path} has {free:.1f} GB free; at least {need_gb} GB are needed")
+    mem = int(re.search(r"MemTotal:\s+(\d+)", Path("/proc/meminfo").read_text()).group(1)) / 1e6
+    if mem < 3.5:
+        warn(f"{mem:.1f} GB RAM; 4 GB or more is recommended (services are limited to ~9 GB combined)")
+    for port, owner in ((int(install["https_port"]), "nginx"), (int(install["http_port"]), "nginx"),
+                        (API_ADDR[1], "exteriq-api"), (VALKEY_PORT, "exteriq-valkey")):
+        user = _port_user(port)
+        if user and owner not in user and not (owner == "exteriq-api" and "gunicorn" in user) \
+                and not (owner == "exteriq-valkey" and "valkey" in user):
+            raise Failure(f"port {port} is in use by {user}; choose another (--https-port/--http-port) or free it")
+    ok(f"Ubuntu 26.04 {arch}, systemd {state}, required packages present, disk and ports available")
+
+
+def _port_user(port: int) -> str | None:
+    p = run(["ss", "-Hltnp", "sport", "=", f":{port}"], check=False)
+    line = (p.stdout or "").strip()
+    if not line:
+        return None
+    m = re.search(r'users:\(\("([^"]+)"', line)
+    return m.group(1) if m else "another process"
+
+
+def ensure_platform_env(install: dict) -> dict[str, str]:
+    env = read_env()
+    if env:
+        return env
+    cpus = os.cpu_count() or 2
+    values = {
+        "ASM_ENV": "production",
+        "ASM_PUBLIC_URL": public_url(install),
+        "ASM_COOKIE_SECURE": "true",
+        "ASM_LOG_LEVEL": "INFO",
+        "ASM_SECRET_KEY": secrets.token_urlsafe(48),
+        "ASM_ENCRYPTION_KEYS": f"k1:{b64key()}",
+        "ASM_SCANNER_TRANSPORT_KEY": b64key(),
+        "ASM_DATABASE_URL": f"postgresql+psycopg://{DB_ROLE}:{secrets.token_urlsafe(32)}@127.0.0.1:{pg_port()}/{DB_NAME}",
+        "ASM_REDIS_URL": f"redis://:{secrets.token_urlsafe(32)}@127.0.0.1:{VALKEY_PORT}/0",
+        "ASM_STORAGE_LOCAL_PATH": "/var/lib/exteriq/storage",
+        "ASM_INTEGRATION_EXPORT_DIR": "/var/lib/exteriq/exports",
+        "ASM_WORKER_POOLS": ",".join(install["pools"]),
+        "ASM_API_WORKERS": str(min(4, max(2, cpus))),
+        "ASM_CORE_CONCURRENCY": str(min(4, cpus)),
+        "ASM_INGEST_CONCURRENCY": "2",
+    }
+    write_secret(ENV_FILE, render_env(values, "# Exteriq ASM platform configuration. Contains secrets: keep 0640 root:exteriq.\n"
+                                      "# Back up together with the database (the encryption keys decrypt stored credentials).\n"),
+                 0o640, "exteriq")
+    ok(f"generated secrets in {ENV_FILE} (not displayed)")
+    return read_env()
+
+
+def db_password(env: dict[str, str]) -> str:
+    m = re.match(r"postgresql\+psycopg://[^:]+:([^@]+)@", env["ASM_DATABASE_URL"])
+    if not m:
+        raise Failure("ASM_DATABASE_URL in /etc/exteriq/exteriq.env is not in the expected form")
+    return m.group(1)
+
+
+def cmd_install(a: argparse.Namespace) -> None:
+    install = load_install()
+    install.setdefault("hostname", a.hostname or socket.getfqdn())
+    install.setdefault("https_port", a.https_port)
+    install.setdefault("http_port", a.http_port)
+    install.setdefault("pools", a.pools.split(","))
+    for p in install["pools"]:
+        if not POOL_RE.match(p):
+            raise Failure(f"invalid pool name {p!r}")
+    version = a.version or current_release() or (releases()[-1] if releases() else None)
+    if not version:
+        raise Failure("no release is installed (apt install ./exteriq-release-<version>_amd64.deb)")
+
+    step(1, "Checking the host")
+    preflight(install)
+    step(2, f"Verifying release {version}")
+    verify_release(version)
+    step(3, "Installing the release")
+    if current_release() not in (None, version):
+        raise Failure(f"release {current_release()} is active; use `exteriqctl upgrade` to change releases")
+    switch_current(version)
+    for d, owner, mode in ((STATE / "storage", "exteriq", 0o750), (STATE / "exports", "exteriq", 0o750),
+                           (STATE / "valkey", "exteriq-valkey", 0o750), (BACKUPS, "root", 0o700),
+                           (STATE / "diagnostics", "root", 0o700)):
+        d.mkdir(parents=True, exist_ok=True)
+        os.chown(d, _uid(owner), _gid(owner))
+        d.chmod(mode)
+    save_install(install)
+    ok("directories and ownership in place")
+    step(4, "Generating secrets")
+    env = ensure_platform_env(install)
+    for pool in install["pools"]:
+        ensure_pool(pool, env)
+    write_valkey(env["ASM_REDIS_URL"].split(":", 2)[2].split("@", 1)[0], pool_passwords())
+    ok(f"broker users: platform + scanner pool(s) {', '.join(install['pools'])} (hashed in {VALKEY_ACL.name})")
+    step(5, "Database and broker")
+    ensure_database(db_password(env))
+    systemctl("daemon-reload")
+    systemctl("enable", "--quiet", "exteriq-valkey")
+    systemctl("restart", "exteriq-valkey")
+    for _ in range(30):
+        with contextlib.suppress(Failure):
+            if valkey_cli("ping") == "PONG":
+                break
+        time.sleep(1)
+    else:
+        raise Failure("the broker did not start; journalctl -u exteriq-valkey -n 50")
+    ok("broker answering on 127.0.0.1:6380")
+    migrate(version)
+    as_platform(["python", "-m", "app.cli", "bootstrap"])
+    ok("built-in plans and scan profiles in place")
+    step(6, "TLS and web server")
+    if not (TLS_DIR / "tls.crt").exists():
+        self_signed(install["hostname"])
+    else:
+        ok("keeping the existing certificate")
+    write_nginx(install)
+    step(7, "Logging")
+    LOG_DIR.mkdir(mode=0o750, exist_ok=True)
+    os.chown(LOG_DIR, _uid("syslog"), _gid("adm"))
+    for f in LOG_DIR.iterdir():
+        if f.is_file():
+            os.chown(f, _uid("syslog"), _gid("adm"))
+            f.chmod(0o640)
+    # 0.1.0 pre-release collector config left a state *directory* that crashes rsyslog 8.2512.
+    state = Path("/var/spool/rsyslog/exteriq-imjournal.state")
+    if state.is_dir():
+        shutil.rmtree(state)
+    systemctl("reset-failed", "rsyslog", check=False)
+    systemctl("restart", "rsyslog")
+    if not is_active("rsyslog"):
+        raise Failure("rsyslog did not start with the Exteriq collector configuration; journalctl -u rsyslog -n 30")
+    systemctl("enable", "--quiet", "--now", "exteriq-logrotate.timer")
+    ok("journald -> rsyslog -> /var/log/exteriq/*.json, rotated hourly when over 100 MB")
+    if a.no_start:
+        say("\nInstalled; not started (--no-start). Start with: exteriqctl start")
+        return
+    step(8, "Starting services")
+    for pool in install["pools"]:
+        systemctl("enable", "--quiet", f"exteriq-scanner@{pool}")
+    systemctl("enable", "--quiet", "exteriq.target", *PLATFORM_UNITS)
+    systemctl("restart", "exteriq.target")
+    for pool in install["pools"]:
+        systemctl("restart", f"exteriq-scanner@{pool}")
+    problems = wait_ready(install)
+    if problems:
+        failure_hints(problems)
+        raise Failure("installation finished but the platform is not ready (re-run `exteriqctl install` after fixing)")
+    ok("all services running; API, web app, schema and heartbeats verified")
+    step(9, "Ready")
+    install["installed_version"] = version
+    install.setdefault("installed_at", now_utc().isoformat())
+    save_install(install)
+    say(f"\n  URL: {public_url(install)}")
+    _print_setup_link(install, 30)
+    say("\n  Each tenant scans with a scanner pool of its own. After creating a tenant (the first one\n"
+        "  is created on the setup page), provision its pool:  sudo exteriqctl sync-pools")
+
+
+def _print_setup_link(install: dict, ttl: int) -> None:
+    p = as_platform(["python", "-m", "app.cli", "setup-token", "--ttl-minutes", str(ttl)], check=False)
+    if p.returncode == 3:
+        say("  Setup is complete; sign in with your administrator account.")
+        return
+    if p.returncode != 0:
+        raise Failure(f"could not issue a setup token: {(p.stderr or '').strip()[-500:]}")
+    token = p.stdout.strip().splitlines()[-1]
+    say(f"\n  Create the first administrator (link works once, expires in {ttl} minutes):\n"
+        f"  {public_url(install)}/setup#token={token}\n\n"
+        "  The certificate is self-signed until you install your own (exteriqctl tls install).")
+
+
+def cmd_setup_link(a: argparse.Namespace) -> None:
+    _print_setup_link(load_install(), a.ttl_minutes)
+
+
+def cmd_start(_: argparse.Namespace) -> None:
+    install = load_install()
+    systemctl("start", "exteriq.target")
+    for pool in install.get("pools", []):
+        systemctl("start", f"exteriq-scanner@{pool}")
+    problems = wait_ready(install)
+    if problems:
+        failure_hints(problems)
+        raise Failure("started, but not ready")
+    say("running")
+
+
+def stop_all(install: dict) -> None:
+    for pool in install.get("pools", []):
+        systemctl("stop", f"exteriq-scanner@{pool}", check=False)
+    systemctl("stop", *PLATFORM_UNITS, check=False)
+
+
+def cmd_stop(_: argparse.Namespace) -> None:
+    stop_all(load_install())
+    systemctl("stop", "exteriq-valkey", check=False)
+    say("stopped (PostgreSQL, nginx and rsyslog are shared system services and keep running)")
+
+
+def cmd_status(_: argparse.Namespace) -> None:
+    install = load_install()
+    say(f"release: {current_release() or 'none'} (installed: {', '.join(releases()) or 'none'})")
+    say(f"url: {public_url(install) if install else '-'}")
+    for u in ["exteriq-valkey", *PLATFORM_UNITS, *(f"exteriq-scanner@{p}" for p in install.get('pools', []))]:
+        props = dict(line.split("=", 1) for line in systemctl(
+            "show", u, "--property=ActiveState,SubState,NRestarts,Result", check=False).stdout.splitlines() if "=" in line)
+        say(f"  {u:32} {props.get('ActiveState', '?')}/{props.get('SubState', '?')}  restarts={props.get('NRestarts', '?')}"
+            f"  result={props.get('Result', '?')}")
+    rev = db_revision() if is_active("postgresql") else None
+    head = schema_head(current_release()) if current_release() else None
+    say(f"schema: {rev or 'unavailable'} (release expects {head or '-'})")
+
+
+def cmd_diag(a: argparse.Namespace) -> None:
+    """The platform's diagnostic CLI (works while services are down); a minimal fallback when
+    the release itself cannot run."""
+    py = CURRENT / "platform" / "venv" / "bin" / "python"
+    env = {**os.environ, **read_env(), "EXTERIQ_NATIVE": "1", "ASM_SERVICE": "diag", "ASM_HEARTBEAT": "false",
+           "PYTHONDONTWRITEBYTECODE": "1",
+           "ASM_OPS_EVENTS": "false"}
+    args = [] if a.archive else ["--no-archive"]
+    if py.exists():
+        p = subprocess.run([str(py), "-m", "app.diagcli", *args], env=env, cwd=str(CURRENT / "platform"), check=False)
+        sys.exit(p.returncode)
+    warn("the active release cannot run its diagnostic tool; minimal report follows")
+    cmd_status(a)
+    run(["journalctl", "-u", "exteriq-*", "-p", "warning", "-n", "50", "--no-pager"], capture=False, check=False)
+    sys.exit(2)
+
+
+# ---------------------------------------------------------------- backup/restore
+def _sha256_file(p: Path) -> str:
+    h = hashlib.sha256()
+    with open(p, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def backup(label: str, with_storage: bool) -> Path:
+    BACKUPS.mkdir(mode=0o700, parents=True, exist_ok=True)
+    name = f"{now_utc().strftime('%Y%m%dT%H%M%SZ')}-{current_release() or 'none'}-{label}"
+    dest = BACKUPS / name
+    partial = BACKUPS / f".{name}.partial"
+    partial.mkdir(mode=0o700)
+    size = int(psql(f"SELECT pg_database_size('{DB_NAME}');") or 0)
+    if shutil.disk_usage(BACKUPS).free < size * 1.5 + 200e6:
+        shutil.rmtree(partial)
+        raise Failure(f"not enough space in {BACKUPS} for a backup of a {size / 1e9:.1f} GB database")
+    with open(partial / "db.dump", "wb") as fh:
+        p = subprocess.run(["runuser", "-u", "postgres", "--", "pg_dump", "-Fc", "-Z", "6", DB_NAME],
+                           stdout=fh, stderr=subprocess.PIPE, check=False)
+    if p.returncode != 0:
+        shutil.rmtree(partial)
+        raise Failure(f"pg_dump failed: {p.stderr.decode(errors='replace').strip()[-500:]}")
+    with tarfile.open(partial / "etc-exteriq.tar.gz", "w:gz") as t:
+        t.add(ETC, arcname="exteriq")
+    if with_storage:
+        with tarfile.open(partial / "storage.tar.gz", "w:gz") as t:
+            t.add(STATE / "storage", arcname="storage")
+    manifest = {"created_at": now_utc().isoformat(), "release": current_release(), "schema": db_revision(),
+                "label": label, "files": {f.name: _sha256_file(f) for f in sorted(partial.iterdir())},
+                "contains": "database dump, /etc/exteriq (secrets and encryption keys)"
+                            + (", stored files" if with_storage else "")}
+    (partial / "MANIFEST.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    for f in partial.iterdir():
+        f.chmod(0o600)
+    os.replace(partial, dest)
+    ok(f"backup {dest} ({sum(f.stat().st_size for f in dest.iterdir()) / 1e6:.1f} MB; holds secrets: keep it safe)")
+    return dest
+
+
+def cmd_backup(a: argparse.Namespace) -> None:
+    backup("manual", not a.no_storage)
+
+
+def cmd_restore(a: argparse.Namespace) -> None:
+    src = Path(a.backup)
+    if not src.is_absolute():
+        src = BACKUPS / src
+    manifest = json.loads((src / "MANIFEST.json").read_text())
+    for name, digest in manifest["files"].items():
+        if _sha256_file(src / name) != digest:
+            raise Failure(f"{src / name} does not match its checksum; not restoring from a damaged backup")
+    ok(f"backup {src.name} verified (release {manifest['release']}, schema {manifest['schema']})")
+    if not a.yes:
+        raise Failure("restore replaces the current database and configuration with the backup's. "
+                      "Re-run with --yes to proceed (a safety backup of the current state is taken first).")
+    install = load_install()
+    step("r1", "Stopping services")
+    stop_all(install)
+    step("r2", "Safety backup of the current state")
+    safety = backup("pre-restore", with_storage=False)
+    step("r3", "Restoring configuration")
+    aside = ETC.with_name(f"exteriq.pre-restore-{now_utc().strftime('%Y%m%dT%H%M%SZ')}")
+    shutil.copytree(ETC, aside, symlinks=True)
+    with tarfile.open(src / "etc-exteriq.tar.gz") as t:
+        t.extractall(ETC.parent, filter="data")
+    ok(f"/etc/exteriq restored (previous copy in {aside})")
+    step("r4", "Restoring the database")
+    psql(f"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{DB_NAME}';")
+    psql(f"DROP DATABASE IF EXISTS {DB_NAME};")
+    ensure_database(db_password(read_env()))
+    with open(src / "db.dump", "rb") as fh:
+        p = subprocess.run(["runuser", "-u", "postgres", "--", "pg_restore", "--no-owner", f"--role={DB_ROLE}",
+                            "--exit-on-error", "-d", DB_NAME], stdin=fh, stderr=subprocess.PIPE, check=False)
+    if p.returncode != 0:
+        raise Failure(f"pg_restore failed: {p.stderr.decode(errors='replace')[-800:]}\n"
+                      f"The state before this restore is in {safety}.")
+    ok(f"database restored to schema {db_revision()}")
+    if (src / "storage.tar.gz").exists():
+        with tarfile.open(src / "storage.tar.gz") as t:
+            t.extractall(STATE, filter="data")
+        run(["chown", "-R", "exteriq:exteriq", str(STATE / "storage")])
+        ok("stored files restored")
+    rel = manifest.get("release")
+    if rel and rel != current_release():
+        if rel in releases():
+            switch_current(rel)
+        else:
+            warn(f"the backup was taken on release {rel}, which is not installed; install {pkg_name(rel)} "
+                 "and run `exteriqctl rollback --to` it, or upgrade the restored schema with `exteriqctl upgrade`")
+    env = read_env()
+    write_valkey(env["ASM_REDIS_URL"].split(":", 2)[2].split("@", 1)[0], pool_passwords())
+    systemctl("daemon-reload")
+    systemctl("restart", "exteriq-valkey")
+    step("r5", "Starting")
+    cmd_start(a)
+
+
+# ---------------------------------------------------------------- upgrade
+def queue_depths(pools: list[str]) -> dict[str, int]:
+    out = {}
+    for q in ["core", *(f"scanners.{p}" for p in pools), *(f"results.{p}" for p in pools)]:
+        with contextlib.suppress(Failure, ValueError):
+            out[q] = int(valkey_cli("llen", q) or 0)
+    return out
+
+
+def running_stages() -> int:
+    return int(psql("SELECT count(*) FROM scan_stages WHERE status IN ('pending','running') "
+                    "AND scan_id IN (SELECT id FROM scans WHERE status IN ('queued','running'));", DB_NAME,
+                    check=False) or 0)
+
+
+def cmd_upgrade(a: argparse.Namespace) -> None:
+    install = load_install()
+    cur = current_release()
+    if not cur:
+        raise Failure("nothing is installed yet; run `exteriqctl install`")
+    target = a.to or releases()[-1]
+    if target == cur:
+        say(f"release {cur} is already active; nothing to do")
+        return
+    if _vkey(target) < _vkey(cur) and not a.allow_older:
+        raise Failure(f"{target} is older than the active {cur}; to go back use `exteriqctl rollback`")
+    step("u1", f"Pre-upgrade checks ({cur} -> {target})")
+    verify_release(target)
+    rev = db_revision()
+    if rev and rev not in release_revisions(target):
+        raise Failure(f"the database schema ({rev}) is not known to release {target}: that release cannot "
+                      "upgrade this database (was it built from an older branch?)")
+    problems = [u for u in [*PLATFORM_UNITS, "exteriq-valkey"] if not is_active(u)]
+    if problems:
+        warn(f"not running before the upgrade: {', '.join(problems)}")
+    ok(f"schema {rev} -> {schema_head(target)}")
+    step("u2", "Backup (database + configuration and keys)")
+    bk = backup(f"pre-upgrade-{target}", with_storage=False)
+    step("u3", f"Draining (up to {a.drain_timeout}s)")
+    systemctl("stop", "exteriq-scheduler", "exteriq-api")
+    ok("scheduler and API stopped: no new scans or requests")
+    deadline = time.monotonic() + a.drain_timeout
+    while time.monotonic() < deadline:
+        depths, busy = queue_depths(install["pools"]), running_stages()
+        if not busy and not any(depths.values()):
+            break
+        say(f"    ..  waiting: {busy} stage(s) queued/running, queues {depths}")
+        time.sleep(10)
+    else:
+        warn("drain timeout: remaining work stays queued in the broker (persistent) and resumes after the upgrade; "
+             "a job interrupted mid-run is redelivered after the broker visibility timeout")
+    stop_all(install)
+    ok("workers stopped (running jobs were allowed to finish within their stop timeout)")
+    step("u4", "Database migration")
+    try:
+        migrate(target)
+    except MigrationFailed as exc:
+        say(str(exc))
+        if db_revision() == exc.before:
+            warn(f"the migration rolled back completely; schema still {exc.before}. Restarting release {cur}.")
+            cmd_start(a)
+            raise Failure(f"upgrade to {target} failed and was undone; {cur} is running again. Backup: {bk}") from None
+        raise Failure(f"the schema changed partially ({exc.before} -> {db_revision()}). Services are stopped. "
+                      f"Recover with:  exteriqctl restore {bk.name} --yes") from None
+    step("u5", "Switching release")
+    switch_current(target)
+    systemctl("daemon-reload")
+    step("u6", "Starting and verifying")
+    systemctl("start", "exteriq.target")
+    for pool in install["pools"]:
+        systemctl("start", f"exteriq-scanner@{pool}")
+    problems = wait_ready(install)
+    _history({"from": cur, "to": target, "backup": str(bk), "ok": not problems, "problems": problems})
+    if problems:
+        failure_hints(problems)
+        raise Failure(f"release {target} is active but not healthy. The database is at {db_revision()}; release "
+                      f"{cur} expects {schema_head(cur)}. " + (
+                          "Switch back with: exteriqctl rollback" if schema_head(cur) == db_revision() else
+                          f"The schema changed, so switching back alone is not safe: exteriqctl restore {bk.name} --yes"))
+    install["installed_version"] = target
+    save_install(install)
+    say(f"\nupgraded {cur} -> {target}; backup kept at {bk}")
+
+
+def _history(entry: dict) -> None:
+    entry["at"] = now_utc().isoformat()
+    with open(STATE / "upgrade-history.jsonl", "a") as fh:
+        fh.write(json.dumps(entry) + "\n")
+
+
+def cmd_rollback(a: argparse.Namespace) -> None:
+    """Switch the active release back — only when the database schema is exactly what that
+    release expects. A schema that changed can only go back by restoring a backup."""
+    install = load_install()
+    cur = current_release()
+    candidates = [r for r in releases() if r != cur]
+    target = a.to or (max(candidates, key=_vkey) if candidates else None)
+    if not target:
+        raise Failure("no other release is installed")
+    verify_release(target)
+    rev, want = db_revision(), schema_head(target)
+    if rev != want:
+        raise Failure(f"the database schema is {rev} but release {target} expects {want}. Switching releases cannot "
+                      "undo a migration. Restore the backup taken before the upgrade instead: "
+                      "ls /var/lib/exteriq/backups; exteriqctl restore <backup> --yes")
+    stop_all(install)
+    switch_current(target)
+    systemctl("daemon-reload")
+    cmd_start(a)
+    _history({"from": cur, "to": target, "rollback": True, "ok": True})
+    say(f"rolled back {cur} -> {target}")
+
+
+def cmd_releases(_: argparse.Namespace) -> None:
+    cur = current_release()
+    for r in releases():
+        say(f"{'*' if r == cur else ' '} {r}  schema {schema_head(r)}")
+
+
+def cmd_prune(a: argparse.Namespace) -> None:
+    cur = current_release()
+    keep = {cur, *sorted((r for r in releases() if r != cur), key=_vkey)[-a.keep:]}
+    drop = [r for r in releases() if r not in keep]
+    if not drop:
+        say("nothing to prune")
+        return
+    run(["apt-get", "remove", "-y", *(pkg_name(r) for r in drop)], capture=False)
+
+
+# ---------------------------------------------------------------- tls / pools
+def cmd_tls(a: argparse.Namespace) -> None:
+    install = load_install()
+    if a.action == "self-signed":
+        self_signed(a.hostname or install["hostname"])
+    else:
+        cert, key = Path(a.cert), Path(a.key)
+        pub_c = run(["openssl", "x509", "-in", str(cert), "-noout", "-pubkey"]).stdout
+        pub_k = run(["openssl", "pkey", "-in", str(key), "-pubout"]).stdout
+        if pub_c.strip() != pub_k.strip():
+            raise Failure("the key does not belong to the certificate")
+        if run(["openssl", "x509", "-in", str(cert), "-noout", "-checkend", "86400"], check=False).returncode:
+            raise Failure("the certificate expires within a day (or already has)")
+        backup_dir = TLS_DIR / f"previous-{now_utc().strftime('%Y%m%dT%H%M%SZ')}"
+        backup_dir.mkdir(mode=0o700)
+        for n in ("tls.crt", "tls.key"):
+            if (TLS_DIR / n).exists():
+                shutil.copy2(TLS_DIR / n, backup_dir / n)
+        write_secret(TLS_DIR / "tls.key", key.read_text(), 0o600)
+        (TLS_DIR / "tls.crt").write_text(cert.read_text())
+        (TLS_DIR / "tls.crt").chmod(0o644)
+        ok("certificate installed (previous one kept in " + str(backup_dir) + ")")
+    if a.hostname and a.hostname != install["hostname"]:
+        install["hostname"] = a.hostname
+        save_install(install)
+    write_nginx(install)
+
+
+def add_pools(pools: list[str]) -> list[str]:
+    """Provision scanner pools (a broker ACL user, a pool key, a scanner unit each) and bring
+    every piece of pool configuration back in line with install.json — so a re-run repairs
+    a half-finished or hand-edited state. Returns the pools that were new."""
+    install = load_install()
+    new = [p for p in dict.fromkeys(pools) if p not in install["pools"]]
+    install["pools"].extend(new)
+    save_install(install)
+    env = read_env()
+    for pool in install["pools"]:
+        ensure_pool(pool, env)  # no-op for pools that already have their file
+    changed = bool(new)
+    wanted = ",".join(install["pools"])
+    if env.get("ASM_WORKER_POOLS") != wanted:
+        env["ASM_WORKER_POOLS"] = wanted
+        write_secret(ENV_FILE, render_env(env, "# Exteriq ASM platform configuration. Contains secrets: "
+                                               "keep 0640 root:exteriq.\n"), 0o640, "exteriq")
+        changed = True
+    before = VALKEY_ACL.read_text() if VALKEY_ACL.exists() else ""
+    write_valkey(env["ASM_REDIS_URL"].split(":", 2)[2].split("@", 1)[0], pool_passwords())
+    acl_changed = {ln.split()[1] for ln in before.splitlines() if ln.startswith("user ")} != \
+        {ln.split()[1] for ln in VALKEY_ACL.read_text().splitlines() if ln.startswith("user ")}
+    if acl_changed:
+        valkey_cli("acl", "load")
+    if changed:
+        systemctl("restart", "exteriq-ingest", "exteriq-worker", "exteriq-api")
+    for pool in install["pools"]:
+        if not is_active(f"exteriq-scanner@{pool}"):
+            systemctl("enable", "--quiet", "--now", f"exteriq-scanner@{pool}")
+    return new
+
+
+def cmd_add_pool(a: argparse.Namespace) -> None:
+    if not add_pools([a.pool]):
+        say(f"pool {a.pool} exists")
+        return
+    say(f"pool {a.pool} running. Assign tenants to it in Platform -> Tenants (worker pool).")
+
+
+def cmd_sync_pools(_: argparse.Namespace) -> None:
+    """With per-tenant scanner isolation (the default) every tenant has a pool of its own and
+    its scans are refused until that pool has a scanner. Provision every missing one."""
+    wanted = [p for p in psql("SELECT DISTINCT worker_pool FROM tenants WHERE status = 'active' "
+                              "ORDER BY 1;", DB_NAME).splitlines() if p]
+    bad = [p for p in wanted if not POOL_RE.match(p)]
+    if bad:
+        raise Failure(f"tenant pool names that cannot be provisioned: {', '.join(bad)}")
+    added = add_pools(wanted)
+    say(f"provisioned: {', '.join(added)}" if added else "every active tenant's pool has a scanner")
+    problems = wait_ready(load_install(), timeout=600)
+    if problems:
+        failure_hints(problems)
+        raise Failure("pool configuration is in place, but not every service is ready")
+
+
+def cmd_purge_data(a: argparse.Namespace) -> None:
+    if not a.yes_delete_all_data:
+        raise Failure("this permanently deletes the Exteriq database, stored files, configuration, keys and logs. "
+                      "Take a backup first (exteriqctl backup), then re-run with --yes-delete-all-data")
+    install = load_install()
+    stop_all(install)
+    systemctl("stop", "exteriq-valkey", "exteriq-logrotate.timer", check=False)
+    systemctl("disable", "exteriq.target", "exteriq-valkey", *PLATFORM_UNITS,
+              *(f"exteriq-scanner@{p}" for p in install.get("pools", [])), check=False)
+    if is_active("postgresql"):
+        psql(f"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{DB_NAME}';", check=False)
+        psql(f"DROP DATABASE IF EXISTS {DB_NAME};", check=False)
+        psql(f"DROP ROLE IF EXISTS {DB_ROLE};", check=False)
+    if NGINX_SITE.exists() and MARKER in NGINX_SITE.read_text():
+        NGINX_ENABLED.unlink(missing_ok=True)
+        NGINX_SITE.unlink()
+        run(["systemctl", "reload", "nginx"], check=False)
+    for p in (STATE, ETC, LOG_DIR):
+        shutil.rmtree(p, ignore_errors=True)
+    with contextlib.suppress(FileNotFoundError):
+        CURRENT.unlink()
+    say("all Exteriq data removed. Remove the packages with: apt purge exteriq 'exteriq-release-*'")
+
+
+# ---------------------------------------------------------------- main
+def main(argv: list[str] | None = None) -> None:
+    p = argparse.ArgumentParser(prog="exteriqctl", description=__doc__.split("\n\n")[0])
+    sub = p.add_subparsers(dest="cmd", required=True)
+    s = sub.add_parser("install", help="install or repair (idempotent)")
+    s.add_argument("--hostname", help="name users browse to (default: this host's FQDN)")
+    s.add_argument("--https-port", type=int, default=443)
+    s.add_argument("--http-port", type=int, default=80)
+    s.add_argument("--pools", default="default", help="scanner pools, comma separated")
+    s.add_argument("--version", help="release to install (default: newest installed)")
+    s.add_argument("--no-start", action="store_true")
+    s.set_defaults(fn=cmd_install)
+    s = sub.add_parser("upgrade", help="backup, drain, migrate, switch, verify")
+    s.add_argument("--to", help="release (default: newest installed)")
+    s.add_argument("--drain-timeout", type=int, default=600)
+    s.add_argument("--allow-older", action="store_true", help=argparse.SUPPRESS)
+    s.set_defaults(fn=cmd_upgrade)
+    s = sub.add_parser("rollback", help="switch back to another release when the schema allows it")
+    s.add_argument("--to")
+    s.set_defaults(fn=cmd_rollback)
+    s = sub.add_parser("backup", help="database, configuration and keys (+ stored files)")
+    s.add_argument("--no-storage", action="store_true")
+    s.set_defaults(fn=cmd_backup)
+    s = sub.add_parser("restore", help="restore a backup (takes a safety backup first)")
+    s.add_argument("backup")
+    s.add_argument("--yes", action="store_true")
+    s.set_defaults(fn=cmd_restore)
+    sub.add_parser("status").set_defaults(fn=cmd_status)
+    s = sub.add_parser("diag", help="diagnostic report (works during outages)")
+    s.add_argument("--archive", action="store_true")
+    s.set_defaults(fn=cmd_diag)
+    s = sub.add_parser("setup-link", help="new one-time link to create the first administrator")
+    s.add_argument("--ttl-minutes", type=int, default=30)
+    s.set_defaults(fn=cmd_setup_link)
+    s = sub.add_parser("tls", help="certificate management")
+    s.add_argument("action", choices=["self-signed", "install"])
+    s.add_argument("--cert")
+    s.add_argument("--key")
+    s.add_argument("--hostname")
+    s.set_defaults(fn=cmd_tls)
+    s = sub.add_parser("add-pool", help="add a scanner pool (its own broker user and key)")
+    s.add_argument("pool")
+    s.set_defaults(fn=cmd_add_pool)
+    sub.add_parser("sync-pools", help="provision a scanner pool for every tenant that lacks one").set_defaults(
+        fn=cmd_sync_pools)
+    sub.add_parser("start").set_defaults(fn=cmd_start)
+    sub.add_parser("stop").set_defaults(fn=cmd_stop)
+    sub.add_parser("releases").set_defaults(fn=cmd_releases)
+    s = sub.add_parser("prune", help="remove old release packages")
+    s.add_argument("--keep", type=int, default=1, help="previous releases to keep besides the active one")
+    s.set_defaults(fn=cmd_prune)
+    s = sub.add_parser("purge-data", help="delete ALL Exteriq data (irreversible)")
+    s.add_argument("--yes-delete-all-data", action="store_true")
+    s.set_defaults(fn=cmd_purge_data)
+    a = p.parse_args(argv)
+    if os.geteuid() != 0:
+        sys.exit("exteriqctl must run as root")
+    os.umask(0o027)
+    try:
+        a.fn(a)
+    except Failure as exc:
+        print(f"\nERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        sys.exit(130)
+
+
+if __name__ == "__main__":
+    main()

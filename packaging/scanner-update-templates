@@ -1,0 +1,14 @@
+#!/bin/sh
+# ExecStartPre of exteriq-scanner@<pool>: refresh the detection content (network feature).
+# Never fails the unit: offline, the scanner starts with whatever set is installed and
+# Diagnostics shows its age (or that none is installed).
+set -u
+dir="${ASM_NUCLEI_TEMPLATES_DIR:?}"
+if [ "${ASM_NUCLEI_AUTO_UPDATE:-true}" = "true" ] || [ -z "$(ls -A "$dir" 2>/dev/null)" ]; then
+  # No -duc here: with it, nuclei 3.3 skips even an explicit -update-templates.
+  HOME="${ASM_NUCLEI_HOME:?}" timeout 600 nuclei -update-templates -ud "$dir" -silent \
+    || echo "warning: could not update detection content (offline?); using the installed set" >&2
+fi
+[ -n "$(find "$dir" -name '*.yaml' -print -quit 2>/dev/null)" ] \
+  || echo "warning: no detection content is installed; vulnerability detection stages will be skipped" >&2
+exit 0

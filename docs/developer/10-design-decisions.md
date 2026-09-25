@@ -331,3 +331,39 @@ B", and says so.
 step and isolate); recursive CTEs over the whole organization (unbounded fan-out before any
 cap applies); inferring paths from shared IPs/certificates/providers (rejected: presents
 coincidence as exploitability).
+
+## ADR-031 Logs are events on stdout; one collector writes files
+**Decision**: every process writes versioned JSON events (`exteriq.event/1`) to stdout
+through a bounded queue and a writer thread; nothing in the application opens, rotates or
+deletes log files. Docker collects stdout; native installs let journald store it and rsyslog
+(the only writer) file events by `stream` into `/var/log/exteriq/*.json`, rotated hourly by
+logrotate with rsyslog HUP. Alerts and audit records are *exports* of database rows
+(transactional outbox for findings, cursor + gaps for the audit log), written synchronously
+and marked only after the write, so re-exports repeat the same `event_id`.
+**Consequences**: logging can drop events under back-pressure, but never blocks a request or
+scan, and drops are counted and reported (`ASM-OPS-003`); exported alerts/audit are
+at-least-once, never lost to a full queue. Several Python processes never fight over one
+file. No Elasticsearch/OpenSearch: files and the journal are the interface, SIEM agents read
+them. rsyslog 8.2512 crashes on restart with two `imjournal` inputs, so the collector uses the
+single default input and routes Exteriq's events to its own ruleset.
+**Alternatives**: per-process file handlers (concurrent rotation corrupts files); Python
+`QueueHandler` to syslog (a second, less observable path); a log shipper stack (heavy).
+
+## ADR-032 Native packaging: one package per release, activation by exteriqctl
+**Decision**: a release is the package `exteriq-release-<version>` installed under
+`/opt/exteriq/releases/<version>` (prebuilt web app, two virtualenvs built at their final
+path, natively built engines, migrations, a manifest of every file's SHA-256); the `exteriq`
+package carries tooling, units and collector config. Installing packages never restarts or
+migrates anything: `exteriqctl upgrade` does backup → drain → migrate → atomic symlink switch
+→ readiness, and `exteriqctl rollback` only switches back when the database schema is exactly
+what the older release expects. `exteriqctl` uses the standard library only.
+**Consequences**: several releases side by side (like kernel packages), so an upgrade never
+deletes the running code and a failed upgrade can restart the previous release. Migrations
+run in one transaction, so a failing one leaves the schema untouched (verified, not assumed).
+A migration that did run can only be undone by restoring the pre-upgrade backup — the tooling
+says so instead of pretending a symlink can undo it. The build host needs Node, Go and
+compilers; customers need none.
+**Alternatives**: one `exteriq` package with files in place (dpkg would delete the running
+release mid-upgrade); upgrades in maintainer scripts (unattended migrations inside apt, no
+drain, no clear recovery); relocatable virtualenvs/pex/containers-without-Docker (fragile or
+not Docker-free in spirit).
